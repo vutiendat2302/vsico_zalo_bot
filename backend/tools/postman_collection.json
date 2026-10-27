@@ -1,0 +1,320 @@
+{
+  "info": {
+    "_postman_id": "zalo-gmf-bot-collection-vsico-v2",
+    "name": "Zalo GMF Bot & TMS REST API - VSICO (Task 2)",
+    "description": "Bộ sưu tập kiểm thử Postman phân tách 2 tầng kiến trúc rõ ràng:\n1. TMS Functional REST APIs: Các API chức năng nghiệp vụ độc lập (tạo chuyến, đổi tài xế, bổ sung, hủy, tra cứu).\n2. Zalo Webhook Gateway: Cổng hứng sự kiện webhook thô từ Zalo OA.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. REST API Chức Năng Nghiệp Vụ (TMS APIs)",
+      "description": "Các API nghiệp vụ độc lập cho hệ thống TMS, nhận dữ liệu JSON có cấu trúc rõ ràng.",
+      "item": [
+        {
+          "name": "01. [API] Tạo chuyến xe mới (POST /api/trips/new)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"carrier_id\": \"NX01\",\n  \"cont\": \"VSIU7399796\",\n  \"seal\": \"73957169\",\n  \"bien_so\": \"15C-878.99\",\n  \"tai_xe\": \"Trần Quốc Bảo\",\n  \"sdt\": \"0903976359\",\n  \"gio_den\": \"08:00 14/10/2026\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/api/trips/new",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["api", "trips", "new"]
+            },
+            "description": "Tạo chuyến xe mới với các trường dữ liệu có cấu trúc. Tự động thẩm định ISO 6346 Mod 11, khớp Shipping và kết xuất thông báo gửi khách."
+          },
+          "response": []
+        },
+        {
+          "name": "02. [API] Đổi tài xế theo biển số xe (POST /api/trips/update-driver)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"carrier_id\": \"NX01\",\n  \"bien_so\": \"15C-878.99\",\n  \"tai_xe_moi\": \"Lê Văn Đổi\",\n  \"sdt_moi\": \"0988592302\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/api/trips/update-driver",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["api", "trips", "update-driver"]
+            },
+            "description": "Đổi tài xế mà không cần nhập số cont. Hệ thống tự tra cứu ngược theo biển số xe để tìm cont VSIU7399796 và nâng lên Version 2."
+          },
+          "response": []
+        },
+        {
+          "name": "03. [API] Bổ sung seal và giờ đến (POST /api/trips/supplement)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"carrier_id\": \"NX01\",\n  \"cont\": \"GAOU9386298\",\n  \"seal\": \"84920192\",\n  \"gio_den\": \"10:00 14/10/2026\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/api/trips/supplement",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["api", "trips", "supplement"]
+            },
+            "description": "Bổ sung thông tin còn thiếu cho chuyến xe đang ở trạng thái HOLD_WAIT_SUPPLEMENT."
+          },
+          "response": []
+        },
+        {
+          "name": "04. [API] Hủy chuyến xe (POST /api/trips/cancel)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"carrier_id\": \"NX03\",\n  \"cont\": \"AHLXU1029021\",\n  \"ly_do\": \"xe hỏng dọc đường\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/api/trips/cancel",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["api", "trips", "cancel"]
+            },
+            "description": "Gửi yêu cầu hủy chuyến, kích hoạt chuông cảnh báo admin_alert để điều phối viên TMS xử lý kịp thời."
+          },
+          "response": []
+        },
+        {
+          "name": "05. [API] Xem danh sách chuyến xe đã duyệt (GET /api/trips)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8000/api/trips",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["api", "trips"]
+            },
+            "description": "Xem danh sách toàn bộ các chuyến xe đã được duyệt và lưu trữ trong bộ nhớ hệ thống."
+          },
+          "response": []
+        },
+        {
+          "name": "06. [API] Tra cứu chi tiết theo số cont (GET /api/trips/:cont)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8000/api/trips/VSIU7399796",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["api", "trips", "VSIU7399796"]
+            },
+            "description": "Tra cứu chi tiết một chuyến xe cụ thể dựa trên số container."
+          },
+          "response": []
+        },
+        {
+          "name": "07. [API] Kiểm tra trạng thái máy chủ (GET /api/health)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8000/api/health",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["api", "health"]
+            },
+            "description": "Kiểm tra máy chủ hoạt động và liệt kê toàn bộ danh mục API sẵn có."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Cổng Zalo Webhook Sự Kiện (POST /webhook)",
+      "description": "Cổng duy nhất nhận toàn bộ sự kiện webhook thô từ Zalo OA và tự động định tuyến.",
+      "item": [
+        {
+          "name": "01. [Webhook] Báo xe chuẩn 1 xe (Happy Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"app_id\": \"1234567890123456789\",\n  \"event_name\": \"user_send_text\",\n  \"group_id\": \"2001000000000000001\",\n  \"sender\": {\n    \"id\": \"1001000000000000001\"\n  },\n  \"timestamp\": \"1791798010000\",\n  \"message\": {\n    \"msg_id\": \"test_happy_01\",\n    \"text\": \"TRẢ HÀNG\\nCont: VSIU7399796\\nSeal: 73957169\\nBiển số: 15C-878.99\\nTài xế: Trần Quốc Bảo\\nSĐT: 0903976359\\nGiờ đến: 08:00 14/10/2026\"\n  }\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/webhook",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["webhook"]
+            },
+            "description": "Kỳ vọng: action=PARSE, in_shipping=true, status=ready, send_status=SENT_DRY_RUN."
+          },
+          "response": []
+        },
+        {
+          "name": "02. [Webhook] Báo 2 xe trong 1 tin (Dấu gạch chéo /)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"app_id\": \"1234567890123456789\",\n  \"event_name\": \"user_send_text\",\n  \"group_id\": \"2004000000000000001\",\n  \"sender\": {\n    \"id\": \"1004000000000000001\"\n  },\n  \"timestamp\": \"1791849309000\",\n  \"message\": {\n    \"msg_id\": \"test_multi_02\",\n    \"text\": \"NHAP HANG 14/10 9h\\n1) 50H-46744 / Lý Hoàng Phúc / sdt 0766544549 / SEGU7191464 / chì 53330158\\n2) 72C-64021 / Trịnh Văn Cường / sdt 0860247525 / HLXU6721270 / seal 72355925\"\n  }\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/webhook",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["webhook"]
+            },
+            "description": "Tách 2 xe độc lập từ 1 tin nhắn."
+          },
+          "response": []
+        },
+        {
+          "name": "03. [Webhook] Gửi lại trùng tin (Chống trùng Webhook)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"app_id\": \"1234567890123456789\",\n  \"event_name\": \"user_send_text\",\n  \"group_id\": \"2001000000000000001\",\n  \"sender\": {\n    \"id\": \"1001000000000000001\"\n  },\n  \"timestamp\": \"1791798010000\",\n  \"message\": {\n    \"msg_id\": \"test_happy_01\",\n    \"text\": \"TRẢ HÀNG\\nCont: VSIU7399796\\nSeal: 73957169\\nBiển số: 15C-878.99\\nTài xế: Trần Quốc Bảo\\nSĐT: 0903976359\\nGiờ đến: 08:00 14/10/2026\"\n  }\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/webhook",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["webhook"]
+            },
+            "description": "Gửi lại cùng msg_id với request #01. Kỳ vọng: action=DUPLICATE_MESSAGE, bị chặn tại Ingest."
+          },
+          "response": []
+        },
+        {
+          "name": "04. [Webhook] Thiếu thông tin bắt buộc (Thiếu seal & giờ)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"app_id\": \"1234567890123456789\",\n  \"event_name\": \"user_send_text\",\n  \"group_id\": \"2001000000000000001\",\n  \"sender\": {\n    \"id\": \"1001000000000000001\"\n  },\n  \"timestamp\": \"1791853459000\",\n  \"message\": {\n    \"msg_id\": \"test_missing_04\",\n    \"text\": \"TRẢ HÀNG\\nCont: GAOU9386298\\nBiển số: 50H-395.54\\nTài xế: Trần Quốc Bảo\\nSĐT: 0973991875\"\n  }\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/webhook",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["webhook"]
+            },
+            "description": "Kỳ vọng: status=need_supplement, send_status=HOLD_WAIT_SUPPLEMENT."
+          },
+          "response": []
+        },
+        {
+          "name": "05. [Webhook] Sai nhà xe được phân công (Cảnh báo an ninh)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"app_id\": \"1234567890123456789\",\n  \"event_name\": \"user_send_text\",\n  \"group_id\": \"2003000000000000001\",\n  \"sender\": {\n    \"id\": \"1003000000000000001\"\n  },\n  \"timestamp\": \"1791848880000\",\n  \"message\": {\n    \"msg_id\": \"test_wrong_carrier_06\",\n    \"text\": \"xe 30E45104 tx Dương Văn Khoa 0973867761 cont SEGU3874035 seal 8429599 tra hang 14/10 8h\"\n  }\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/webhook",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["webhook"]
+            },
+            "description": "Cont SEGU3874035 giao NX01 nhưng tin do NX03 gửi. Kỳ vọng: warnings=['sai_nha_xe'], send_status=HOLD_ADMIN."
+          },
+          "response": []
+        },
+        {
+          "name": "06. [Webhook] Lệnh đóng hàng (Tạm hoãn Giai đoạn 2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"app_id\": \"1234567890123456789\",\n  \"event_name\": \"user_send_text\",\n  \"group_id\": \"2001000000000000001\",\n  \"sender\": {\n    \"id\": \"1001000000000000001\"\n  },\n  \"timestamp\": \"1791852038000\",\n  \"message\": {\n    \"msg_id\": \"test_dong_07\",\n    \"text\": \"ĐÓNG HÀNG\\nCont: VSIU2677615\\nSeal: 71455401\\nBiển số: 60C-940.08\\nTài xế: La Thanh Long\\nSĐT: 0760362986\\nGiờ đến: 08:00 14/10/2026\"\n  }\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8000/webhook",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["webhook"]
+            },
+            "description": "Kỳ vọng: loai_hint=dong, send_status=DEFER_PHASE2_DONG."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

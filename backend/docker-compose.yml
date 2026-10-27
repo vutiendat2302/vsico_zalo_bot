@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  nhaxe-api:
+    build: .
+    container_name: nhaxe-bot-api
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - PORT=8000
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./output:/app/output
+    restart: unless-stopped

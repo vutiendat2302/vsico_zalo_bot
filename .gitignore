@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv/
+env/
+venv/
+*.egg-info/
+dist/
+build/
+output/results.csv
+
+# Node / JS
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+credentials.json
+cookies.json
+qr.png
+
+# IDE / System
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

@@ -1,0 +1,16 @@
+THÔNG BÁO CẬP NHẬT THÔNG TIN XE
+
+Kính gửi Quý khách hàng,
+VSICO xin thông báo cập nhật thông tin xe trả hàng cho cont {so_cont}:
+
+Các thông tin thay đổi:
+{thay_doi}
+
+Thông tin xe hiện tại:
+- Số cont: {so_cont} ({kich_thuoc})
+- Số chì: {so_chi}
+- Biển số xe: {bien_so}
+- Tài xế: {tai_xe}
+- SĐT: {sdt}
+- Điểm trả: {diem_tra}
+- Dự kiến đến kho: {gio_den}

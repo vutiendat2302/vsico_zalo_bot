@@ -1,0 +1,12 @@
+THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: {so_cont} ({kich_thuoc})
+- Số chì: {so_chi}
+- Biển số xe: {bien_so}
+- Tài xế: {tai_xe}
+- SĐT: {sdt}
+- Điểm trả: {diem_tra}
+- Dự kiến đến kho: {gio_den}
