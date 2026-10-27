@@ -120,7 +120,9 @@ class QueueWorker:
                     self.suspect_buffer.clear(inbound.carrier_id)
 
         # 3. Phân loại tin rác / nghi ngờ qua classify_junk
-        if not merged_candidate:
+        if inbound.quote_msg_id:
+            verdict, reason = "CANDIDATE", "Tin nhắn trích dẫn (quote reply) điều hành / sửa đổi"
+        elif not merged_candidate:
             verdict, reason, signals = classify_junk(active_text)
         else:
             verdict, reason = "CANDIDATE", "Ghép thành công với tin nghi ngờ trước đó trong 30 phút"
@@ -180,7 +182,7 @@ class QueueWorker:
 
         # 6. Phân nhóm CANDIDATE: Tiếp tục phân tích bóc tách chuyên sâu
         conts = extract_containers(inbound.raw_text)
-        intent = self.classifier.classify(inbound.raw_text, conts)
+        intent = self.classifier.classify(inbound.raw_text, conts, inbound.quote_msg_id)
         log_event("CLASSIFY", f"Nhận diện Intent: {intent.value}", msg_id=inbound.msg_id)
 
         context = {

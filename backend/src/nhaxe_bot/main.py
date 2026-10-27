@@ -23,6 +23,7 @@ from .handlers.create_trip import CreateTripHandler
 from .handlers.update_driver import UpdateDriverHandler
 from .handlers.cancel_trip import CancelTripHandler
 from .handlers.supplement import SupplementHandler
+from .handlers.review_handler import ReviewHandler
 from .handlers.unknown import UnknownHandler
 from .api.webhook import WebhookController
 from .api.app import create_http_handler
@@ -61,6 +62,7 @@ def build_application(shipping_file: str = SETTINGS.shipping_file) -> Dict[str, 
 
     # 2. Carriers metadata (Danh bạ nhà xe đối tác demo)
     carriers_map = {
+        "ADMIN_DHVT": Carrier("ADMIN_DHVT", "Điều Hành Vận Tải VSICO", "2000000000000000001", ["9001000000000000001", "8001000000000000001"]),
         "NX01": Carrier("NX01", "Vận tải Hải Long (demo)", "2001000000000000001", ["1001000000000000001", "1001000000000000002"]),
         "NX02": Carrier("NX02", "Vận tải Minh Phát (demo)", "2002000000000000001", ["1002000000000000001"]),
         "NX03": Carrier("NX03", "Vận tải Thành Đạt (demo)", "2003000000000000001", ["1003000000000000001"]),
@@ -79,6 +81,7 @@ def build_application(shipping_file: str = SETTINGS.shipping_file) -> Dict[str, 
     update_handler = UpdateDriverHandler(trip_repo, template_engine)
     cancel_handler = CancelTripHandler()
     supplement_handler = SupplementHandler()
+    review_handler = ReviewHandler(template_engine)
 
     # 5. Classifier & Router (Quy tắc 1.5: Mở rộng intent mới bằng cách thêm file mới, đăng ký 1 dòng)
     classifier = RuleBasedClassifier()
@@ -87,6 +90,8 @@ def build_application(shipping_file: str = SETTINGS.shipping_file) -> Dict[str, 
     router.register(Intent.UPDATE_REQUEST, update_handler)
     router.register(Intent.CANCEL_REQUEST, cancel_handler)
     router.register(Intent.SUPPLEMENT, supplement_handler)
+    router.register(Intent.APPROVE_OUTBOUND, review_handler)
+    router.register(Intent.EDIT_PENDING, review_handler)
     router.register(Intent.ASK_WHICH_CONT, unknown_handler)
     router.register(Intent.MANUAL_REVIEW, unknown_handler)
     router.register(Intent.IGNORE_CHAT, unknown_handler)

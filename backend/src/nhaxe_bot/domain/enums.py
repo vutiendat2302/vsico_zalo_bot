@@ -33,6 +33,12 @@ class Intent(str, Enum):
     MANUAL_REVIEW = "MANUAL_REVIEW"
     """Tin nhắn báo cáo tiến độ (đã giao xong, đang vào kho) cần người xem xét."""
 
+    APPROVE_OUTBOUND = "APPROVE_OUTBOUND"
+    """Lệnh phê duyệt phát hành tin cho khách từ phản hồi quote 'ok' của ĐHVT."""
+
+    EDIT_PENDING = "EDIT_PENDING"
+    """Lệnh sửa thông tin chuyến nháp từ phản hồi quote 'sửa ...' của ĐHVT."""
+
     IGNORE_CHAT = "IGNORE_CHAT"
     """Tin nhắn chào hỏi, cảm ơn, giao tiếp thông thường không liên quan đến chuyến xe."""
 

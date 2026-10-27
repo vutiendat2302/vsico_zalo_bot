@@ -5,7 +5,7 @@ và hệ thống phân cấp mức độ ưu tiên để giải quyết triệt 
 """
 
 import re
-from typing import List
+from typing import List, Optional
 from ...domain.enums import Intent
 from .base import IntentClassifier
 
@@ -14,27 +14,38 @@ class RuleBasedClassifier(IntentClassifier):
     """Bộ phân loại ý định dựa trên quy tắc ưu tiên và phân tích từ khóa văn bản.
 
     Bảng phân cấp mức độ ưu tiên giải quyết xung đột (Conflict Resolution Hierarchy):
-    1. CANCEL_REQUEST (Ưu tiên cao nhất: Báo hủy chuyến luôn thắng các intent khác).
-    2. UPDATE_REQUEST (Báo đổi tài xế, đổi xe, sửa số seal).
-    3. ASK_WHICH_CONT (Có từ khóa sửa/đổi nhưng thiếu cả số cont và biển số xe).
-    4. SUPPLEMENT (Bổ sung seal/giờ cho chuyến đang chờ).
-    5. MANUAL_REVIEW (Báo tiến độ giao hàng: đã hạ, đã giao xong).
-    6. IGNORE_CHAT (Tin nhắn chào hỏi thông thường: ok, dạ vâng).
-    7. PARSE (Mặc định: Tin nhắn báo xe hợp lệ cần trích xuất thông tin).
+    1. APPROVE_OUTBOUND / EDIT_PENDING (Phản hồi trích dẫn duyệt tin từ ĐHVT).
+    2. CANCEL_REQUEST (Ưu tiên cao nhất: Báo hủy chuyến luôn thắng các intent khác).
+    3. UPDATE_REQUEST (Báo đổi tài xế, đổi xe, sửa số seal).
+    4. ASK_WHICH_CONT (Có từ khóa sửa/đổi nhưng thiếu cả số cont và biển số xe).
+    5. SUPPLEMENT (Bổ sung seal/giờ cho chuyến đang chờ).
+    6. MANUAL_REVIEW (Báo tiến độ giao hàng: đã hạ, đã giao xong).
+    7. IGNORE_CHAT (Tin nhắn chào hỏi thông thường: ok, dạ vâng).
+    8. PARSE (Mặc định: Tin nhắn báo xe hợp lệ cần trích xuất thông tin).
     """
 
-    def classify(self, text: str, conts: List[str]) -> Intent:
+    def classify(self, text: str, conts: List[str], quote_msg_id: Optional[str] = None) -> Intent:
         """Phân loại ý định từ nội dung tin nhắn theo thứ tự ưu tiên nghiệp vụ.
 
         Args:
             text (str): Chuỗi văn bản tin nhắn thô.
             conts (List[str]): Danh sách các số container tìm thấy sơ bộ trong tin nhắn.
+            quote_msg_id (Optional[str]): Mã tin nhắn gốc được trích dẫn (nếu có).
 
         Returns:
             Intent: Loại ý định nghiệp vụ được xác định.
         """
         t_clean = text.strip()
         t_low = t_clean.lower()
+
+        # 0. Phản hồi trích dẫn (Quote Reply) từ ĐHVT
+        if quote_msg_id:
+            if t_low in ["ok", "duyệt", "duyet", "ok gửi", "gửi đi"]:
+                return Intent.APPROVE_OUTBOUND
+            if t_low.startswith("sửa") or t_low.startswith("sua"):
+                return Intent.EDIT_PENDING
+            if t_low in ["huỷ", "hủy", "bo qua", "bỏ qua", "hủy tin"]:
+                return Intent.CANCEL_REQUEST
 
         # 1. Chat thông thường (câu chào hỏi ngắn, tán ngẫu)
         if t_low in ["dạ em nhận rồi ạ", "ok", "xe bên em tới chưa anh ơi?"]:

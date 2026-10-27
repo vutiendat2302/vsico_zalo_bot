@@ -2158,3 +2158,166 @@ Thông tin xe hiện tại:
 - Điểm trả: 
 - Dự kiến đến kho: 08:00 14/10/2026
 ",,False,,Đã gộp thông tin thay đổi vào chuyến cont VSIU7399796,,CANDIDATE,Chứa từ khóa nghiệp vụ điều phối chuyến xe,,mock-req-1793065607607
+4,mock_msg_happy_01,2026-10-27T09:26:08.552000+07:00,2001000000000000001,1001000000000000001,UNKNOWN,DUPLICATE_MESSAGE,,,,,,,,,,,,,,,,,,,,,False,,Bỏ qua do trùng lặp msg_id (mock_msg_happy_01),,JUNK,Bỏ qua do trùng lặp msg_id (mock_msg_happy_01),,mock-req-1793067968553
+5,mock_msg_missing_seal_02,2026-10-27T09:26:08.552000+07:00,2001000000000000001,1001000000000000001,UNKNOWN,DUPLICATE_MESSAGE,,,,,,,,,,,,,,,,,,,,,False,,Bỏ qua do trùng lặp msg_id (mock_msg_missing_seal_02),,JUNK,Bỏ qua do trùng lặp msg_id (mock_msg_missing_seal_02),,mock-req-1793067968564
+6,mock_msg_update_driver_03,2026-10-27T09:26:08.552000+07:00,2001000000000000001,1001000000000000001,UNKNOWN,DUPLICATE_MESSAGE,,,,,,,,,,,,,,,,,,,,,False,,Bỏ qua do trùng lặp msg_id (mock_msg_update_driver_03),,JUNK,Bỏ qua do trùng lặp msg_id (mock_msg_update_driver_03),,mock-req-1793067968566
+7,mock_msg_approve_04,2026-10-27T09:26:08.552000+07:00,2000000000000000001,9001000000000000001,UNKNOWN,IGNORE_UNKNOWN_GROUP,,,,,,,,,,,,,,,,,,,,,False,,Nhóm Zalo 2000000000000000001 chưa được đăng ký trong hệ thống,,JUNK,Nhóm Zalo 2000000000000000001 chưa được đăng ký trong hệ thống,,mock-req-1793067968567
+8,mock_msg_edit_05,2026-10-27T09:26:08.552000+07:00,2000000000000000001,9001000000000000001,UNKNOWN,IGNORE_UNKNOWN_GROUP,,,,,,,,,,,,,,,,,,,,,False,,Nhóm Zalo 2000000000000000001 chưa được đăng ký trong hệ thống,,JUNK,Nhóm Zalo 2000000000000000001 chưa được đăng ký trong hệ thống,,mock-req-1793067968568
+9,mock_msg_cancel_06,2026-10-27T09:26:08.552000+07:00,2000000000000000001,9001000000000000001,UNKNOWN,IGNORE_UNKNOWN_GROUP,,,,,,,,,,,,,,,,,,,,,False,,Nhóm Zalo 2000000000000000001 chưa được đăng ký trong hệ thống,,JUNK,Nhóm Zalo 2000000000000000001 chưa được đăng ký trong hệ thống,,mock-req-1793067968569
+10,mock_msg_junk_07,2026-10-27T09:26:08.552000+07:00,2001000000000000001,1001000000000000001,NX01,IGNORE_CHAT,,,,,,,,,,,,,,,,,,SKIPPED_JUNK,,,False,,"Tin nhắn trao đổi thông thường, bỏ qua không phản hồi",,JUNK,Xác nhận xã giao hoặc chào hỏi thông thường,,mock-req-1793067968570
+1,junk_test_msg_01,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,IGNORE_CHAT,,,,,,,,,,,,,,,,,,SKIPPED_JUNK,,,False,,"Tin nhắn trao đổi thông thường, bỏ qua không phản hồi",,JUNK,Xác nhận xã giao hoặc chào hỏi thông thường,,16356bc8-19e2-4933-8acf-68dfefd4481e
+2,suspect_test_msg_01,1791798010000,2001000000000000001,1001000000000000001,NX01,MANUAL_REVIEW,0,,,,,,,,,need_supplement,,,,,,,,HOLD_SUSPECT_REVIEW,,"Anh/chị gửi đủ biển số, tài xế, SĐT, số cont, số chì giúp em",True,Tin nhắn nghi ngờ thiếu thông tin từ nhà xe NX01: sđt tài 0986713346,"Chỉ có một tín hiệu điều xe yếu, thiếu thông tin container",junk_filter,SUSPECT,"Chỉ có một tín hiệu điều xe yếu, thiếu thông tin container",,a48a6334-1f71-4c60-bf9e-daa246a56619
+1,e2e_msg_001,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,VSIU7399796,73957169,15C-87899,Trần Quốc Bảo,0903976359,08:00 14/10/2026,,ready,True,,SHP-2026-001001,KH001,Công ty TNHH Nhựa Phương Nam (demo),3001000000000000001,,SENT_DRY_RUN,"THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Trần Quốc Bảo
+- SĐT: 0903976359
+- Điểm trả: Kho Nhựa Phương Nam
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,
+2,e2e_msg_002,2026-10-13T08:34:17+07:00,2001000000000000001,1001000000000000001,NX01,UPDATE_REQUEST,,,VSIU7399796,,15C-87899,,,,,,,,SHP-2026-001001,,,,,SENT_DRY_RUN,"THÔNG BÁO CẬP NHẬT THÔNG TIN XE
+
+Kính gửi Quý khách hàng,
+VSICO xin thông báo cập nhật thông tin xe trả hàng cho cont VSIU7399796:
+
+Các thông tin thay đổi:
+- Tài xế: Trần Quốc Bảo -> Lê Văn Đổi
+- SĐT: 0903976359 -> 0988592302
+
+Thông tin xe hiện tại:
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Lê Văn Đổi
+- SĐT: 0988592302
+- Điểm trả: 
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Đã gộp thông tin thay đổi vào chuyến cont VSIU7399796,,CANDIDATE,Chứa từ khóa nghiệp vụ điều phối chuyến xe,,
+3,e2e_wrong_03,2026-10-13T06:48:00+07:00,2003000000000000001,1003000000000000001,NX03,PARSE,1,tra,SEGU3874035,8429599,30E-45104,Dương Văn Khoa,0973867761,08:00 14/10/2026,sai_nha_xe,need_admin,,,,,,,,HOLD_ADMIN,,,True,Cảnh báo: Cont SEGU3874035 được phân công cho NX01 nhưng NX03 lại gửi xe,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,
+4,api_msg_001,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,VSIU7399796,73957169,15C-87899,Trần Quốc Bảo,0903976359,08:00 14/10/2026,,ready,True,,SHP-2026-001001,KH001,Công ty TNHH Nhựa Phương Nam (demo),3001000000000000001,,SENT_DRY_RUN,"THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Trần Quốc Bảo
+- SĐT: 0903976359
+- Điểm trả: Kho Nhựa Phương Nam
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,813f98ff-d71e-4012-8234-c7d959a4ee28
+11,api_msg_dynamic_01,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,CSQU3054383,11223344,29C-99999,Lê Hoàng Hải,0918889999,14:00 15/10/2026,,ready,True,,SHIP_MOCK_CSQU3054383,KH_SAMSUNG,Công ty TNHH Samsung Electronics VN,3001000000000000001,,SENT_DRY_RUN,"THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: CSQU3054383 (40DC)
+- Số chì: 11223344
+- Biển số xe: 29C-999.99
+- Tài xế: Lê Hoàng Hải
+- SĐT: 0918889999
+- Điểm trả: Kho Samsung Yên Phong
+- Dự kiến đến kho: 14:00 15/10/2026
+",,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,7116cfe4-0129-41d4-88d2-72f32eef5973
+1,junk_test_msg_01,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,IGNORE_CHAT,,,,,,,,,,,,,,,,,,SKIPPED_JUNK,,,False,,"Tin nhắn trao đổi thông thường, bỏ qua không phản hồi",,JUNK,Xác nhận xã giao hoặc chào hỏi thông thường,,bfa4e476-d137-4d4a-a7a8-d8327039974a
+2,suspect_test_msg_01,1791798010000,2001000000000000001,1001000000000000001,NX01,MANUAL_REVIEW,0,,,,,,,,,need_supplement,,,,,,,,HOLD_SUSPECT_REVIEW,,"Anh/chị gửi đủ biển số, tài xế, SĐT, số cont, số chì giúp em",True,Tin nhắn nghi ngờ thiếu thông tin từ nhà xe NX01: sđt tài 0986713346,"Chỉ có một tín hiệu điều xe yếu, thiếu thông tin container",junk_filter,SUSPECT,"Chỉ có một tín hiệu điều xe yếu, thiếu thông tin container",,7272314e-346e-4155-8de9-f361c1e78db7
+1,e2e_msg_001,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,VSIU7399796,73957169,15C-87899,Trần Quốc Bảo,0903976359,08:00 14/10/2026,,ready,True,,SHP-2026-001001,KH001,Công ty TNHH Nhựa Phương Nam (demo),3001000000000000001,,SENT_DRY_RUN,"THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Trần Quốc Bảo
+- SĐT: 0903976359
+- Điểm trả: Kho Nhựa Phương Nam
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,
+2,e2e_msg_002,2026-10-13T08:34:17+07:00,2001000000000000001,1001000000000000001,NX01,UPDATE_REQUEST,,,VSIU7399796,,15C-87899,,,,,,,,SHP-2026-001001,,,,,SENT_DRY_RUN,"THÔNG BÁO CẬP NHẬT THÔNG TIN XE
+
+Kính gửi Quý khách hàng,
+VSICO xin thông báo cập nhật thông tin xe trả hàng cho cont VSIU7399796:
+
+Các thông tin thay đổi:
+- Tài xế: Trần Quốc Bảo -> Lê Văn Đổi
+- SĐT: 0903976359 -> 0988592302
+
+Thông tin xe hiện tại:
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Lê Văn Đổi
+- SĐT: 0988592302
+- Điểm trả: 
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Đã gộp thông tin thay đổi vào chuyến cont VSIU7399796,,CANDIDATE,Chứa từ khóa nghiệp vụ điều phối chuyến xe,,
+3,e2e_wrong_03,2026-10-13T06:48:00+07:00,2003000000000000001,1003000000000000001,NX03,PARSE,1,tra,SEGU3874035,8429599,30E-45104,Dương Văn Khoa,0973867761,08:00 14/10/2026,sai_nha_xe,need_admin,,,,,,,,HOLD_ADMIN,,,True,Cảnh báo: Cont SEGU3874035 được phân công cho NX01 nhưng NX03 lại gửi xe,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,
+4,api_msg_001,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,VSIU7399796,73957169,15C-87899,Trần Quốc Bảo,0903976359,08:00 14/10/2026,,ready,True,,SHP-2026-001001,KH001,Công ty TNHH Nhựa Phương Nam (demo),3001000000000000001,,SENT_DRY_RUN,"THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Trần Quốc Bảo
+- SĐT: 0903976359
+- Điểm trả: Kho Nhựa Phương Nam
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,a36566a3-d043-429b-8ce5-d26cf263dfec
+11,api_msg_dynamic_01,2026-10-12T16:40:10+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,CSQU3054383,11223344,29C-99999,Lê Hoàng Hải,0918889999,14:00 15/10/2026,,ready,True,,SHIP_MOCK_CSQU3054383,KH_SAMSUNG,Công ty TNHH Samsung Electronics VN,3001000000000000001,,SENT_DRY_RUN,"THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: CSQU3054383 (40DC)
+- Số chì: 11223344
+- Biển số xe: 29C-999.99
+- Tài xế: Lê Hoàng Hải
+- SĐT: 0918889999
+- Điểm trả: Kho Samsung Yên Phong
+- Dự kiến đến kho: 14:00 15/10/2026
+",,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,bb543953-bbdf-4b92-b021-14ce1f7079cb
+1,mock_msg_happy_01_1793068217221,2026-10-27T09:30:17.220000+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,VSIU7399796,73957169,15C-87899,Trần Quốc Bảo,0903976359,08:00 14/10/2026,,ready,True,,SHP-2026-001001,KH001,Công ty TNHH Nhựa Phương Nam (demo),3001000000000000001,,SENT_DRY_RUN,"THÔNG BÁO XE TRẢ HÀNG
+
+Kính gửi Quý khách hàng,
+VSICO xin gửi thông tin xe trả hàng như sau:
+
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Trần Quốc Bảo
+- SĐT: 0903976359
+- Điểm trả: Kho Nhựa Phương Nam
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,mock-req-1793068217221
+2,mock_msg_missing_seal_02_1793068217221,2026-10-27T09:30:17.220000+07:00,2001000000000000001,1001000000000000001,NX01,PARSE,1,tra,GAOU6422920,,15H-00814,Phạm Tiến Hưng,0332308336,09:00 14/10/2026,thieu_seal,need_supplement,,,,,,,,HOLD_WAIT_SUPPLEMENT,,Chuyến cont GAOU6422920 còn thiếu: số seal/chì. Vui lòng bổ sung!,False,,Bóc tách thông tin xe thành công,rule,CANDIDATE,Có số container hợp lệ,,mock-req-1793068217240
+3,mock_msg_update_driver_03_1793068217221,2026-10-27T09:30:17.220000+07:00,2001000000000000001,1001000000000000001,NX01,UPDATE_REQUEST,,,VSIU7399796,,15C-87899,,,,,,,,SHP-2026-001001,,,,,SENT_DRY_RUN,"THÔNG BÁO CẬP NHẬT THÔNG TIN XE
+
+Kính gửi Quý khách hàng,
+VSICO xin thông báo cập nhật thông tin xe trả hàng cho cont VSIU7399796:
+
+Các thông tin thay đổi:
+- Tài xế: Trần Quốc Bảo -> Lê Văn Đổi
+- SĐT: 0903976359 -> 0988592302
+
+Thông tin xe hiện tại:
+- Số cont: VSIU7399796 (40DC)
+- Số chì: 73957169
+- Biển số xe: 15C-878.99
+- Tài xế: Lê Văn Đổi
+- SĐT: 0988592302
+- Điểm trả: 
+- Dự kiến đến kho: 08:00 14/10/2026
+",,False,,Đã gộp thông tin thay đổi vào chuyến cont VSIU7399796,,CANDIDATE,Chứa từ khóa nghiệp vụ điều phối chuyến xe,,mock-req-1793068217243
+4,mock_msg_approve_04_1793068217221,2026-10-27T09:30:17.220000+07:00,2000000000000000001,9001000000000000001,ADMIN_DHVT,APPROVE_OUTBOUND,,,,,,,,,,,,,,,,,,SENT_DRY_RUN,,,False,,ĐHVT đã duyệt phát hành thông tin xe cho tin nháp mock_pending_draft_msg_01,,CANDIDATE,Tin nhắn trích dẫn (quote reply) điều hành / sửa đổi,,mock-req-1793068217245
+5,mock_msg_edit_05_1793068217221,2026-10-27T09:30:17.220000+07:00,2000000000000000001,9001000000000000001,ADMIN_DHVT,EDIT_PENDING,,,,,,,,,,,,,,,,,,HOLD_ADMIN,,"Đã cập nhật bản nháp (Biển số mới: 15H-06722, Số chì mới: 23333330). ĐHVT vui lòng kiểm tra và quote 'ok' để phát hành.",False,,"Đã sửa bản nháp theo chỉ đạo của ĐHVT: Biển số mới: 15H-06722, Số chì mới: 23333330",,CANDIDATE,Tin nhắn trích dẫn (quote reply) điều hành / sửa đổi,,mock-req-1793068217246
+6,mock_msg_cancel_06_1793068217221,2026-10-27T09:30:17.220000+07:00,2000000000000000001,9001000000000000001,ADMIN_DHVT,CANCEL_REQUEST,,,,,,,,,,,,,,,,,,,,,True,Nhà xe yêu cầu hủy chuyến: huỷ,"Yêu cầu hủy chuyến xe, chuyển Admin xử lý",,CANDIDATE,Tin nhắn trích dẫn (quote reply) điều hành / sửa đổi,,mock-req-1793068217247
+7,mock_msg_junk_07_1793068217221,2026-10-27T09:30:17.220000+07:00,2001000000000000001,1001000000000000001,NX01,IGNORE_CHAT,,,,,,,,,,,,,,,,,,SKIPPED_JUNK,,,False,,"Tin nhắn trao đổi thông thường, bỏ qua không phản hồi",,JUNK,Xác nhận xã giao hoặc chào hỏi thông thường,,mock-req-1793068217248

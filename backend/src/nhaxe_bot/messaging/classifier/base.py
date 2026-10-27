@@ -4,7 +4,7 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 from ...domain.enums import Intent
 
 
@@ -12,12 +12,13 @@ class IntentClassifier(ABC):
     """Giao diện trừu tượng cho bộ phân loại ý định (Intent Classifier)."""
 
     @abstractmethod
-    def classify(self, text: str, conts: List[str]) -> Intent:
+    def classify(self, text: str, conts: List[str], quote_msg_id: Optional[str] = None) -> Intent:
         """Phân tích nội dung tin nhắn và xác định loại ý định nghiệp vụ (Intent).
 
         Args:
             text (str): Chuỗi văn bản tin nhắn của nhà xe cần phân loại.
             conts (List[str]): Danh sách các số container đã bóc tách sơ bộ từ văn bản.
+            quote_msg_id (Optional[str]): Mã tin nhắn gốc được trích dẫn (nếu có).
 
         Returns:
             Intent: Loại ý định nghiệp vụ tương ứng (PARSE, UPDATE_REQUEST, CANCEL_REQUEST, ...).
