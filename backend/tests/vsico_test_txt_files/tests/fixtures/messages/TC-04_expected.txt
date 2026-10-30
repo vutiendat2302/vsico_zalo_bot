@@ -1,0 +1,4 @@
+TEST_ID: TC-04
+
+EXPECTED:
+JSON chuẩn mong đợi: source_format=F2; plan_date=2026-10-09; order_type=tra; customer_raw='Nhựa Long An'; customer_id=alias của Nhựa Á Đông; plate=50H04915; driver_name giữ nguyên 'Nguyên Thanh Phong'; driver_phone=0931******; cont_no=VSIU2620327; cont_size=20; seal_no=null; eta=08:00; location_raw=null; warehouse_id=null; match_source=customer_alias. Thiếu điểm trả thì tra kế hoạch theo cont nếu cần.

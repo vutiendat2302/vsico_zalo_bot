@@ -1,0 +1,4 @@
+TEST_ID: TC-08
+
+EXPECTED:
+Nhận diện 15R01234 là biển mooc theo quy tắc nghiệp vụ đã cấu hình, không phải biển đầu kéo; báo nhà xe bổ sung biển đầu kéo.

@@ -1,85 +1,47 @@
-# 📮 HƯỚNG DẪN KIỂM THỬ POSTMAN - NHAXE BOT & TMS REST APIS
+# 📮 TỔNG HỢP BỘ KIỂM THỬ POSTMAN - VSICO ZALO BOT & BACKEND TMS
 ### HỆ THỐNG XỬ LÝ & ĐIỀU PHỐI TIN NHẮN NHÀ XE (TASK 2 - PM TMS VSICO)
 
-Thư mục này chứa tài liệu đặc tả chi tiết từng kịch bản kiểm thử (Test Case) trên công cụ **Postman** bằng định dạng Markdown (`.md`), phân tách tường minh giữa **REST API nghiệp vụ của hệ thống TMS**, **Cổng sự kiện Zalo Webhook Gateway** và **REST API Quản trị Kế hoạch Shipping Động**.
+Thư mục này chứa toàn bộ tài liệu đặc tả kiểm thử trên phần mềm **Postman** bằng định dạng Markdown (`.md`) và tệp **Postman Collection (`.json`)** có thể import trực tiếp.
 
 ---
 
-## 1. Thiết lập môi trường kiểm thử (Postman Environment)
+## 1. Danh Mục Các Tài Liệu Kiểm Thử
 
-Trước khi thực hiện các bài test, hãy khởi động máy chủ `nhaxe-bot`:
-```bash
-# Di chuyển vào thư mục dự án
-cd /home/datbritget/Documents/ba_intern_vsico/source/task2
-
-# Khởi chạy server tại cổng 8000
-make run
-# Hoặc: python3 -m nhaxe_bot.main --serve --port 8000
-```
-
-Trong phần mềm Postman:
-- Tạo một Environment mới đặt tên: `VSICO_Local`
-- Khai báo biến (Variable):
-  - **`base_url`**: `http://localhost:8000`
-- Header chung cho tất cả các request POST:
-  - **`Content-Type`**: `application/json; charset=utf-8`
-
----
-
-## 2. Danh mục các bài kiểm thử chi tiết
-
-Các kịch bản kiểm thử được phân thành 3 nhóm rõ ràng:
-
-### Phần I: REST API Chức Năng Nghiệp Vụ TMS
-Các API độc lập dành cho phần mềm TMS quản trị và điều phối chuyến xe trực tiếp:
-1. [**Test 01: Kiểm tra sức khỏe máy chủ (`GET /api/health`)**](./01_kiem_tra_suc_khoe_server.md)
-   - Xác nhận trạng thái máy chủ, số lượng tin nhắn đã xử lý và metrics.
-2. [**Test 02: Tạo chuyến xe mới qua TMS (`POST /api/trips/new`)**](./02_tao_chuyen_xe_tms.md)
-   - Tạo chuyến xe với dữ liệu có cấu trúc, tự động thẩm định ISO 6346 Mod 11 và khớp Shipping.
-3. [**Test 03: Đổi tài xế theo biển số xe (`POST /api/trips/update-driver`)**](./03_doi_tai_xe_theo_bien_so.md)
-   - Đổi tài xế mà không cần nhập số cont; hệ thống tự tra cứu ngược qua biển số xe và tăng phiên bản (Version 2).
-4. [**Test 04: Bổ sung số seal và giờ đến (`POST /api/trips/supplement`)**](./04_bo_sung_seal_gio_den.md)
-   - Bổ sung thông tin cho chuyến xe đang ở trạng thái chờ.
-5. [**Test 05: Yêu cầu hủy chuyến xe (`POST /api/trips/cancel`)**](./05_huy_chuyen_xe.md)
-   - Ghi nhận lý do hủy xe và kích hoạt chuông cảnh báo Admin (`admin_alert: true`).
-6. [**Test 06: Tra cứu danh sách & chi tiết chuyến (`GET /api/trips`)**](./06_tra_cuu_danh_sach_va_chi_tiet_chuyen.md)
-   - Truy vấn danh sách toàn bộ chuyến xe và xem chi tiết theo từng container cụ thể.
+| Tệp tài liệu | Nội dung kiểm thử | Cổng dịch vụ |
+| :--- | :--- | :---: |
+| 📘 [**`HUONG_DAN_KIEM_THU_POSTMAN_DAY_DU.md`**](./HUONG_DAN_KIEM_THU_POSTMAN_DAY_DU.md) | **Tài liệu tổng hợp toàn diện**: Hướng dẫn cấu hình môi trường, cURL, body và kết quả kỳ vọng cho tất cả các phần. | **Port 3000 & 8000** |
+| 📑 [**`01_step1_webhook_va_luu_mysql.md`**](./01_step1_webhook_va_luu_mysql.md) | **Bước 1**: Tiếp nhận Webhook `POST /webhook`, kiểm tra chữ ký, chống trùng lặp và lưu MySQL. | **Port 8000** |
+| 📑 [**`02_kiem_thu_bot_zca_chi_tiet.md`**](./02_kiem_thu_bot_zca_chi_tiet.md) | **Các API Bot ZCA**: Lấy tất cả `groupId`, `userId`, lịch sử tin nhắn nhóm/user, gửi tin cá nhân/nhóm và lấy tin realtime. | **Port 3000** |
+| 📑 [**`03_kiem_thu_webhook_gateway_full.md`**](./03_kiem_thu_webhook_gateway_full.md) | **Cổng Webhook Gateway**: Happy Path 1 xe, nhiều xe gạch chéo `/`, thiếu seal bổ sung, ĐHVT quote duyệt `ok`/`sửa`/`huỷ`. | **Port 8000** |
+| 📑 [**`04_kiem_thu_truy_van_tin_nhan_va_xu_ly.md`**](./04_kiem_thu_truy_van_tin_nhan_va_xu_ly.md) | **Truy vấn tin nhắn & Bóc tách**: Lấy tin nhắn theo group, user, user in group, messageId và lọc tin đã xử lý. | **Port 8000** |
+| 📑 [**`05_ke_hoach_test_bai1_bai2_va_tc01_tc20.md`**](./05_ke_hoach_test_bai1_bai2_va_tc01_tc20.md) | **Kế hoạch kiểm thử Bài 1, Bài 2 & TC-01..TC-20**: Đặc tả kiểm thử 3 định dạng F1, F2, F3 theo Jira ZALO ngày 27/10. | **Port 3000 & 8000** |
+| 📑 [**`06_kiem_thu_batch_txt_fixtures.md`**](./06_kiem_thu_batch_txt_fixtures.md) | **Runner tự động bộ tệp TXT**: Chạy test toàn bộ 20 tệp input txt hoặc từng tệp lẻ và sinh file output. | **CLI / Python** |
+| 📑 [**`07_kiem_thu_module_doc_hieu_f1_f2_f3_tc01_tc16.md`**](./07_kiem_thu_module_doc_hieu_f1_f2_f3_tc01_tc16.md) | **Module Đọc hiểu F1/F2/F3**: Kiểm thử bộ nhận diện quy chuẩn và trích xuất dữ liệu xe/cont. | **Port 8000** |
+| 📑 [**`08_kiem_thu_ke_hoach_van_chuyen_crud_va_import.md`**](./08_kiem_thu_ke_hoach_van_chuyen_crud_va_import.md) | **Kế hoạch vận chuyển**: CRUD, Import Excel `ketnoi.xlsx`, Import CSV và tự động matching. | **Port 8000** |
+| 📑 [**`09_kiem_thu_quan_ly_va_don_dep_db.md`**](./09_kiem_thu_quan_ly_va_don_dep_db.md) | **Quản lý & Dọn dẹp DB**: Health check kết nối MySQL, xóa kế hoạch theo ngày, dọn dẹp DB qua CLI/API. | **Port 8000 & CLI** |
+| 📑 [**`10_kiem_thu_ket_qua_tin_nhan_outbound_messages.md`**](./10_kiem_thu_ket_qua_tin_nhan_outbound_messages.md) | **Kết quả tin nhắn (Outbound Messages)**: Quản lý 4 trạng thái (Đã gửi, Chờ duyệt, Hủy, Thất bại), duyệt gửi lại. | **Port 8000** |
+| 📑 [**`11_kiem_thu_tung_tin_nhan_webhook_va_gui_zalo.md`**](./11_kiem_thu_tung_tin_nhan_webhook_va_gui_zalo.md) | **Kiểm thử từng tin nhắn Webhook**: Bóc tách thời gian thực, đối chiếu cont và gửi tin Zalo với SĐT thật. | **Port 8000** |
+| 📑 [**`12_kiem_thu_che_do_nhom_duyet_dhvt_va_form_gui_zalo.md`**](./12_kiem_thu_che_do_nhom_duyet_dhvt_va_form_gui_zalo.md) | **Chế độ nhóm & Duyệt ĐHVT**: Nhóm Tự động vs Chờ duyệt, quy trình duyệt ĐHVT và hiển thị Form gửi Zalo. | **Port 8000** |
+| 📑 [**`13_kiem_thu_tach_text_tu_anh_paddleocr.md`**](./13_kiem_thu_tach_text_tu_anh_paddleocr.md) | **Bóc tách văn bản từ ảnh (PaddleOCR)**: Tách text từ ảnh, bỏ qua ảnh không có chữ, xử lý ảnh có chữ như tin text. | **Port 8000 & 8866** |
+| 📦 [**`vsico_zalo_bot_dhvt_approval_and_send_modes.postman_collection.json`**](./vsico_zalo_bot_dhvt_approval_and_send_modes.postman_collection.json) | **Postman Collection Chế độ nhóm & ĐHVT Duyệt**: Import trực tiếp vào Postman để chạy 8 kịch bản tự động. | **Port 8000** |
+| 📦 [**`vsico_zalo_bot_postman_collection.json`**](./vsico_zalo_bot_postman_collection.json) | **Tệp Postman Collection v2.1**: Import trực tiếp vào Postman để chạy tự động 18 test cases. | **Tất cả** |
+| 📦 [**`vsico_zalo_bot_full_20_test_cases.json`**](./vsico_zalo_bot_full_20_test_cases.json) | **Collection đầy đủ Bài 1, 2 và TC-01..TC-20**: Import trực tiếp chạy 20 kịch bản dữ liệu thực tế. | **Tất cả** |
 
 ---
 
-### Phần II: Quản Trị Kế Hoạch Vận Chuyển & Giả Lập Chủ Động (Dynamic Shipping APIs)
-Các API giúp người kiểm thử chủ động 100%, không bị bó hẹp vào tệp CSV tĩnh:
-7. [**Test 13: Bật / Tắt Tự động tạo Shipping giả lập (`POST /api/shipping/mock-mode`)**](./13_bat_tat_auto_mock_shipping.md)
-   - Bật cờ `auto_mock_enabled` để bất kỳ số container mới nào gửi đến đều tự động có đơn kế hoạch và đạt trạng thái `SENT_DRY_RUN`.
-8. [**Test 14: Tạo đơn kế hoạch vận chuyển động (`POST /api/shipping/new`)**](./14_tao_don_shipping_dong.md)
-   - Nạp trực tiếp một đơn kế hoạch mới với kho trả, khách hàng và nhà xe theo ý muốn.
-9. [**Test 15: Tra cứu danh mục kế hoạch vận chuyển (`GET /api/shipping`)**](./15_tra_cuu_danh_muc_shipping.md)
-   - Kiểm tra trạng thái tính năng auto-mock và xem toàn bộ danh sách các đơn vận chuyển hiện có trong bộ nhớ.
+## 2. Cách Chạy Kiểm Thử Nhanh
 
----
+### Bước 1: Khởi động 2 máy chủ
+1. **Khởi động Bot ZCA API Server (Port 3000)**:
+   ```bash
+   cd zca-js && node bot_api_server.js
+   ```
+2. **Khởi động Backend Webhook Server (Port 8000)**:
+   ```bash
+   cd backend && .venv/bin/python run.py
+   ```
 
-### Phần III: Cổng Sự Kiện Zalo Webhook Gateway (`POST /webhook`)
-Cổng tiếp nhận webhook sự kiện thô gửi từ Zalo OA, tự động phân loại Intent và xử lý:
-10. [**Test 07: Báo xe chuẩn 1 xe (Happy Path)**](./07_webhook_bao_xe_chuan.md)
-    - Tiếp nhận tin nhắn báo xe hợp lệ, bóc tách thông tin, khớp đơn hàng và soạn tin gửi khách.
-11. [**Test 08: Báo 2 xe trong 1 tin nhắn (Ký tự gạch chéo `/`)**](./08_webhook_bao_nhieu_xe_mot_tin.md)
-    - Tự động phân đoạn tin nhắn phức tạp thành 2 chuyến xe độc lập.
-12. [**Test 09: Chống trùng lặp tin nhắn (Idempotency)**](./09_webhook_chong_trung_lap.md)
-    - Gửi lại tin nhắn cùng `msg_id` để kiểm tra cơ chế chống spam tin khách hàng.
-13. [**Test 10: Xử lý xe thiếu seal (`HOLD_WAIT_SUPPLEMENT`)**](./10_webhook_thieu_seal_phan_hoi_nha_xe.md)
-    - Nhận diện xe thiếu trường bắt buộc, lưu trạng thái chờ và tạo tin nhắn phản hồi yêu cầu nhà xe bổ sung.
-14. [**Test 11: Báo động sai nhà xe nhận cuốc (`HOLD_ADMIN`)**](./11_webhook_sai_nha_xe_canh_bao_admin.md)
-    - Container thuộc nhà xe NX01 nhưng tin do NX03 gửi -> Kích hoạt cảnh báo ĐHVT xử lý.
-15. [**Test 12: Lọc tin nhắn rác & cảnh báo người lạ**](./12_webhook_loc_tin_nhan_rac_va_nguoi_la.md)
-    - Bỏ qua các tin nhắn chào hỏi thông thường (`IGNORE_CHAT`) và cảnh báo khi có tài khoản lạ gửi tin trong nhóm nhà xe (`IGNORE_UNKNOWN_SENDER`).
-
----
-
-## 3. Thứ tự khuyến nghị khi chạy kiểm thử
-Để dữ liệu giữa các bài test có tính liên kết liền mạch:
-1. Chạy **Test 01** để xác nhận server hoạt động.
-2. (Chủ động) Chạy **Test 13** để BẬT chế độ Auto-Mock Shipping (`{"enabled": true}`). Lúc này bạn có thể test bất kỳ số container nào mà không bao giờ bị báo lỗi thiếu kế hoạch shipping!
-3. Chạy **Test 02** để tạo chuyến xe cont `VSIU7399796` (Version 1).
-4. Chạy **Test 03** để đổi tài xế cho xe vừa tạo (hệ thống tìm thấy và nâng lên Version 2).
-5. Chạy **Test 06** để xác nhận container `VSIU7399796` đã được cập nhật Version 2 trong danh sách chuyến.
-6. Chạy các bài test Webhook từ **Test 07** đến **Test 12** để kiểm tra bộ lọc bóc tách thông tin tự động.
+### Bước 2: Import vào Postman
+1. Mở Postman -> Chọn **Import** -> Chọn file [`vsico_zalo_bot_postman_collection.json`](./vsico_zalo_bot_postman_collection.json).
+2. Tạo Environment với `bot_url = http://localhost:3000` và `backend_url = http://localhost:8000`.
+3. Bấm **Run Collection** để chạy toàn bộ các bài test tự động.

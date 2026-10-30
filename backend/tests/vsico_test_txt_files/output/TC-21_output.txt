@@ -1,0 +1,161 @@
+============================================================================
+TEST_ID: TC-20
+FORMAT_DECLARED: ROUTE_MAP
+SOURCE_INPUT_FILE: TC-21_input.txt
+TESTED_AT: 2026-10-30 06:36:23
+============================================================================
+
+--- [1. NỘI DUNG ĐẦU VÀO (INPUT TEXT)] ---
+Cont Cheng Loong trả về nhiều điểm trong cùng ngày: Đồ Sơn, An Dương, Quang Châu, Ninh Bình
+
+--- [2. KẾT QUẢ XỬ LÝ (PROCESSING RESULT)] ---
+HÀNH ĐỘNG (ACTION)       : PROCESSED_FIFO
+TRẠNG THÁI (STATUS)      : needs_review
+SỐ XE BÓC TÁCH ĐƯỢC      : 1
+SỐ CONTAINER BÓC TÁCH    : 1
+PHẢN HỒI NHÀ XE          : [VSICO Bot] Anh/chị vui lòng kiểm tra và bổ sung lại thông tin sau:
+- Xe dòng #1: thiếu biển số xe đầu kéo, thiếu tên tài xế, thiếu SĐT tài xế, chưa có số container.
+
+--- [3. CHI TIẾT CÁC XE ĐẦU KÉO (TRUCKS)] ---
+  Xe #1:
+    - Biển số xe   : (trống)
+    - Biển rơ-moóc : (trống)
+    - Tên tài xế   : (trống)
+    - SĐT tài xế   : (trống)
+
+--- [4. CHI TIẾT CÁC CONTAINER (CONTAINERS)] ---
+  Container #1 (Dòng 1):
+    - Số Container    : (trống)
+    - Kích cỡ cont    : (trống)
+    - Số seal / chì   : (trống)
+    - Loại lệnh       : tra
+    - Gợi ý kho       : Đồ Sơn, An Dương, Quang Châu, Ninh Bình
+    - Gợi ý khách     : Cheng Loong
+    - Chuẩn ISO 6346  : SAI SỐ KIỂM TRA (FALSE)
+    - Trạng thái kiểm : needs_review
+    - Cảnh báo        : MISSING_TRUCK_PLATE, MISSING_DRIVER_NAME, MISSING_DRIVER_PHONE, MISSING_CONTAINER_NO
+
+--- [5. KỲ VỌNG BAN ĐẦU (EXPECTED FROM FIXTURE)] ---
+Không có tệp expected tương ứng.
+
+--- [6. DỮ LIỆU JSON CHI TIẾT TRẢ VỀ (RAW JSON RESPONSE)] ---
+{
+  "ok": true,
+  "status": "ENQUEUED_AND_PROCESSED_FIFO",
+  "record_id": 66,
+  "zalo_message_id": "txt_run_TC-20_0e1ec4db",
+  "group_id": "2001000000000000001",
+  "sender_id": "1001000000000000001",
+  "processing_status": "needs_review",
+  "trucks_count": 1,
+  "containers_count": 1,
+  "trucks": [
+    {
+      "id": 75,
+      "truck_plate": null,
+      "trailer_plate": null,
+      "driver_name": null,
+      "driver_phone": null
+    }
+  ],
+  "containers": [
+    {
+      "id": 85,
+      "line_no": 1,
+      "source_format": "tu_do",
+      "plan_date": "2026-10-30",
+      "container_no": null,
+      "container_size": null,
+      "seal_no": null,
+      "order_type": "tra",
+      "warehouse_hint": "Đồ Sơn, An Dương, Quang Châu, Ninh Bình",
+      "customer_hint": "Cheng Loong",
+      "eta": null,
+      "match_source": "unmatched",
+      "check_digit_valid": null,
+      "validation_status": "needs_review",
+      "warnings": [
+        "MISSING_TRUCK_PLATE",
+        "MISSING_DRIVER_NAME",
+        "MISSING_DRIVER_PHONE",
+        "MISSING_CONTAINER_NO"
+      ],
+      "canonical_record": {
+        "source_format": "tu_do",
+        "plan_date": "2026-10-30",
+        "order_type": "tra",
+        "customer_raw": "Cheng Loong",
+        "customer_id": null,
+        "location_raw": "Đồ Sơn, An Dương, Quang Châu, Ninh Bình",
+        "warehouse_id": null,
+        "plate": null,
+        "driver_name": null,
+        "driver_phone": null,
+        "cont_no": null,
+        "cont_size": null,
+        "seal_no": null,
+        "eta": null,
+        "match_source": "unmatched"
+      }
+    }
+  ],
+  "data": {
+    "id": 66,
+    "msg_id": "txt_run_TC-20_0e1ec4db",
+    "action": "PROCESSED_FIFO",
+    "processing_status": "needs_review",
+    "total_vehicles": 1,
+    "reply_to_carrier": "[VSICO Bot] Anh/chị vui lòng kiểm tra và bổ sung lại thông tin sau:\n- Xe dòng #1: thiếu biển số xe đầu kéo, thiếu tên tài xế, thiếu SĐT tài xế, chưa có số container.",
+    "customer_notifications": [],
+    "trucks": [
+      {
+        "id": 75,
+        "truck_plate": null,
+        "trailer_plate": null,
+        "driver_name": null,
+        "driver_phone": null
+      }
+    ],
+    "containers": [
+      {
+        "id": 85,
+        "line_no": 1,
+        "source_format": "tu_do",
+        "plan_date": "2026-10-30",
+        "container_no": null,
+        "container_size": null,
+        "seal_no": null,
+        "order_type": "tra",
+        "warehouse_hint": "Đồ Sơn, An Dương, Quang Châu, Ninh Bình",
+        "customer_hint": "Cheng Loong",
+        "eta": null,
+        "match_source": "unmatched",
+        "check_digit_valid": null,
+        "validation_status": "needs_review",
+        "warnings": [
+          "MISSING_TRUCK_PLATE",
+          "MISSING_DRIVER_NAME",
+          "MISSING_DRIVER_PHONE",
+          "MISSING_CONTAINER_NO"
+        ],
+        "canonical_record": {
+          "source_format": "tu_do",
+          "plan_date": "2026-10-30",
+          "order_type": "tra",
+          "customer_raw": "Cheng Loong",
+          "customer_id": null,
+          "location_raw": "Đồ Sơn, An Dương, Quang Châu, Ninh Bình",
+          "warehouse_id": null,
+          "plate": null,
+          "driver_name": null,
+          "driver_phone": null,
+          "cont_no": null,
+          "cont_size": null,
+          "seal_no": null,
+          "eta": null,
+          "match_source": "unmatched"
+        }
+      }
+    ]
+  }
+}

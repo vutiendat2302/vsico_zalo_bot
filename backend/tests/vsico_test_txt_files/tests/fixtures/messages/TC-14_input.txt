@@ -1,0 +1,6 @@
+TEST_ID: TC-14
+FORMAT: TU_DO
+
+INPUT:
+Lệnh đóng: cont VSIU2621051, khách Nhựa Á Đông
+Lệnh trả: cont VSIU2620327, khách Nhựa Á Đông

@@ -1,7 +1,8 @@
 # DATA CONTRACT: GIAO THỨC TRAO ĐỔI DỮ LIỆU GIỮA MODULE KẾT NỐI ZALO (TÙNG) VÀ MODULE ĐỌC HIỂU ĐỊNH TUYẾN (ĐẠT)
-**Hệ thống Bot Zalo TMS - VSICO**  
-*Mã task Jira: ZCB-14 (Chốt cách 2 module trao đổi dữ liệu và dựng repo)*  
-*Phiên bản: 2.0 (Chính thức - 27/10/2026)*  
+
+**Hệ thống Bot Zalo TMS - VSICO**
+*Mã task Jira: ZCB-14 (Chốt cách 2 module trao đổi dữ liệu và dựng repo)*
+*Phiên bản: 2.0 (Chính thức - 27/10/2026)*
 *Trạng thái: ĐÃ PHÊ DUYỆT (APPROVED)*
 
 ---
@@ -32,11 +33,13 @@ vsico_zalo_bot/
 ## 2. CHIỀU 1: TÙNG → ĐẠT (ĐỊNH DẠNG BẢN GHI TIN THÔ & CÁCH ĐẨY HÀNG ĐỢI)
 
 Mỗi khi `zca-js` nhận được sự kiện tin nhắn qua `api.listener.on("message")`, module của Tùng chuẩn hóa và đẩy sự kiện sang Backend của Đạt qua giao thức HTTP REST:
+
 - **Phương thức & URL**: `POST http://localhost:8000/webhook`
 - **Content-Type**: `application/json; charset=utf-8`
 - **Cơ chế chống lặp**: Tùng bắt buộc bỏ qua tin bot tự gửi (`if (message.isSelf) return;`).
 
 ### 2.1. Cấu trúc Payload Inbound chuẩn (JSON)
+
 ```json
 {
   "app_id": "zca_personal_bot",
@@ -57,17 +60,19 @@ Mỗi khi `zca-js` nhận được sự kiện tin nhắn qua `api.listener.on("
 ```
 
 ### 2.2. Bảng định nghĩa chi tiết các trường dữ liệu Inbound:
-| Tên trường | Kiểu | Bắt buộc | Nguồn trong `zca-js` | Diễn giải |
-| :--- | :---: | :---: | :--- | :--- |
-| `msg_id` | `string` | **Có** | `message.data.msgId` | Mã định danh duy nhất của tin nhắn Zalo (Khóa chống trùng Idempotency). |
-| `group_id` | `string` | **Có** | `message.threadId` | ID của nhóm Zalo gửi tin (`data.idTo`). |
-| `sender.id` | `string` | **Có** | `message.data.uidFrom` | User ID của người nhắn tin. |
-| `sender.name` | `string` | **Có** | `message.data.dName` | Tên hiển thị Zalo của người gửi (Tài xế / ĐHVT). |
-| `message.text` | `string` | **Có** | `message.data.content` | Toàn văn nội dung tin nhắn thô. |
-| `quote_msg_id` | `string` | Không | `data.quote?.globalMsgId` | ID tin nhắn gốc được trích dẫn (Dùng khi ĐHVT quote duyệt hoặc nhà xe reply sửa). |
-| `timestamp` | `string` | **Có** | `message.data.ts` | Thời điểm gửi (epoch milliseconds). |
+
+| Tên trường    |   Kiểu   |  Bắt buộc  | Nguồn trong `zca-js`     | Diễn giải                                                                                    |
+| :--------------- | :--------: | :-----------: | :-------------------------- | :--------------------------------------------------------------------------------------------- |
+| `msg_id`       | `string` | **Có** | `message.data.msgId`      | Mã định danh duy nhất của tin nhắn Zalo (Khóa chống trùng Idempotency).               |
+| `group_id`     | `string` | **Có** | `message.threadId`        | ID của nhóm Zalo gửi tin (`data.idTo`).                                                   |
+| `sender.id`    | `string` | **Có** | `message.data.uidFrom`    | User ID của người nhắn tin.                                                                |
+| `sender.name`  | `string` | **Có** | `message.data.dName`      | Tên hiển thị Zalo của người gửi (Tài xế / ĐHVT).                                     |
+| `message.text` | `string` | **Có** | `message.data.content`    | Toàn văn nội dung tin nhắn thô.                                                           |
+| `quote_msg_id` | `string` |    Không    | `data.quote?.globalMsgId` | ID tin nhắn gốc được trích dẫn (Dùng khi ĐHVT quote duyệt hoặc nhà xe reply sửa). |
+| `timestamp`    | `string` | **Có** | `message.data.ts`         | Thời điểm gửi (epoch milliseconds).                                                        |
 
 ### 2.3. Cơ chế đẩy vào Hàng đợi (Queue Push Mechanism)
+
 1. **Tiếp nhận tức thời (< 100ms)**: Cổng Webhook của Đạt kiểm tra chữ ký/cấu trúc, chống trùng theo `msg_id` (`zalo_message_raw`), trả ngay HTTP 200 cho Tùng.
 2. **Xử lý nền (Asynchronous Queue)**: Job được đẩy vào hàng đợi nội bộ (`MemoryQueue` / `DatabaseQueue`), Worker lấy job ra để bóc tách F1/F2/F3 và thẩm định theo Bảng luật 6.2.
 
@@ -78,6 +83,7 @@ Mỗi khi `zca-js` nhận được sự kiện tin nhắn qua `api.listener.on("
 Backend của Đạt trả về HTTP Response 200 đồng bộ ngay trong cuộc gọi webhook với cấu trúc phong bì chuẩn (Envelope):
 
 ### 3.1. Cấu trúc Payload Outbound chuẩn (JSON)
+
 ```json
 {
   "ok": true,
@@ -123,14 +129,15 @@ Backend của Đạt trả về HTTP Response 200 đồng bộ ngay trong cuộc
 ```
 
 ### 3.2. Bảng quy chuẩn các trường Outbound để Tùng (`zca-js`) hành động:
-| Trường | Kiểu | Mô tả nghiệp vụ | Hành động phía Tùng (`zca-js`) |
-| :--- | :---: | :--- | :--- |
-| **`target_group_id`** | `string` | ID nhóm Zalo OA khách hàng nhận tin. | Gửi tin vào nhóm Zalo khách hàng tương ứng. |
-| **`message_text`** | `string` | Nội dung tin gửi đã chuẩn hóa theo mẫu mục 8 (không icon, che 6 số cuối SĐT). | `api.sendMessage(item.message_text, item.target_group_id, ThreadType.Group)`. |
-| **`needs_review`** | `boolean` | `true` nếu tin cần ĐHVT duyệt trước khi gửi khách. | Nếu `true`: Gửi bản nháp vào nhóm "ĐHVT duyệt thông tin xe", chưa gửi nhóm khách. |
-| **`reply_to_carrier`** | `string \| null` | Tin nhắn phản hồi nhà xe khi thiếu seal, sai cont, hoặc xác nhận sửa. | Nếu có giá trị: Gọi `api.sendMessage({ msg: reply_to_carrier, quote: originalMsg }, group_id, ThreadType.Group)`. |
-| **`vehicles`** | `array` | Danh sách chi tiết các dòng xe đã bóc tách và thẩm định xong. | Dùng để hiển thị chi tiết hoặc ghi log điều hành. |
-| **`admin_alert`** | `boolean` | Cảnh báo vi phạm (sai nhà xe, cont lạ, người lạ). | Nếu `true`: Gửi cảnh báo vào nhóm Zalo Admin ĐHVT kèm nội dung `admin_message`. |
+
+| Trường                       |       Kiểu       | Mô tả nghiệp vụ                                                                       | Hành động phía Tùng (`zca-js`)                                                                                    |
+| :----------------------------- | :---------------: | :---------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------- |
+| **`target_group_id`**  |    `string`    | ID nhóm Zalo OA khách hàng nhận tin.                                                  | Gửi tin vào nhóm Zalo khách hàng tương ứng.                                                                      |
+| **`message_text`**     |    `string`    | Nội dung tin gửi đã chuẩn hóa theo mẫu mục 8 (không icon, che 6 số cuối SĐT). | `api.sendMessage(item.message_text, item.target_group_id, ThreadType.Group)`.                                          |
+| **`needs_review`**     |    `boolean`    | `true` nếu tin cần ĐHVT duyệt trước khi gửi khách.                              | Nếu `true`: Gửi bản nháp vào nhóm "ĐHVT duyệt thông tin xe", chưa gửi nhóm khách.                         |
+| **`reply_to_carrier`** | `string \| null` | Tin nhắn phản hồi nhà xe khi thiếu seal, sai cont, hoặc xác nhận sửa.            | Nếu có giá trị: Gọi `api.sendMessage({ msg: reply_to_carrier, quote: originalMsg }, group_id, ThreadType.Group)`. |
+| **`vehicles`**         |     `array`     | Danh sách chi tiết các dòng xe đã bóc tách và thẩm định xong.                 | Dùng để hiển thị chi tiết hoặc ghi log điều hành.                                                              |
+| **`admin_alert`**      |    `boolean`    | Cảnh báo vi phạm (sai nhà xe, cont lạ, người lạ).                                 | Nếu `true`: Gửi cảnh báo vào nhóm Zalo Admin ĐHVT kèm nội dung `admin_message`.                             |
 
 ---
 
@@ -141,20 +148,21 @@ Hệ thống có hai luồng lệnh sửa độc lập: Lệnh sửa từ Nhà x
 ```mermaid
 flowchart TD
     MSG["Tin nhắn đến có chứa yêu cầu sửa / trích dẫn"] --> CheckSender{"Ai gửi tin?"}
-    
-    CheckSender -->|Nhà xe| CarrierFlow["1. Nhà xe sửa / bổ sung"]
-    CheckSender -->|ĐHVT (Duyệt Zalo)| AdminFlow["2. ĐHVT quote duyệt trên Zalo"]
+  
+    CheckSender -->|"Nhà xe"| CarrierFlow["1. Nhà xe sửa / bổ sung"]
+    CheckSender -->|"ĐHVT - Duyệt Zalo"| AdminFlow["2. ĐHVT quote duyệt trên Zalo"]
 
     CarrierFlow --> C1["Đổi tài xế / Đổi xe: Cập nhật trip_versions, tăng v2, v3, gửi thông báo CẬP NHẬT"]
     CarrierFlow --> C2["Bổ sung seal / Giờ đến: Gộp vào chuyến đang chờ HOLD_WAIT_SUPPLEMENT"]
     CarrierFlow --> C3["Hủy chuyến: Đánh dấu CANCEL, báo Admin ĐHVT"]
 
-    AdminFlow --> A1["ĐHVT quote 'ok' -> Phê duyệt phát hành tin cho nhóm khách"]
-    AdminFlow --> A2["ĐHVT quote 'sửa xe ..., sửa chì ...' -> Cập nhật bản nháp, đăng lại bản mới"]
-    AdminFlow --> A3["ĐHVT quote 'huỷ' -> Huỷ bỏ bản nháp, không gửi khách"]
+    AdminFlow --> A1["ĐHVT quote ok -> Phê duyệt phát hành tin cho nhóm khách"]
+    AdminFlow --> A2["ĐHVT quote sửa xe ..., sửa chì ... -> Cập nhật bản nháp, đăng lại bản mới"]
+    AdminFlow --> A3["ĐHVT quote huỷ -> Huỷ bỏ bản nháp, không gửi khách"]
 ```
 
 ### 4.1. Luồng 1: Xử lý lệnh sửa từ Nhà xe (`handle_carrier_update`)
+
 * **Signature**:
   ```python
   def handle_carrier_update(inbound: InboundMessage, context: dict) -> List[dict]:
@@ -175,6 +183,7 @@ flowchart TD
 ---
 
 ### 4.2. Luồng 2: Xử lý lệnh sửa / duyệt từ ĐHVT qua Zalo (`handle_dhvt_review`)
+
 Theo quy định tại **Mục 8.2 tab Đặc tả**, ĐHVT duyệt trực tiếp trên điện thoại bằng cách trích dẫn (quote) tin nhắn nháp trong nhóm nội bộ:
 
 * **Signature**:
@@ -202,21 +211,28 @@ Theo quy định tại **Mục 8.2 tab Đặc tả**, ĐHVT duyệt trực tiế
 Nhằm đảm bảo Đạt và Tùng có thể làm việc và kiểm thử độc lập 100%:
 
 ### 5.1. Phía Tùng (`zca-js`): Dùng `mock_backend.js` để test Zalo Bridge
+
 Tùng không cần cài đặt Python. Tùng chỉ cần chạy server giả lập bằng Node.js thuần:
+
 ```bash
 cd /home/datbritget/Documents/vsico_zalo_bot/zca-js
 node mock_backend.js
 ```
+
 `mock_backend.js` tự động mở cổng HTTP 8000, đón nhận mọi webhook và phản hồi chính xác JSON Envelope theo hợp đồng này cho các trường hợp:
+
 - Báo xe chuẩn 1 xe -> Trả về `customer_notifications`.
 - Báo xe thiếu seal -> Trả về `reply_to_carrier`.
 - Báo đổi tài xế -> Trả về thông báo Cập nhật (v2).
 - ĐHVT quote `ok` -> Trả về duyệt thành công.
 
 ### 5.2. Phía Đạt (`backend`): Dùng `mock_bridge.js` để test đọc hiểu & định tuyến
+
 Đạt không cần đăng nhập tài khoản Zalo thật. Đạt chỉ cần chạy:
+
 ```bash
 cd /home/datbritget/Documents/vsico_zalo_bot/zca-js
 node mock_bridge.js
 ```
+
 Script sẽ gửi tuần tự các kịch bản thực tế vào Backend Python đang chạy và in ra đầy đủ log hành động giả lập.

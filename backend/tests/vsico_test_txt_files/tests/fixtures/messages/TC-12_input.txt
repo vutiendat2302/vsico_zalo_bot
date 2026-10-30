@@ -1,0 +1,6 @@
+TEST_ID: TC-12
+FORMAT: F1
+
+INPUT:
+Đóng tại Kho Long An
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / chưa có số cont

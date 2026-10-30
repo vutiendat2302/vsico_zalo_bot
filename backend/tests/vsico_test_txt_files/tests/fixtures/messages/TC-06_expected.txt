@@ -1,0 +1,4 @@
+TEST_ID: TC-06
+
+EXPECTED:
+Phát hiện số kiểm tra ISO 6346 không hợp lệ (nếu bộ validator xác nhận). Báo nhà xe số cont sai; không tự sửa cont. Các dòng hợp lệ khác trong cùng tin vẫn được xử lý.

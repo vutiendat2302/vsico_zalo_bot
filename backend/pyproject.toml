@@ -3,63 +3,45 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nhaxe-bot"
+name = "vsico-zalo-bot"
 version = "1.0.0"
-description = "Zalo GMF Bot - Hệ thống lọc & phân loại tin nhắn điều xe PM TMS VSICO"
+description = "VSICO Zalo Bot - Hệ thống tiếp nhận, bóc tách & định tuyến tin nhắn nhà xe (FastAPI + SQLAlchemy 2.0 + MySQL)"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     { name = "VSICO Development Team", email = "dev@vsico.com.vn" }
 ]
 dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "pymysql>=1.1.0",
+    "cryptography>=42.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "openpyxl>=3.1.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
-fastapi = [
-    "fastapi>=0.100.0",
-    "uvicorn>=0.23.0",
-]
 dev = [
     "pytest>=7.4.0",
-    "pytest-cov>=4.1.0",
+    "httpx>=0.27.0",
     "ruff>=0.1.0",
-    "mypy>=1.5.0",
-    "import-linter>=1.11.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
-ignore = ["E501"]
-
-[tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
 addopts = "-v --tb=short"
-
-[tool.importlinter]
-root_package = "nhaxe_bot"
-
-[[tool.importlinter.contracts]]
-name = "Layered Architecture: One-way dependency"
-type = "layers"
-layers = [
-    "nhaxe_bot.api",
-    "nhaxe_bot.handlers",
-    "nhaxe_bot.messaging",
-    "nhaxe_bot.parsing",
-    "nhaxe_bot.domain",
-    "nhaxe_bot.infrastructure",
-]

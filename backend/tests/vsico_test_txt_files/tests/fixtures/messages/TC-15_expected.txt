@@ -1,0 +1,4 @@
+TEST_ID: TC-15
+
+EXPECTED:
+Tìm bản ghi cũ đúng theo cont/nghiệp vụ; cập nhật seal_no=654321; gửi thông báo 'Cập nhật' chỉ nêu số chì mới. Không tạo lệnh trùng.

@@ -1,0 +1,4 @@
+TEST_ID: TC-13
+
+EXPECTED:
+Với fixture kế hoạch có 3 cont cùng khách nhưng thuộc 2 điểm đóng: tạo 2 tin đầu ra, mỗi tin gom cont theo điểm đóng và gửi đúng nhóm tương ứng. Không gán nhầm điểm.

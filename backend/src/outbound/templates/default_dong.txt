@@ -1,0 +1,9 @@
+VSICO - THÔNG BÁO XE ĐÓNG HÀNG
+Khách hàng: {ten_khach_hang}
+
+- Số cont: {so_cont} ({kich_thuoc})
+- Số chì: {so_chi}
+- Biển số xe: {bien_so}
+- Lái xe: {tai_xe} - SĐT: {sdt}
+- Điểm đóng: {diem_dong}
+- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}

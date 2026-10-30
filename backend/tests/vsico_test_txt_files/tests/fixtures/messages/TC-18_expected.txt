@@ -1,0 +1,4 @@
+TEST_ID: TC-18
+
+EXPECTED:
+Với fixture kế hoạch ngày 20/07 có cùng cont ở dòng Nhập khách Acecook và dòng Xuất khách Everpia: tạo 2 tin riêng. Tin trả cho nơi nhận Acecook; tin đóng cho nơi nhận Everpia. Không nhắc khách còn lại hoặc chữ 'kết hợp'.

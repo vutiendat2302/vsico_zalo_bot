@@ -1,15 +1,19 @@
-version: '3.8'
-
 services:
-  nhaxe-api:
-    build: .
-    container_name: nhaxe-bot-api
-    ports:
-      - "8000:8000"
-    environment:
-      - APP_ENV=production
-      - PORT=8000
-      - LOG_LEVEL=INFO
-    volumes:
-      - ./output:/app/output
+  mysql:
+    image: mysql:8.4
+    container_name: vsico-zalo-mysql
     restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-123456}
+      MYSQL_DATABASE: ${DB_NAME:-vsico_zalo_bot}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - vsico_mysql_data:/var/lib/mysql
+
+volumes:
+  vsico_mysql_data:

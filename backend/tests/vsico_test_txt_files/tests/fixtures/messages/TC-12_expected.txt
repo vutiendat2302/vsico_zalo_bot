@@ -1,0 +1,4 @@
+TEST_ID: TC-12
+
+EXPECTED:
+Tìm dòng lệnh đóng trong kế hoạch cùng nhà xe, ngày và kho, chưa có cont. Chỉ tự ghép nếu còn đúng một dòng phù hợp; nếu nhiều dòng/khách khác nhau thì chuyển hàng chờ ĐHVT.

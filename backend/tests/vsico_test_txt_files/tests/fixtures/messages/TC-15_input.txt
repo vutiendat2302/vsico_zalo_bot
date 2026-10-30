@@ -1,0 +1,5 @@
+TEST_ID: TC-15
+FORMAT: F2_UPDATE
+
+INPUT:
+Cập nhật cont VSIU2620327: số seal mới 654321

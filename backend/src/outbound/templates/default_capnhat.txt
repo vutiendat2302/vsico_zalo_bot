@@ -1,0 +1,14 @@
+VSICO - THÔNG BÁO CẬP NHẬT THÔNG TIN XE
+Khách hàng: {ten_khach_hang}
+
+Cập nhật thông tin xe cho cont {so_cont}:
+Các thông tin thay đổi:
+{thay_doi}
+
+Thông tin xe hiện tại:
+- Số cont: {so_cont} ({kich_thuoc})
+- Số chì: {so_chi}
+- Biển số xe: {bien_so}
+- Lái xe: {tai_xe} - SĐT: {sdt}
+- Điểm đến: {diem_den}
+- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}

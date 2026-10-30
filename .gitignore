@@ -1,31 +1,191 @@
-# Python
+# =============================================================================
+# .gitignore — DỰ ÁN VSICO ZALO BOT (ZALO BOT TMS INTEGRATION)
+# =============================================================================
+# Hệ thống kết hợp: Python 3.10+ Backend + Node.js (zca-js) + Tài liệu BA
+# Chuẩn bảo mật: Tuyệt đối không rò rỉ khóa bí mật, phiên Zalo, hoặc file rác.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. BẢO MẬT & THÔNG TIN NHẠY CẢM (SECRETS & SENSITIVE CREDENTIALS)
+# -----------------------------------------------------------------------------
+# Biến môi trường & Khóa bí mật
+.env
+.env.*
+!.env.example
+
+# Phiên đăng nhập Zalo & Thư viện zca-js (Tuyệt đối không commit token/cookie!)
+credentials.json
+**/credentials.json
+cookies.json
+**/cookies.json
+session.json
+**/session.json
+tokens.json
+**/tokens.json
+qr.png
+**/qr.png
+qr_*.png
+**/qr_*.png
+zca_session/
+**/zca_session/
+
+# Khóa bảo mật, chứng chỉ SSL/TLS & OAuth keys
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+
+# -----------------------------------------------------------------------------
+# 2. PYTHON RUNTIME, VIRTUAL ENVIRONMENTS & BUILDS
+# -----------------------------------------------------------------------------
+# Bytecode & Caching
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
-.env
-.venv/
-env/
-venv/
-*.egg-info/
-dist/
-build/
-output/results.csv
 
-# Node / JS
-node_modules/
+# Môi trường ảo (Virtual Environments)
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
+ENV/
+**/ENV/
+
+# Build & Phân phối gói (Packaging)
+build/
+**/build/
 dist/
+**/dist/
+*.egg-info/
+**/*.egg-info/
+*.egg
+.eggs/
+
+# Kiểm thử & Đánh giá chất lượng mã nguồn (Testing & Linters)
+.pytest_cache/
+**/.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+**htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# -----------------------------------------------------------------------------
+# 3. NODE.JS & TYPESCRIPT (MODULE ZCA-JS)
+# -----------------------------------------------------------------------------
+# Quản lý phụ thuộc (Dependencies)
+node_modules/
+**/node_modules/
+.pnp/
+.pnp.js
+
+# Nhật ký lỗi bộ quản lý gói (Package manager logs)
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-credentials.json
-cookies.json
-qr.png
+lerna-debug.log*
 
-# IDE / System
+# Cache của các trình quản lý gói
+.npm/
+.yarn/cache/
+.yarn/unplugged/
+.pnpm-store/
+
+# -----------------------------------------------------------------------------
+# 4. KẾT QUẢ ĐẦU RA, NHẬT KÝ & CƠ SỞ DỮ LIỆU TẠM (OUTPUTS & LOGS)
+# -----------------------------------------------------------------------------
+# Kết quả xử lý batch & đánh giá benchmark
+output/results.csv
+**/output/results.csv
+output/*.csv
+**/output/*.csv
+output/*.json
+**/output/*.json
+
+# File log runtime
+*.log
+**/logs/
+logs/
+
+# SQLite & Database runtime (Giữ lại các file mẫu trong fixtures nếu có)
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+
+# File tạm thời
+*.tmp
+*.temp
+*.bak
+
+# -----------------------------------------------------------------------------
+# 5. TÀI LIỆU VĂN PHÒNG & FILE KHÓA TẠM (OFFICE LOCK FILES)
+# -----------------------------------------------------------------------------
+# Chỉ bỏ qua các file tạm/file lock của Microsoft Office hoặc LibreOffice
+# Bảo tồn toàn bộ tài liệu gốc (.docx, .xlsx, .pdf, .csv, .md)
+~$*.xlsx
+~$*.docx
+~$*.pptx
+.~lock.*#
+*.tmp
+
+# -----------------------------------------------------------------------------
+# 6. MÔI TRƯỜNG PHÁT TRIỂN & IDE (EDITORS & IDEs)
+# -----------------------------------------------------------------------------
+# Visual Studio Code
 .vscode/
+**/.vscode/
+!.vscode/settings.json.example
+
+# JetBrains (PyCharm, WebStorm, IntelliJ)
 .idea/
+**/.idea/
+*.iml
+
+# Trình soạn thảo văn bản
 *.swp
 *.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# -----------------------------------------------------------------------------
+# 7. HỆ ĐIỀU HÀNH (OPERATING SYSTEMS)
+# -----------------------------------------------------------------------------
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.fuse_hidden*
+.directory
+.Trash-*

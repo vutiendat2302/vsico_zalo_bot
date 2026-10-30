@@ -1,0 +1,4 @@
+TEST_ID: TC-11
+
+EXPECTED:
+Với fixture kế hoạch có cont này là lệnh trả: lấy order_type, customer và điểm trả từ kế hoạch; match_source=ke_hoach. Không suy ra từ tin F1.

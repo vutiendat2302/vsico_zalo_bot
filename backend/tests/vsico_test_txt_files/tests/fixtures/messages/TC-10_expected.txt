@@ -1,0 +1,4 @@
+TEST_ID: TC-10
+
+EXPECTED:
+Trong fixture kế hoạch, cont không có trong kế hoạch và tin không có 'Kính gửi'/kho/khách: yêu cầu nhà xe bổ sung kho hoặc tên khách; không định tuyến.

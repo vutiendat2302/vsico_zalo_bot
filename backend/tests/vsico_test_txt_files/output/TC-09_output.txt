@@ -1,0 +1,158 @@
+============================================================================
+TEST_ID: TC-09
+FORMAT_DECLARED: F2
+SOURCE_INPUT_FILE: TC-09_input.txt
+TESTED_AT: 2026-10-30 06:36:06
+============================================================================
+
+--- [1. NỘI DUNG ĐẦU VÀO (INPUT TEXT)] ---
+Ngày: 09/10/2026
+Đóng, Trả hàng: Tra 1x20 Nhựa XYZ
+Tên lái xe: Nguyễn Văn A
+SĐT: 0900******
+Số xe: 50H-04915
+Số cont: VSIU2620327
+Số seal: 123456
+
+--- [2. KẾT QUẢ XỬ LÝ (PROCESSING RESULT)] ---
+HÀNH ĐỘNG (ACTION)       : PROCESSED_FIFO
+TRẠNG THÁI (STATUS)      : processed
+SỐ XE BÓC TÁCH ĐƯỢC      : 1
+SỐ CONTAINER BÓC TÁCH    : 1
+
+--- [3. CHI TIẾT CÁC XE ĐẦU KÉO (TRUCKS)] ---
+  Xe #1:
+    - Biển số xe   : 50H-049.15
+    - Biển rơ-moóc : (trống)
+    - Tên tài xế   : Nguyễn Văn A
+    - SĐT tài xế   : 0900******
+
+--- [4. CHI TIẾT CÁC CONTAINER (CONTAINERS)] ---
+  Container #1 (Dòng 1):
+    - Số Container    : VSIU2620327
+    - Kích cỡ cont    : 20
+    - Số seal / chì   : 123456
+    - Loại lệnh       : tra
+    - Gợi ý kho       : (trống)
+    - Gợi ý khách     : Nhựa XYZ
+    - Chuẩn ISO 6346  : HỢP LỆ (TRUE)
+    - Trạng thái kiểm : valid
+    - Cảnh báo        : Không có
+
+--- [5. KỲ VỌNG BAN ĐẦU (EXPECTED FROM FIXTURE)] ---
+TEST_ID: TC-09
+
+EXPECTED:
+Alias khách 'Nhựa XYZ' chưa có trong bảng: đưa vào hàng chờ ĐHVT để xác minh. Không báo nhà xe và không gửi tới nhóm khách trước khi xác định.
+
+--- [6. DỮ LIỆU JSON CHI TIẾT TRẢ VỀ (RAW JSON RESPONSE)] ---
+{
+  "ok": true,
+  "status": "ENQUEUED_AND_PROCESSED_FIFO",
+  "record_id": 54,
+  "zalo_message_id": "txt_run_TC-09_04b25941",
+  "group_id": "2001000000000000001",
+  "sender_id": "1001000000000000001",
+  "processing_status": "processed",
+  "trucks_count": 1,
+  "containers_count": 1,
+  "trucks": [
+    {
+      "id": 63,
+      "truck_plate": "50H-049.15",
+      "trailer_plate": null,
+      "driver_name": "Nguyễn Văn A",
+      "driver_phone": "0900******"
+    }
+  ],
+  "containers": [
+    {
+      "id": 69,
+      "line_no": 1,
+      "source_format": "F2",
+      "plan_date": "2026-10-09",
+      "container_no": "VSIU2620327",
+      "container_size": "20",
+      "seal_no": "123456",
+      "order_type": "tra",
+      "warehouse_hint": null,
+      "customer_hint": "Nhựa XYZ",
+      "eta": null,
+      "match_source": "unmatched",
+      "check_digit_valid": true,
+      "validation_status": "valid",
+      "warnings": [],
+      "canonical_record": {
+        "eta": null,
+        "plate": "50H04915",
+        "cont_no": "VSIU2620327",
+        "seal_no": "123456",
+        "cont_size": "20",
+        "plan_date": "2026-10-09",
+        "order_type": "tra",
+        "customer_id": null,
+        "driver_name": "Nguyễn Văn A",
+        "customer_raw": "Nhựa XYZ",
+        "driver_phone": "0900******",
+        "location_raw": null,
+        "match_source": "unmatched",
+        "warehouse_id": null,
+        "source_format": "F2"
+      }
+    }
+  ],
+  "data": {
+    "id": 54,
+    "msg_id": "txt_run_TC-09_04b25941",
+    "action": "PROCESSED_FIFO",
+    "processing_status": "processed",
+    "total_vehicles": 1,
+    "reply_to_carrier": null,
+    "customer_notifications": [],
+    "trucks": [
+      {
+        "id": 63,
+        "truck_plate": "50H-049.15",
+        "trailer_plate": null,
+        "driver_name": "Nguyễn Văn A",
+        "driver_phone": "0900******"
+      }
+    ],
+    "containers": [
+      {
+        "id": 69,
+        "line_no": 1,
+        "source_format": "F2",
+        "plan_date": "2026-10-09",
+        "container_no": "VSIU2620327",
+        "container_size": "20",
+        "seal_no": "123456",
+        "order_type": "tra",
+        "warehouse_hint": null,
+        "customer_hint": "Nhựa XYZ",
+        "eta": null,
+        "match_source": "unmatched",
+        "check_digit_valid": true,
+        "validation_status": "valid",
+        "warnings": [],
+        "canonical_record": {
+          "eta": null,
+          "plate": "50H04915",
+          "cont_no": "VSIU2620327",
+          "seal_no": "123456",
+          "cont_size": "20",
+          "plan_date": "2026-10-09",
+          "order_type": "tra",
+          "customer_id": null,
+          "driver_name": "Nguyễn Văn A",
+          "customer_raw": "Nhựa XYZ",
+          "driver_phone": "0900******",
+          "location_raw": null,
+          "match_source": "unmatched",
+          "warehouse_id": null,
+          "source_format": "F2"
+        }
+      }
+    ]
+  }
+}

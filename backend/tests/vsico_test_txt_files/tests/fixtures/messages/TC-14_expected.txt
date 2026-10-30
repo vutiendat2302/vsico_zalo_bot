@@ -1,0 +1,4 @@
+TEST_ID: TC-14
+
+EXPECTED:
+Tách 2 nghiệp vụ: cont đóng gửi nhóm chính; cont trả gửi nhóm trả hàng. Mỗi cont một bản ghi chuẩn và định tuyến độc lập.

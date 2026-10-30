@@ -1,0 +1,4 @@
+TEST_ID: TC-03
+
+EXPECTED:
+Bỏ số thứ tự và nhãn 'xe:'; plate=15H06722; driver_name=Đào Đức Thoại; phone đã che; cont_no=VSIU2323000; seal_no=23333330. Kiểm tra ISO; không tự sửa nếu sai.

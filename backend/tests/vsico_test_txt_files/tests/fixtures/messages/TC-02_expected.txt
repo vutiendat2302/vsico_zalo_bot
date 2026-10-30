@@ -1,0 +1,4 @@
+TEST_ID: TC-02
+
+EXPECTED:
+Tách được SĐT dù dính liền tên tài xế; chuẩn hóa biển số thành 15H00642; cont_no=VSIU2321938; seal_no=23333310.

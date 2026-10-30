@@ -26,14 +26,14 @@ api  ──►  handlers  ──►  domain  ◄──  infrastructure
 ### 1.2. Cô lập Zalo Payload (Zalo Schema Isolation)
 
 - Cấu trúc Payload thô của Zalo **chỉ được phép tồn tại** tại 2 nơi duy nhất:
-  1. `src/nhaxe_bot/api/schemas/zalo.py` (Khai báo cấu trúc dữ liệu HTTP).
-  2. `src/nhaxe_bot/ingestion/normalizer.py` (Chuyển đổi thành model nội bộ).
+  1. `src/api/schemas/zalo.py` (Khai báo cấu trúc dữ liệu HTTP).
+  2. `src/ingestion/normalizer.py` (Chuyển đổi thành model nội bộ).
 - Từ tầng `messaging`, `handlers`, `domain` trở đi, hệ thống **chỉ sử dụng model nội bộ `InboundMessage`**.
 - Khi Zalo thay đổi cấu trúc webhook hoặc hệ thống bổ sung kênh Telegram/Viber, lõi nghiệp vụ hoàn toàn không bị ảnh hưởng.
 
 ### 1.3. Cổng Webhook không chứa logic nghiệp vụ (Thin Webhook Gateway)
 
-- `src/nhaxe_bot/api/webhook.py` chỉ thực hiện đúng 3 nhiệm vụ:
+- `src/api/webhook.py` chỉ thực hiện đúng 3 nhiệm vụ:
   1. Xác thực chữ ký Zalo (`verify_zalo_signature`).
   2. Chuẩn hóa payload sang `InboundMessage` & lọc trùng lặp (`Deduplicator`).
   3. Đẩy vào hàng đợi `QueuePublisher.publish()` và phản hồi ngay lập tức `200 OK` (`{"status": "ENQUEUED"}`).
@@ -72,34 +72,50 @@ api  ──►  handlers  ──►  domain  ◄──  infrastructure
 ## 2. Quy tắc bất biến bắt buộc (Strict Invariants)
 
 1. **Bảo toàn file `zalo.md`**:
-   - Tuyệt đối **KHÔNG ĐƯỢC CHẠM VÀO, SỬA ĐỔI HOẶC XÓA** file `source/task2/zalo.md` tại thư mục gốc. Đây là tài liệu thiết kế gốc bất biến.
+   - Tuyệt đối **KHÔNG ĐƯỢC CHẠM VÀO, SỬA ĐỔI HOẶC XÓA** file `/backend/zalo.md` tại thư mục gốc. Đây là tài liệu thiết kế gốc bất biến.
 2. **Zero External Dependencies**:
    - Toàn bộ mã nguồn dự án chỉ sử dụng thư viện chuẩn của **Python 3.10+** (`re`, `json`, `datetime`, `dataclasses`, `http.server`, `urllib`, `queue`, `unittest`).
    - Không được thêm thư viện ngoài (như `requests`, `fastapi`, `flask`, `pydantic`) vào môi trường runtime bắt buộc.
-3. **Phạm vi hoạt động**:
-   - Tuyệt đối chỉ xử lý và chỉnh sửa các file thuộc phạm vi thư mục `source/task2` (và thư mục mẹ `ba_intern_vsico`). Không truy cập hay ghi file ra ngoài thư mục dự án.
-4. **Quy tắc file `.ipynb`**:
-   - Tuyệt đối không thêm văn bản giải thích dài dòng hoặc markdown thừa vào trong file `.ipynb`. Mã nguồn chạy đúng yêu cầu nghiệp vụ là ưu tiên hàng đầu.
-
----
 
 ## 3. Quy chuẩn kiểm thử & Đánh giá (Testing & Verification)
 
 Trước khi xác nhận hoàn thành bất kỳ thay đổi nào, bắt buộc phải vượt qua 2 bước kiểm tra:
 
 1. **Kiểm thử tự động**:
-   ```bash
-   make test
-   # Hoặc: python3 -m unittest discover tests -v
-   # Bắt buộc: 100% test PASS (24/24 tests)
-   ```
 2. **Đo lường độ chính xác Benchmark**:
-   ```bash
-   make evaluate
-   # Hoặc: python3 scripts/evaluate.py
-   # Bắt buộc: 57/57 sự kiện webhook xử lý thành công, 0 lỗi ngoại lệ.
-   ```
 
-## 4. Quy tắc viết comment:
+## 4. Quy tắc viết comment & tài liệu:
 
-- Tất cả các class, phương thức được sinh ra đều phải viết comment chi tiết, chuyên nghiệp.
+- Tất cả các class, phương thức được sinh ra đều phải viết comment chi tiết, chuyên nghiệp bằng tiếng Việt.
+- Tất cả các module và API mới đều phải viết tài liệu kiểm thử Postman/cURL chi tiết dưới dạng file Markdown (`.md`).
+
+---
+
+## 5. Quy chuẩn phát triển Frontend & Nguyên tắc Zero Mock Data (Strict Invariant)
+
+1. **Tuyệt đối KHÔNG sử dụng Mock Data (Zero Mock Data Policy)**:
+   - Mọi dữ liệu hiển thị trên giao diện người dùng (Dashboard, Kế hoạch vận chuyển, Quản lý tin nhắn, Danh sách chờ duyệt, Thống kê Taxonomy) **bắt buộc 100% phải được truy vấn thời gian thực từ các API của Backend** (`GET /api/...`).
+   - Nghiêm cấm tạo biến mảng tĩnh (static array), faker mock data, hoặc dữ liệu giả lập trong mã nguồn Frontend (`src/app/`, `src/components/`, `src/lib/`).
+   - Trường hợp giao diện người dùng cần bổ sung trường dữ liệu hoặc màn hình nghiệp vụ mới: Lập trình viên/Agent **bắt buộc phải triển khai API Backend trước** (bao gồm Model, Migration, Service, Controller, Router), sau đó mới viết mã Frontend gọi API này.
+
+2. **Công nghệ Frontend chuẩn hóa**:
+   - Framework: **Next.js 14+ (App Router)**.
+   - Ngôn ngữ: **TypeScript** (Kiểm tra kiểu dữ liệu nghiêm ngặt, tương thích Pydantic Schemas của Backend).
+   - Giao diện: **Tailwind CSS** + **Lucide React Icons**, thiết kế Dark Mode hiện đại (Slate 900 / 950).
+   - Tầng kết nối: Tập trung toàn bộ hàm gọi API tại `frontend/src/lib/api.ts`, cấu hình `API_BASE_URL` qua biến môi trường `NEXT_PUBLIC_API_URL` (mặc định `http://localhost:8000`).
+
+---
+
+## 6. Kiến trúc chịu tải cao & Điều tiết tần suất gửi Zalo OA (High-Throughput & Rate Limiting)
+
+1. **Tiếp nhận tải lớn hàng trăm, hàng nghìn nhóm chat**:
+   - Khi hệ thống mở rộng phục vụ đồng thời hàng trăm/hàng nghìn nhóm chat Zalo, lưu lượng tin nhắn dồn về cùng một thời điểm rất lớn (Traffic Spike).
+   - Cổng Webhook Gateway (`POST /webhook`) chỉ thực hiện xác thực chữ ký, khử trùng lặp (`Deduplicator`), ghi nhận cơ sở dữ liệu và đẩy vào Hàng đợi FIFO (`QueuePublisher`), sau đó phản hồi `200 OK` ngay lập tức (< 50ms).
+   - Toàn bộ công đoạn bóc tách cú pháp (F1, F2, F3, Regex), đối chiếu kế hoạch vận chuyển, và gọi AI xử lý được thực thi trong Worker ngầm (Background Worker) để không làm nghẽn luồng tiếp nhận.
+
+2. **Điều tiết tần suất gửi ra Zalo OA (Outbound Rate Limiter)**:
+   - Máy chủ Zalo OA áp dụng giới hạn số lượng request API gửi ra trong một khoảng thời gian nhất định (Rate Limit). Nếu gửi dồn dập sẽ bị phản hồi mã lỗi `HTTP 429 Too Many Requests` và tạm khóa gửi tin.
+   - Hệ thống bắt buộc phải tích hợp bộ điều tiết `ZaloOutboundThrottler` dựa trên thuật toán **Token Bucket**:
+     - Tốc độ phát hành token mặc định: **10 request/giây**.
+     - Dung lượng tối đa của bucket (Burst Capacity): **20 tokens**.
+     - Cơ chế chống sốc (Dynamic Backoff): Tự động tạm hoãn và lùi thời gian gửi theo hàm mũ khi nhận cảnh báo hoặc phản hồi `429` từ Zalo.

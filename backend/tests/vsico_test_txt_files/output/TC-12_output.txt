@@ -1,0 +1,157 @@
+============================================================================
+TEST_ID: TC-12
+FORMAT_DECLARED: F1
+SOURCE_INPUT_FILE: TC-12_input.txt
+TESTED_AT: 2026-10-30 06:36:06
+============================================================================
+
+--- [1. NỘI DUNG ĐẦU VÀO (INPUT TEXT)] ---
+Đóng tại Kho Long An
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / chưa có số cont
+
+--- [2. KẾT QUẢ XỬ LÝ (PROCESSING RESULT)] ---
+HÀNH ĐỘNG (ACTION)       : PROCESSED_FIFO
+TRẠNG THÁI (STATUS)      : needs_review
+SỐ XE BÓC TÁCH ĐƯỢC      : 1
+SỐ CONTAINER BÓC TÁCH    : 1
+
+--- [3. CHI TIẾT CÁC XE ĐẦU KÉO (TRUCKS)] ---
+  Xe #1:
+    - Biển số xe   : 15C-170.66
+    - Biển rơ-moóc : (trống)
+    - Tên tài xế   : Phạm Văn Huynh
+    - SĐT tài xế   : 0986******
+
+--- [4. CHI TIẾT CÁC CONTAINER (CONTAINERS)] ---
+  Container #1 (Dòng 1):
+    - Số Container    : (trống)
+    - Kích cỡ cont    : (trống)
+    - Số seal / chì   : (trống)
+    - Loại lệnh       : dong
+    - Gợi ý kho       : Kho Long An
+    - Gợi ý khách     : (trống)
+    - Chuẩn ISO 6346  : SAI SỐ KIỂM TRA (FALSE)
+    - Trạng thái kiểm : needs_review
+    - Cảnh báo        : PENDING_CONTAINER_NO
+
+--- [5. KỲ VỌNG BAN ĐẦU (EXPECTED FROM FIXTURE)] ---
+TEST_ID: TC-12
+
+EXPECTED:
+Tìm dòng lệnh đóng trong kế hoạch cùng nhà xe, ngày và kho, chưa có cont. Chỉ tự ghép nếu còn đúng một dòng phù hợp; nếu nhiều dòng/khách khác nhau thì chuyển hàng chờ ĐHVT.
+
+--- [6. DỮ LIỆU JSON CHI TIẾT TRẢ VỀ (RAW JSON RESPONSE)] ---
+{
+  "ok": true,
+  "status": "ENQUEUED_AND_PROCESSED_FIFO",
+  "record_id": 57,
+  "zalo_message_id": "txt_run_TC-12_7ff18912",
+  "group_id": "2001000000000000001",
+  "sender_id": "1001000000000000001",
+  "processing_status": "needs_review",
+  "trucks_count": 1,
+  "containers_count": 1,
+  "trucks": [
+    {
+      "id": 66,
+      "truck_plate": "15C-170.66",
+      "trailer_plate": null,
+      "driver_name": "Phạm Văn Huynh",
+      "driver_phone": "0986******"
+    }
+  ],
+  "containers": [
+    {
+      "id": 72,
+      "line_no": 1,
+      "source_format": "F1",
+      "plan_date": "2026-10-30",
+      "container_no": null,
+      "container_size": null,
+      "seal_no": null,
+      "order_type": "dong",
+      "warehouse_hint": "Kho Long An",
+      "customer_hint": null,
+      "eta": null,
+      "match_source": "unmatched",
+      "check_digit_valid": null,
+      "validation_status": "needs_review",
+      "warnings": [
+        "PENDING_CONTAINER_NO"
+      ],
+      "canonical_record": {
+        "eta": null,
+        "plate": "15C17066",
+        "cont_no": null,
+        "seal_no": null,
+        "cont_size": null,
+        "plan_date": "2026-10-30",
+        "order_type": "dong",
+        "customer_id": null,
+        "driver_name": "Phạm Văn Huynh",
+        "customer_raw": null,
+        "driver_phone": "0986******",
+        "location_raw": "Kho Long An",
+        "match_source": "unmatched",
+        "warehouse_id": null,
+        "source_format": "F1"
+      }
+    }
+  ],
+  "data": {
+    "id": 57,
+    "msg_id": "txt_run_TC-12_7ff18912",
+    "action": "PROCESSED_FIFO",
+    "processing_status": "needs_review",
+    "total_vehicles": 1,
+    "reply_to_carrier": null,
+    "customer_notifications": [],
+    "trucks": [
+      {
+        "id": 66,
+        "truck_plate": "15C-170.66",
+        "trailer_plate": null,
+        "driver_name": "Phạm Văn Huynh",
+        "driver_phone": "0986******"
+      }
+    ],
+    "containers": [
+      {
+        "id": 72,
+        "line_no": 1,
+        "source_format": "F1",
+        "plan_date": "2026-10-30",
+        "container_no": null,
+        "container_size": null,
+        "seal_no": null,
+        "order_type": "dong",
+        "warehouse_hint": "Kho Long An",
+        "customer_hint": null,
+        "eta": null,
+        "match_source": "unmatched",
+        "check_digit_valid": null,
+        "validation_status": "needs_review",
+        "warnings": [
+          "PENDING_CONTAINER_NO"
+        ],
+        "canonical_record": {
+          "eta": null,
+          "plate": "15C17066",
+          "cont_no": null,
+          "seal_no": null,
+          "cont_size": null,
+          "plan_date": "2026-10-30",
+          "order_type": "dong",
+          "customer_id": null,
+          "driver_name": "Phạm Văn Huynh",
+          "customer_raw": null,
+          "driver_phone": "0986******",
+          "location_raw": "Kho Long An",
+          "match_source": "unmatched",
+          "warehouse_id": null,
+          "source_format": "F1"
+        }
+      }
+    ]
+  }
+}

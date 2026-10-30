@@ -1,0 +1,12 @@
+TEST_ID: TC-04
+FORMAT: F2
+
+INPUT:
+Đầu ĐHVT HCM đang gửi nội dung xe trả hàng:
+Ngày: .9/10/2026 : Đóng , Trả hàng: Tra 1x20 Nhựa Long An
+Tên lái xe: Nguyên Thanh Phong
+Sđt: 0931******
+Số xe: 50H-04915
+Số cont : VSIU2620327
+Số seal:
+Thời gian xe đến kho: 8h

@@ -1,0 +1,249 @@
+VSICO ZALO BOT - TEXT TEST FIXTURES
+===================================
+
+Structure:
+- tests/fixtures/messages/TC-XX_input.txt: input message or scenario
+- tests/fixtures/messages/TC-XX_expected.txt: expected behavior/output
+
+Coverage:
+- TC-01..TC-05: F1/F2/F3 parsing
+- TC-06..TC-08: invalid container/phone/plate cases
+- TC-09..TC-12: alias, missing routing data, planning-sheet matching
+- TC-13..TC-15: multiple containers, mixed order types, updates
+- TC-16..TC-20: non-operational messages, route map, combined-container plan, workbook parsing, multiple return locations
+
+Important:
+1. Phone numbers are masked in all fixtures (last six digits hidden).
+2. Some cases require a synthetic planning workbook / alias map / route_map fixture to test fully.
+3. Expected outputs are based on the provided specification; they are not actual run results.
+4. TC-06 container validity should be confirmed by the project's ISO 6346 validator.
+5. TC-07's phone length is illustrative because the source number was masked for privacy; use a dedicated synthetic invalid-length value in an isolated parser unit test if exact digit counting is required.
+
+
+========================================================================
+
+TC-01
+FORMAT: F1
+
+INPUT:
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / VSIU2621051 chì 23333878
+
+EXPECTED:
+Tách được: plate=15C17066; driver_name=Phạm Văn Huynh; driver_phone=0986******; cont_no=VSIU2621051; seal_no=23333878. Container phải qua kiểm tra ISO 6346.
+
+------------------------------------------------------------------------
+TC-02
+FORMAT: F1
+
+INPUT:
+2 Xe 15h00642 / Đoàn Văn Biên 0984******/ VSIU2321938 chì 23333310
+
+EXPECTED:
+Tách được SĐT dù dính liền tên tài xế; chuẩn hóa biển số thành 15H00642; cont_no=VSIU2321938; seal_no=23333310.
+
+------------------------------------------------------------------------
+TC-03
+FORMAT: F1
+
+INPUT:
+3 xe: 15H06722/ Đào Đức Thoại đt: 0364******/ VSIU2323000 chì 23333330
+
+EXPECTED:
+Bỏ số thứ tự và nhãn 'xe:'; plate=15H06722; driver_name=Đào Đức Thoại; phone đã che; cont_no=VSIU2323000; seal_no=23333330. Kiểm tra ISO; không tự sửa nếu sai.
+
+------------------------------------------------------------------------
+TC-04
+FORMAT: F2
+
+INPUT:
+Đầu ĐHVT HCM đang gửi nội dung xe trả hàng:
+Ngày: .9/10/2026 : Đóng , Trả hàng: Tra 1x20 Nhựa Long An
+Tên lái xe: Nguyên Thanh Phong
+Sđt: 0931******
+Số xe: 50H-04915
+Số cont : VSIU2620327
+Số seal:
+Thời gian xe đến kho: 8h
+
+EXPECTED:
+JSON chuẩn mong đợi: source_format=F2; plan_date=2026-10-09; order_type=tra; customer_raw='Nhựa Long An'; customer_id=alias của Nhựa Á Đông; plate=50H04915; driver_name giữ nguyên 'Nguyên Thanh Phong'; driver_phone=0931******; cont_no=VSIU2620327; cont_size=20; seal_no=null; eta=08:00; location_raw=null; warehouse_id=null; match_source=customer_alias. Thiếu điểm trả thì tra kế hoạch theo cont nếu cần.
+
+------------------------------------------------------------------------
+TC-05
+FORMAT: F3
+
+INPUT:
+Khách hàng: Nhựa Á Đông
+Lệnh: Trả
+Biển số xe: 50H-04915
+Tên lái xe: Nguyễn Thanh Phong
+SĐT: 0931******
+Số cont: VSIU2620327
+Số chì:
+Điểm đóng/trả: Kho Nhựa Á Đông – Long An
+Thời gian dự kiến đến kho: 08:00
+
+EXPECTED:
+Đọc theo nhãn F3, không gọi AI nếu parser theo nhãn xử lý được. order_type=tra; customer_raw=Nhựa Á Đông; plate=50H04915; driver_name=Nguyễn Thanh Phong; phone đã che; cont_no=VSIU2620327; seal_no=null; location_raw=Kho Nhựa Á Đông – Long An; eta=08:00.
+
+------------------------------------------------------------------------
+TC-06
+FORMAT: F1
+
+INPUT:
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / VSIU2323001 chì 23333878
+
+EXPECTED:
+Phát hiện số kiểm tra ISO 6346 không hợp lệ (nếu bộ validator xác nhận). Báo nhà xe số cont sai; không tự sửa cont. Các dòng hợp lệ khác trong cùng tin vẫn được xử lý.
+
+------------------------------------------------------------------------
+TC-07
+FORMAT: F1
+
+INPUT:
+1 xe 15C17066/ Phạm Văn Huynh đt: 098****** / VSIU2621051 chì 23333878
+
+EXPECTED:
+Phát hiện SĐT không đủ 10 chữ số (dữ liệu gốc đã được che trong fixture). Đánh dấu lỗi/thiếu SĐT và yêu cầu bổ sung; không tự đoán số còn thiếu.
+
+------------------------------------------------------------------------
+TC-08
+FORMAT: F1
+
+INPUT:
+1 xe 15R01234/ Phạm Văn Huynh đt: 0986****** / VSIU2621051 chì 23333878
+
+EXPECTED:
+Nhận diện 15R01234 là biển mooc theo quy tắc nghiệp vụ đã cấu hình, không phải biển đầu kéo; báo nhà xe bổ sung biển đầu kéo.
+
+------------------------------------------------------------------------
+TC-09
+FORMAT: F2
+
+INPUT:
+Ngày: 09/10/2026
+Đóng, Trả hàng: Tra 1x20 Nhựa XYZ
+Tên lái xe: Nguyễn Văn A
+SĐT: 0900******
+Số xe: 50H-04915
+Số cont: VSIU2620327
+Số seal: 123456
+
+EXPECTED:
+Alias khách 'Nhựa XYZ' chưa có trong bảng: đưa vào hàng chờ ĐHVT để xác minh. Không báo nhà xe và không gửi tới nhóm khách trước khi xác định.
+
+------------------------------------------------------------------------
+TC-10
+FORMAT: F1
+
+INPUT:
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / VSIU2621051 chì 23333878
+
+EXPECTED:
+Trong fixture kế hoạch, cont không có trong kế hoạch và tin không có 'Kính gửi'/kho/khách: yêu cầu nhà xe bổ sung kho hoặc tên khách; không định tuyến.
+
+------------------------------------------------------------------------
+TC-11
+FORMAT: F1
+
+INPUT:
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / VSIU2621051 chì 23333878
+
+EXPECTED:
+Với fixture kế hoạch có cont này là lệnh trả: lấy order_type, customer và điểm trả từ kế hoạch; match_source=ke_hoach. Không suy ra từ tin F1.
+
+------------------------------------------------------------------------
+TC-12
+FORMAT: F1
+
+INPUT:
+Đóng tại Kho Long An
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / chưa có số cont
+
+EXPECTED:
+Tìm dòng lệnh đóng trong kế hoạch cùng nhà xe, ngày và kho, chưa có cont. Chỉ tự ghép nếu còn đúng một dòng phù hợp; nếu nhiều dòng/khách khác nhau thì chuyển hàng chờ ĐHVT.
+
+------------------------------------------------------------------------
+TC-13
+FORMAT: F1
+
+INPUT:
+1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / VSIU2621051 chì 23333878
+2 xe 15H00642/ Đoàn Văn Biên 0984******/ VSIU2321938 chì 23333310
+3 xe 15H06722/ Đào Đức Thoại đt: 0364******/ VSIU2323000 chì 23333330
+
+EXPECTED:
+Với fixture kế hoạch có 3 cont cùng khách nhưng thuộc 2 điểm đóng: tạo 2 tin đầu ra, mỗi tin gom cont theo điểm đóng và gửi đúng nhóm tương ứng. Không gán nhầm điểm.
+
+------------------------------------------------------------------------
+TC-14
+FORMAT: TU_DO
+
+INPUT:
+Lệnh đóng: cont VSIU2621051, khách Nhựa Á Đông
+Lệnh trả: cont VSIU2620327, khách Nhựa Á Đông
+
+EXPECTED:
+Tách 2 nghiệp vụ: cont đóng gửi nhóm chính; cont trả gửi nhóm trả hàng. Mỗi cont một bản ghi chuẩn và định tuyến độc lập.
+
+------------------------------------------------------------------------
+TC-15
+FORMAT: F2_UPDATE
+
+INPUT:
+Cập nhật cont VSIU2620327: số seal mới 654321
+
+EXPECTED:
+Tìm bản ghi cũ đúng theo cont/nghiệp vụ; cập nhật seal_no=654321; gửi thông báo 'Cập nhật' chỉ nêu số chì mới. Không tạo lệnh trùng.
+
+------------------------------------------------------------------------
+TC-16
+FORMAT: TU_DO
+
+INPUT:
+ok anh, để em báo tài
+
+EXPECTED:
+Tin hội thoại thông thường: không tạo bản ghi xe, bot im lặng.
+
+------------------------------------------------------------------------
+TC-17
+FORMAT: ROUTE_MAP
+
+INPUT:
+Lệnh trả hàng Vạn Lợi, cont VSIU2620327, tuyến có route_map='gửi sales'
+
+EXPECTED:
+Không gửi nhóm khách. Gửi tin chuẩn cho sales phụ trách để sales tự liên hệ; route_map phải xác định duy nhất.
+
+------------------------------------------------------------------------
+TC-18
+FORMAT: KE_HOACH
+
+INPUT:
+F1: 1 xe 15C17066/ Phạm Văn Huynh đt: 0986******/ GAOU7818258 chì 23333878
+
+EXPECTED:
+Với fixture kế hoạch ngày 20/07 có cùng cont ở dòng Nhập khách Acecook và dòng Xuất khách Everpia: tạo 2 tin riêng. Tin trả cho nơi nhận Acecook; tin đóng cho nơi nhận Everpia. Không nhắc khách còn lại hoặc chữ 'kết hợp'.
+
+------------------------------------------------------------------------
+TC-19
+FORMAT: WORKBOOK
+
+INPUT:
+Đọc file KE HOACH VAN CHUYEN THANG 7 -2026, sheet 20/07
+
+EXPECTED:
+Kiểm tra nhập kế hoạch: lấy đúng ngày từ dòng tiêu đề; ánh xạ cột theo tên tiêu đề; phân biệt Xuất/Nhập; số dòng đọc được phải khớp số dòng có số thứ tự. Cần file Excel fixture để chạy test thật.
+
+------------------------------------------------------------------------
+TC-20
+FORMAT: ROUTE_MAP
+
+INPUT:
+Cont Cheng Loong trả về nhiều điểm trong cùng ngày: Đồ Sơn, An Dương, Quang Châu, Ninh Bình
+
+EXPECTED:
+Mỗi điểm trả phải định tuyến đúng theo bảng ánh xạ khách+tuyến+trả. Điểm chưa có mapping chuyển hàng chờ ĐHVT; tuyệt đối không gửi nhầm nhóm.
+
+------------------------------------------------------------------------
