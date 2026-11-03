@@ -135,6 +135,7 @@ def receive_zalo_webhook(
         "containers_count": len(containers_summary),
         "trucks": trucks_summary,
         "containers": containers_summary,
+        "reply_to_carrier": carrier_reply,
         "data": {
             "id": msg.id,
             "msg_id": msg.zalo_message_id,

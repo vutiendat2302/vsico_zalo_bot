@@ -47,7 +47,7 @@ class ZaloGroup(Base):
     carrier_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     carrier_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     send_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="tu_dong")
-    is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

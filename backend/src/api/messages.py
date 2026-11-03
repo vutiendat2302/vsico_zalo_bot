@@ -807,21 +807,54 @@ def approve_message_by_dhvt(
     # 3. Gửi toàn bộ OutboundMessage đang chờ duyệt
     job_ids = [c.id for c in msg.container_jobs]
     sent_outbounds = []
+    send_warnings = []
+    is_real_msg = not (
+        (msg.group_id and ("test_" in msg.group_id or "pytest_" in msg.group_id))
+        or (msg.zalo_message_id and (msg.zalo_message_id.startswith("test_") or msg.zalo_message_id.startswith("pytest_")))
+        or (msg.sender_id and (msg.sender_id.startswith("test_") or msg.sender_id.startswith("pytest_")))
+    )
+
+    real_dest_grp = None
+    if is_real_msg:
+        real_dest_grp = db.scalars(
+            select(ZaloGroup)
+            .where(
+                ZaloGroup.is_active == True,
+                ZaloGroup.is_test == False,
+                ZaloGroup.zalo_group_id.isnot(None),
+                ~ZaloGroup.zalo_group_id.like("test_%"),
+                ~ZaloGroup.zalo_group_id.like("pytest_%"),
+                ~ZaloGroup.zalo_group_id.like("direct_%"),
+            )
+            .order_by(ZaloGroup.id.asc())
+        ).first()
+
     if job_ids:
         stmt_out = (
             select(OutboundMessage)
             .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
             .where(
                 OutboundMessageItem.container_job_id.in_(job_ids),
-                OutboundMessage.status == "cho_duyet",
+                OutboundMessage.status.in_(["cho_duyet", "bo_qua_trung_lap", "that_bai"]),
             )
             .distinct()
         )
         for out_msg in db.scalars(stmt_out).all():
             target_grp = out_msg.target_group
             target_gid = target_grp.zalo_group_id if target_grp else None
+
+            # Tự động chuyển hướng sang nhóm thật nếu là tin nhắn thực tế mà đích đang trỏ mock group
+            if is_real_msg and (not target_gid or target_gid.startswith("test_") or target_gid.startswith("grp_test_") or (target_grp and target_grp.is_test)):
+                if real_dest_grp:
+                    out_msg.target_group_id = real_dest_grp.id
+                    target_grp = real_dest_grp
+                    target_gid = real_dest_grp.zalo_group_id
+
             real_zalo_msg_id = None
-            if target_gid:
+            if target_gid and (
+                (target_gid.isdigit() and target_gid != "2001000000000000001")
+                or (not (target_grp and target_grp.is_test) and not target_gid.startswith("grp_test_") and not target_gid.startswith("test_") and not target_gid.startswith("pytest_"))
+            ):
                 send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
                     group_id=target_gid,
                     message=out_msg.content,
@@ -829,7 +862,23 @@ def approve_message_by_dhvt(
                 if not send_ok:
                     out_msg.status = "that_bai"
                     out_msg.last_error = f"Lỗi gửi Zalo: {send_err}"
+                    send_warnings.append(f"Gửi nhóm {target_gid} thất bại: {send_err}")
                     continue
+
+            # Nếu tin nhắn đến từ cuộc hội thoại cá nhân 1-1, gửi phản hồi duyệt thành công trực tiếp cho người gửi
+            if msg.sender_id and is_real_msg:
+                if not msg.group_id or msg.group_id.startswith("direct_"):
+                    direct_content = (
+                        f"✅ [VSICO ĐÃ PHÊ DUYỆT]\n"
+                        f"Tin nhắn của bạn đã được {operator_name} phê duyệt thành công!\n\n"
+                        f"Nội dung thông báo:\n{out_msg.content}"
+                    )
+                    u_ok, _, u_err = ZaloDispatcher.send_to_user(
+                        user_id=msg.sender_id,
+                        message=direct_content,
+                    )
+                    if not u_ok:
+                        logger.warning("Không thể gửi tin riêng cho người gửi %s: %s", msg.sender_id, u_err)
 
             out_msg.status = "da_gui"
             out_msg.approved_by = operator_name
@@ -850,12 +899,97 @@ def approve_message_by_dhvt(
     db.commit()
     db.refresh(msg)
 
+    ret_msg = f"ĐHVT đã duyệt tin nhắn #{message_id} thành công! Đã gửi {len(sent_outbounds)} thông báo tới Zalo."
+    if send_warnings:
+        ret_msg += f" Cảnh báo gửi Zalo: {'; '.join(send_warnings)}"
+
     return {
         "ok": True,
-        "message": f"ĐHVT đã duyệt tin nhắn #{message_id} thành công! Đã gửi {len(sent_outbounds)} thông báo tới Zalo.",
+        "message": ret_msg,
         "message_id": message_id,
         "processing_status": msg.processing_status,
         "outbounds_dispatched": sent_outbounds,
+        "warnings": send_warnings,
+    }
+
+
+class RejectMessagePayload(BaseModel):
+    """Payload lý do từ chối tin nhắn."""
+    reason: Optional[str] = Field(default="ĐHVT từ chối tin nhắn điều xe.", description="Lý do từ chối")
+
+
+@router.post("/{message_id}/reject")
+def reject_message_by_dhvt(
+    message_id: int,
+    payload: Optional[RejectMessagePayload] = Body(default=None),
+    operator_name: str = Query(default="Điều độ viên ĐHVT", description="Tên người từ chối"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """API dành cho Điều độ viên (ĐHVT) từ chối tin nhắn:
+
+    1. Cập nhật toàn bộ các ca ReviewCase liên quan thành 'rejected'.
+    2. Cập nhật ContainerJob: validation_status = 'rejected', routing_status = 'cancelled', tms_sync_status = 'failed'.
+    3. Hủy toàn bộ OutboundMessage đang chờ duyệt: status = 'huy'.
+    4. Cập nhật ZaloMessage: processing_status = 'cancelled'.
+    """
+    msg = db.get(ZaloMessage, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy tin nhắn ID={message_id}.")
+
+    reject_reason = (
+        payload.reason
+        if (payload and payload.reason and payload.reason.strip())
+        else "ĐHVT từ chối tin nhắn điều xe."
+    )
+    now = datetime.now()
+
+    # 1. Cập nhật các ca ReviewCase liên quan
+    for rc in db.scalars(
+        select(ReviewCase).where(
+            ReviewCase.message_id == message_id,
+            ReviewCase.status == "pending",
+        )
+    ).all():
+        rc.status = "rejected"
+        rc.resolved_at = now
+        rc.resolved_by = operator_name
+        rc.reason = f"{rc.reason or ''} [ĐHVT từ chối: {reject_reason}]"
+
+    # 2. Cập nhật ContainerJob
+    for cj in msg.container_jobs:
+        cj.validation_status = "rejected"
+        cj.routing_status = "cancelled"
+        cj.tms_sync_status = "failed"
+
+    # 3. Hủy toàn bộ OutboundMessage đang chờ duyệt
+    job_ids = [c.id for c in msg.container_jobs]
+    cancelled_outbounds = []
+    if job_ids:
+        stmt_out = (
+            select(OutboundMessage)
+            .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
+            .where(
+                OutboundMessageItem.container_job_id.in_(job_ids),
+                OutboundMessage.status == "cho_duyet",
+            )
+            .distinct()
+        )
+        for out_msg in db.scalars(stmt_out).all():
+            out_msg.status = "huy"
+            out_msg.last_error = f"ĐHVT từ chối duyệt: {reject_reason}"
+            cancelled_outbounds.append(out_msg.id)
+
+    # 4. Đổi trạng thái tin nhắn gốc thành 'cancelled'
+    msg.processing_status = "cancelled"
+    db.commit()
+    db.refresh(msg)
+
+    return {
+        "ok": True,
+        "message": f"ĐHVT đã từ chối tin nhắn #{message_id} thành công! Đã hủy {len(cancelled_outbounds)} thông báo gửi Zalo.",
+        "message_id": message_id,
+        "processing_status": msg.processing_status,
+        "cancelled_outbounds": cancelled_outbounds,
     }
 
 

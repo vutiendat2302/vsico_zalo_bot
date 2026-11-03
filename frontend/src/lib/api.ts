@@ -556,6 +556,22 @@ export async function approveMessageByDHVT(messageId: number, operatorName?: str
   return res.json();
 }
 
+export async function rejectMessageByDHVT(messageId: number, reason?: string, operatorName?: string): Promise<any> {
+  const url = `${API_BASE_URL}/api/messages/${messageId}/reject?operator_name=${encodeURIComponent(
+    operatorName || "Điều độ viên ĐHVT"
+  )}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: reason || "ĐHVT từ chối tin nhắn điều xe." }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Lỗi khi ĐHVT từ chối tin #${messageId}`);
+  }
+  return res.json();
+}
+
 export async function cancelOutboundMessage(id: number, reason?: string): Promise<any> {
   const url = `${API_BASE_URL}/api/outbound/messages/${id}/cancel`;
   const res = await fetch(url, {

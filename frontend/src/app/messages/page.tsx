@@ -21,6 +21,7 @@ import {
   getMessages,
   getMessageDetail,
   approveMessageByDHVT,
+  rejectMessageByDHVT,
   approveOutboundMessage,
 } from "@/lib/api";
 
@@ -46,6 +47,7 @@ export default function MessagesPage() {
   const [detailData, setDetailData] = useState<any | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [approvingMsg, setApprovingMsg] = useState(false);
+  const [rejectingMsg, setRejectingMsg] = useState(false);
 
   const handleApproveMessage = async (msgId: number) => {
     try {
@@ -58,6 +60,22 @@ export default function MessagesPage() {
       alert(err.message || "Lỗi khi duyệt tin nhắn");
     } finally {
       setApprovingMsg(false);
+    }
+  };
+
+  const handleRejectMessage = async (msgId: number) => {
+    const reason = prompt("Nhập lý do ĐHVT từ chối tin nhắn này:", "Dữ liệu không chính xác hoặc lệnh điều xe bị hủy.");
+    if (reason === null) return;
+    try {
+      setRejectingMsg(true);
+      const res = await rejectMessageByDHVT(msgId, reason);
+      alert(res.message || "ĐHVT đã từ chối tin nhắn thành công!");
+      await handleOpenDetail(msgId);
+      loadMessages(currentPage, pageSize);
+    } catch (err: any) {
+      alert(err.message || "Lỗi khi từ chối tin nhắn");
+    } finally {
+      setRejectingMsg(false);
     }
   };
 
@@ -477,15 +495,26 @@ export default function MessagesPage() {
               <div className="flex items-center space-x-2">
                 {(detailData?.message?.processing_status === "needs_review" ||
                   detailData?.outbound_messages?.some((o: any) => o.status === "cho_duyet")) && (
-                  <button
-                    type="button"
-                    disabled={approvingMsg}
-                    onClick={() => handleApproveMessage(selectedMsgId)}
-                    className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition shadow-sm disabled:opacity-50"
-                  >
-                    <CheckCircle2 className={`w-4 h-4 ${approvingMsg ? "animate-spin" : ""}`} />
-                    <span>{approvingMsg ? "Đang gửi Zalo..." : "ĐHVT Duyệt & Gửi Zalo"}</span>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      disabled={rejectingMsg || approvingMsg}
+                      onClick={() => handleRejectMessage(selectedMsgId)}
+                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition shadow-sm disabled:opacity-50"
+                    >
+                      <XCircle className={`w-4 h-4 ${rejectingMsg ? "animate-spin" : ""}`} />
+                      <span>{rejectingMsg ? "Đang xử lý..." : "ĐHVT Từ Chối"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={approvingMsg || rejectingMsg}
+                      onClick={() => handleApproveMessage(selectedMsgId)}
+                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition shadow-sm disabled:opacity-50"
+                    >
+                      <CheckCircle2 className={`w-4 h-4 ${approvingMsg ? "animate-spin" : ""}`} />
+                      <span>{approvingMsg ? "Đang gửi Zalo..." : "ĐHVT Duyệt & Gửi Zalo"}</span>
+                    </button>
+                  </>
                 )}
                 <button
                   onClick={() => {

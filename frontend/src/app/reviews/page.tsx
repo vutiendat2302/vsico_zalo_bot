@@ -7,6 +7,7 @@ import {
   XCircle,
   RefreshCw,
   AlertTriangle,
+  X,
 } from "lucide-react";
 import { ReviewCaseItem, getReviewCases, approveReviewCase, rejectReviewCase } from "@/lib/api";
 
@@ -17,6 +18,11 @@ export default function ReviewsPage() {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("pending");
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
+
+  // Modal từ chối
+  const [rejectModalId, setRejectModalId] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState<string>("Dữ liệu không chính xác theo kiểm tra thủ công.");
+  const [rejecting, setRejecting] = useState(false);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -53,7 +59,10 @@ export default function ReviewsPage() {
     if (!confirm(`Xác nhận PHÊ DUYỆT ca rà soát #${id}?`)) return;
     try {
       setActionLoadingId(id);
-      await approveReviewCase(id);
+      const res = await approveReviewCase(id);
+      if (res?.warnings && res.warnings.length > 0) {
+        alert(`Đã phê duyệt ca #${id} trong hệ thống!\n⚠️ Cảnh báo gửi tin Zalo: ${res.warnings.join("\n")}`);
+      }
       await loadReviews();
     } catch (err: any) {
       alert("Lỗi khi phê duyệt: " + err.message);
@@ -62,17 +71,22 @@ export default function ReviewsPage() {
     }
   };
 
-  const handleReject = async (id: number) => {
-    const reason = prompt("Nhập lý do từ chối bản ghi:", "Dữ liệu không chính xác theo kiểm tra thủ công.");
-    if (reason === null) return;
+  const handleOpenRejectModal = (id: number) => {
+    setRejectModalId(id);
+    setRejectReason("Dữ liệu không chính xác theo kiểm tra thủ công.");
+  };
+
+  const handleConfirmReject = async () => {
+    if (!rejectModalId) return;
     try {
-      setActionLoadingId(id);
-      await rejectReviewCase(id, reason);
+      setRejecting(true);
+      await rejectReviewCase(rejectModalId, rejectReason || "Dữ liệu không chính xác theo kiểm tra thủ công.");
+      setRejectModalId(null);
       await loadReviews();
     } catch (err: any) {
       alert("Lỗi khi từ chối: " + err.message);
     } finally {
-      setActionLoadingId(null);
+      setRejecting(false);
     }
   };
 
@@ -234,7 +248,7 @@ export default function ReviewsPage() {
                 {isPending && (
                   <div className="flex justify-end space-x-3 pt-2">
                     <button
-                      onClick={() => handleReject(r.id)}
+                      onClick={() => handleOpenRejectModal(r.id)}
                       disabled={actionLoadingId === r.id}
                       className="flex items-center space-x-1.5 px-3 py-1.5 bg-red-950/60 hover:bg-red-900/60 text-red-300 border border-red-800/60 rounded-lg text-xs font-medium transition"
                     >
@@ -309,6 +323,63 @@ export default function ReviewsPage() {
           </div>
         )}
       </div>
+
+      {/* Modal xác nhận lý do từ chối */}
+      {rejectModalId !== null && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-md w-full p-5 text-xs text-slate-300 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <h3 className="text-sm font-bold text-rose-400 flex items-center gap-1.5">
+                <XCircle className="w-4 h-4 text-rose-400" />
+                <span>Từ chối ca rà soát #{rejectModalId}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setRejectModalId(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-slate-300 font-semibold mb-1.5">
+                Lý do từ chối (bản ghi và tin gửi khách sẽ chuyển sang Bị Hủy):
+              </label>
+              <textarea
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                rows={3}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-rose-500 font-mono"
+                placeholder="Nhập lý do từ chối..."
+              />
+            </div>
+
+            <div className="flex justify-end space-x-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setRejectModalId(null)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                disabled={rejecting}
+                onClick={handleConfirmReject}
+                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold transition flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              >
+                {rejecting ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <XCircle className="w-3.5 h-3.5" />
+                )}
+                <span>{rejecting ? "Đang xử lý..." : "Xác nhận Từ chối"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

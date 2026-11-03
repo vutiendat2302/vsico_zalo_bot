@@ -136,6 +136,14 @@ class WebhookIngestor:
         zalo_group = db.scalar(
             select(ZaloGroup).where(ZaloGroup.zalo_group_id == group_id)
         )
+        is_mock_group = (
+            group_id.startswith("test_")
+            or group_id.startswith("pytest_")
+            or "pytest_" in group_id
+            or "test_" in group_id
+            or (msg_id and (msg_id.startswith("test_") or msg_id.startswith("pytest_")))
+            or (sender_id and (sender_id.startswith("test_") or sender_id.startswith("pytest_")))
+        )
         if zalo_group is None:
             zalo_group = ZaloGroup(
                 zalo_group_id=group_id,
@@ -143,6 +151,7 @@ class WebhookIngestor:
                 group_role=group_role,
                 send_mode="tu_dong",
                 is_active=True,
+                is_test=is_mock_group,
             )
             db.add(zalo_group)
             db.flush()
@@ -178,7 +187,7 @@ class WebhookIngestor:
             quote_msg_id=str(quote_msg_id) if quote_msg_id else None,
             message_type=msg_type,
             message_text=text,
-            raw_payload=payload_dict.get("raw_payload") or payload_dict,
+            raw_payload=payload_dict,
             zalo_sent_at=zalo_sent_at,
             processing_status=initial_status,
         )

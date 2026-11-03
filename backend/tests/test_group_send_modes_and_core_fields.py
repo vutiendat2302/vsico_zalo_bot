@@ -478,3 +478,134 @@ def test_05_group_management_api_crud_and_send_mode_toggle():
     t2_data = toggle_res2.json()
     assert t2_data["send_mode"] == "tu_dong"
     assert t2_data["send_mode_label"] == "Tự động"
+
+
+def test_06_dvdh_reject_via_review_and_message_endpoints():
+    """Kiểm thử từ chối ca rà soát và tin nhắn chờ duyệt:
+
+    1. Từ chối qua POST /api/reviews/{review_id}/reject:
+       - ReviewCase.status chuyển thành 'rejected'.
+       - OutboundMessage.status chuyển thành 'huy'.
+       - ZaloMessage.processing_status chuyển thành 'cancelled'.
+    2. Từ chối qua POST /api/messages/{message_id}/reject:
+       - ZaloMessage.processing_status chuyển thành 'cancelled'.
+       - Tất cả ReviewCase và OutboundMessage liên quan chuyển thành 'rejected'/'huy'.
+    """
+    client = TestClient(app)
+    uid = uuid.uuid4().hex[:6]
+    carrier_grp_id = f"test_grp_carrier_rej_{uid}"
+    target_grp_id = f"test_grp_cust_rej_{uid}"
+    cont_no = make_unique_valid_cont(uid)
+    plate_no = make_unique_valid_plate(uid)
+
+    db = SessionLocal()
+    g_target = ZaloGroup(zalo_group_id=target_grp_id, name="Target Rej", group_role="destination", send_mode="tu_dong", is_test=True)
+    g_source = ZaloGroup(zalo_group_id=carrier_grp_id, name="Source Rej", group_role="source", send_mode="cho_duyet", is_test=True)
+    db.add(g_target)
+    db.add(g_source)
+    db.commit()
+    db.close()
+
+    valid_text = (
+        f"Lệnh đóng hàng - KH: Logitem - Điểm đóng: Kho Tân Quang\n"
+        f"1 xe: {plate_no} / Vũ Tuấn Anh / 0988776655 / {cont_no} / 40HC / chì 11223344"
+    )
+
+    res = client.post(
+        "/webhook",
+        json={
+            "msg_id": f"test_mode_to_reject_{uid}",
+            "group_id": carrier_grp_id,
+            "sender_id": f"test_driver_rej_{uid}",
+            "sender_name": "Tài xế Rej",
+            "text": valid_text,
+        },
+    )
+    assert res.status_code == 200
+    msg_id = res.json()["record_id"]
+
+    db = SessionLocal()
+    rc = db.scalar(select(ReviewCase).where(ReviewCase.message_id == msg_id))
+    assert rc is not None
+    rc_id = rc.id
+    db.close()
+
+    # 1. Từ chối qua API /api/reviews/{review_id}/reject
+    reject_res = client.post(
+        f"/api/reviews/{rc_id}/reject",
+        json={"reason": "Sai thông tin xe điều"},
+    )
+    assert reject_res.status_code == 200
+    rej_body = reject_res.json()
+    assert rej_body["ok"] is True
+    assert rej_body["status"] == "REJECTED"
+
+    db = SessionLocal()
+    refreshed_rc = db.get(ReviewCase, rc_id)
+    assert refreshed_rc.status == "rejected"
+    assert "Sai thông tin xe điều" in refreshed_rc.reason
+
+    refreshed_msg = db.get(ZaloMessage, msg_id)
+    assert refreshed_msg.processing_status == "cancelled"
+
+    out = db.scalars(
+        select(OutboundMessage)
+        .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
+        .join(ContainerJob, ContainerJob.id == OutboundMessageItem.container_job_id)
+        .where(ContainerJob.message_id == msg_id)
+    ).first()
+    assert out is not None
+    assert out.status == "huy"
+    assert "ĐHVT từ chối duyệt" in (out.last_error or "")
+    db.close()
+
+    # 2. Tạo tin nhắn thứ hai để kiểm thử từ chối trực tiếp từ /api/messages/{message_id}/reject
+    uid2 = uuid.uuid4().hex[:6]
+    cont_no2 = make_unique_valid_cont(uid2)
+    plate_no2 = make_unique_valid_plate(uid2)
+    valid_text2 = (
+        f"Lệnh đóng hàng - KH: Logitem - Điểm đóng: Kho Tân Quang\n"
+        f"1 xe: {plate_no2} / Đỗ Tiến Hưng / 0912345678 / {cont_no2} / 40HC / chì 55667788"
+    )
+
+    res2 = client.post(
+        "/webhook",
+        json={
+            "msg_id": f"test_msg_reject_direct_{uid2}",
+            "group_id": carrier_grp_id,
+            "sender_id": f"test_driver_rej_{uid2}",
+            "sender_name": "Tài xế Rej 2",
+            "text": valid_text2,
+        },
+    )
+    assert res2.status_code == 200
+    msg_id2 = res2.json()["record_id"]
+
+    # ĐHVT gọi API từ chối tin nhắn
+    msg_reject_res = client.post(
+        f"/api/messages/{msg_id2}/reject",
+        json={"reason": "Hủy toàn bộ chuyến này theo yêu cầu khách"},
+    )
+    assert msg_reject_res.status_code == 200
+    m_body = msg_reject_res.json()
+    assert m_body["ok"] is True
+    assert m_body["processing_status"] == "cancelled"
+
+    db = SessionLocal()
+    m2 = db.get(ZaloMessage, msg_id2)
+    assert m2.processing_status == "cancelled"
+
+    rc2 = db.scalar(select(ReviewCase).where(ReviewCase.message_id == msg_id2))
+    assert rc2 is not None
+    assert rc2.status == "rejected"
+    assert "Hủy toàn bộ chuyến" in rc2.reason
+
+    out2 = db.scalars(
+        select(OutboundMessage)
+        .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
+        .join(ContainerJob, ContainerJob.id == OutboundMessageItem.container_job_id)
+        .where(ContainerJob.message_id == msg_id2)
+    ).first()
+    assert out2 is not None
+    assert out2.status == "huy"
+    db.close()

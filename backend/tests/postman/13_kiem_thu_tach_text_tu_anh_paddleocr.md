@@ -240,3 +240,40 @@ curl -X POST "http://localhost:8000/webhook" \
 - Xe dòng #1: thiếu/sai số chì.
 (Hạn bổ sung thông tin trong vòng 30 phút để bot kịp thời thông báo tới khách hàng)
 ```
+
+---
+
+### Ca 5: Gửi ảnh THỰC TẾ (Base64 / Đường dẫn tệp / URL) qua cơ chế AI Vision Fallback
+
+- **Mục tiêu**: Khi máy chủ PaddleOCR nội bộ ngoại tuyến hoặc chưa cài đặt thư viện nặng `paddleocr`, hệ thống tự động kích hoạt **Gemini Vision (`gemini-3.5-flash`)** để trích xuất văn bản từ hình ảnh thật mà không cần bất kỳ thao tác cài đặt thêm nào.
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/webhook`
+
+#### cURL Lệnh mẫu gửi ảnh Base64 thật:
+```bash
+curl -X POST "http://localhost:8000/webhook" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app_id": "zca_personal_bot",
+    "event_name": "user_send_image",
+    "group_id": "6469608867469758994",
+    "sender": {"id": "driver_live_01", "name": "Lái xe gửi ảnh lệnh thật"},
+    "timestamp": "1791798070000",
+    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "message": {
+      "msg_id": "ocr_real_photo_005",
+      "text": "Lệnh xe"
+    }
+  }'
+```
+
+---
+
+### Ca 6: Kiểm thử luồng tiếp nhận ảnh từ Zalo Bot Bridge (`zca-js`)
+
+Khi người dùng hoặc tài xế gửi hình ảnh chụp lệnh vận chuyển trong nhóm Zalo:
+1. `zca-js` bắt sự kiện `message` với `msgType === 'chat.photo'` hoặc nội dung đính kèm ảnh.
+2. Trích xuất đường dẫn ảnh (`href`, `hdUrl`, `normalUrl`, `url`, `params.hdUrl`).
+3. Tự động đóng gói và chuyển tiếp sang Backend Python với `event_name = 'user_send_image'` và `image_url`.
+4. Backend nạp ảnh, thực thi nhận diện ký tự (PaddleOCR hoặc Gemini Vision), chuẩn hóa thành 15 trường và đẩy vào luồng gửi tin cho khách hàng.
+

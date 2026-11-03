@@ -265,7 +265,7 @@ class ExtractionHandler:
         """Xác định nhóm Zalo đích để gửi tin nhắn thông báo cho khách hàng."""
         src_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == source_group_id_str)) if source_group_id_str else None
         is_test_mode = bool(src_grp and src_grp.is_test) or bool(
-            source_group_id_str and (source_group_id_str.startswith("test_") or source_group_id_str.startswith("pytest_"))
+            source_group_id_str and ("test_" in source_group_id_str or "pytest_" in source_group_id_str)
         )
 
         # 0. Ưu tiên số 1: Nhóm đích từ Kế hoạch vận chuyển (TransportPlan.group_id)
@@ -320,6 +320,17 @@ class ExtractionHandler:
                 return matching_grp.id, matching_grp.zalo_group_id
 
         # 3. Tìm nhóm Zalo đích có role 'destination' hoặc 'customer' phù hợp chế độ test/thật
+        if not is_test_mode:
+            main_dest = db.scalar(
+                select(ZaloGroup)
+                .where(
+                    ZaloGroup.zalo_group_id == "6469608867469758994",
+                    ZaloGroup.is_active == True,
+                )
+            )
+            if main_dest:
+                return main_dest.id, main_dest.zalo_group_id
+
         dest_grp = db.scalar(
             select(ZaloGroup)
             .where(
@@ -334,16 +345,18 @@ class ExtractionHandler:
 
         # 4. Nếu chưa có nhóm đích phù hợp, tạo nhóm đích mặc định
         default_gid = f"test_dest_{uuid4().hex[:6]}" if is_test_mode else "6469608867469758994"
-        default_grp = ZaloGroup(
-            zalo_group_id=default_gid,
-            name="Nhóm Khách Hàng Test" if is_test_mode else "Nhóm Khách Hàng VSICO",
-            group_role="destination",
-            send_mode="tu_dong",
-            is_active=True,
-            is_test=is_test_mode,
-        )
-        db.add(default_grp)
-        db.flush()
+        default_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == default_gid))
+        if not default_grp:
+            default_grp = ZaloGroup(
+                zalo_group_id=default_gid,
+                name="Nhóm Khách Hàng Test" if is_test_mode else "Nhóm Khách Hàng VSICO",
+                group_role="destination",
+                send_mode="tu_dong",
+                is_active=True,
+                is_test=is_test_mode,
+            )
+            db.add(default_grp)
+            db.flush()
         return default_grp.id, default_grp.zalo_group_id
 
     @classmethod
@@ -405,10 +418,25 @@ class ExtractionHandler:
         )
 
         ocr_metadata: Optional[dict[str, Any]] = None
-        if not raw_text and is_image_msg:
+        image_placeholders = {
+            "[ảnh]", "[hình ảnh]", "[đính kèm]", "[photo]", "[image]",
+            "[tệp đính kèm]", "[attachment]", "ảnh", "hình ảnh", "gửi ảnh"
+        }
+        is_placeholder = raw_text.lower().strip() in image_placeholders if raw_text else False
+
+        has_shipping_info = False
+        if raw_text and not is_placeholder:
+            has_plate = bool(re.search(r"\d{2}[A-Za-z]\s*[-.]?\s*\d{3,5}", raw_text))
+            has_cont = bool(re.search(r"[A-Za-z]{4}\s*\d{7}", raw_text))
+            has_shipping_info = has_plate or has_cont
+
+        if is_image_msg and (not raw_text or is_placeholder or not has_shipping_info):
             ocr_text, ocr_conf, ocr_boxes = PaddleOCRClient.extract_text_from_payload(message.raw_payload or {})
             if ocr_text and ocr_text.strip():
-                raw_text = ocr_text.strip()
+                if not raw_text or is_placeholder:
+                    raw_text = ocr_text.strip()
+                else:
+                    raw_text = f"{raw_text.strip()}\n{ocr_text.strip()}"
                 message.message_text = raw_text
                 message.message_type = "image_ocr"
                 ocr_metadata = {
@@ -422,17 +450,18 @@ class ExtractionHandler:
                 message.raw_payload = updated_payload
                 db.flush()
                 logger.info(
-                    "Đã bóc tách thành công %d ký tự từ ảnh qua PaddleOCR (độ tin cậy: %.2f) cho tin nhắn ID=%s",
+                    "Đã bóc tách thành công %d ký tự từ ảnh qua OCR (độ tin cậy: %.2f) cho tin nhắn ID=%s",
                     len(raw_text),
                     ocr_conf,
                     message.id,
                 )
             else:
                 # Quy tắc nghiệp vụ: Ảnh nào không có text thì bỏ qua
-                logger.info("Tin nhắn ảnh ID=%s không tách được văn bản nào -> Bỏ qua", message.id)
-                message.processing_status = MessageStatus.IGNORED_NON_TEXT.value
-                db.commit()
-                return message
+                if not raw_text or is_placeholder:
+                    logger.info("Tin nhắn ảnh ID=%s không tách được văn bản nào -> Bỏ qua", message.id)
+                    message.processing_status = MessageStatus.IGNORED_NON_TEXT.value
+                    db.commit()
+                    return message
 
         # Bỏ qua nếu sau khi xử lý (kể cả qua OCR) vẫn không có văn bản hợp lệ
         if not raw_text:
@@ -755,6 +784,26 @@ class ExtractionHandler:
             source_mode = (source_grp.send_mode or "tu_dong").strip().lower() if source_grp else "tu_dong"
             is_auto_group = (target_mode in ("tu_dong", "auto")) and (source_mode in ("tu_dong", "auto"))
 
+            raw_p = message.raw_payload or {}
+            target_carrier_group = message.group_id
+            is_test_msg = (
+                bool(raw_p.get("is_test"))
+                or bool(raw_p.get("is_simulation"))
+                or bool(raw_p.get("is_test_runner"))
+                or (source_grp and source_grp.is_test)
+                or (target_carrier_group and (
+                    target_carrier_group.startswith("test_")
+                    or target_carrier_group.startswith("grp_test_")
+                    or target_carrier_group.startswith("pytest_")
+                ))
+                or (message.zalo_message_id and (
+                    message.zalo_message_id.startswith("test_")
+                    or "TC-" in message.zalo_message_id
+                    or "_m1" in message.zalo_message_id
+                ))
+                or (message.sender_id and message.sender_id.startswith("test_"))
+            )
+
             paused_grp_name = (
                 source_grp.name
                 if (source_grp and (source_grp.send_mode or "").strip().lower() in ("cho_duyet", "manual"))
@@ -776,7 +825,7 @@ class ExtractionHandler:
                     out_last_err = f"Nhóm '{paused_grp_name}' ở chế độ Chờ duyệt (Chờ ĐHVT duyệt trước khi gửi khách)"
                 else:
                     out_last_err = f"Chờ ĐHVT duyệt do thiếu/sai: {', '.join(missing_fields)}"
-            elif is_complete and settings.AUTO_DISPATCH_OUTBOUND and target_zalo_grp_id and (
+            elif is_complete and settings.AUTO_DISPATCH_OUTBOUND and target_zalo_grp_id and not is_test_msg and (
                 (target_zalo_grp_id.isdigit() and target_zalo_grp_id != "2001000000000000001")
                 or (not (target_grp and target_grp.is_test) and not target_zalo_grp_id.startswith("grp_test_") and not target_zalo_grp_id.startswith("test_") and not target_zalo_grp_id.startswith("pytest_"))
             ):
@@ -880,26 +929,20 @@ class ExtractionHandler:
                     db.add(bot_reply)
                     db.flush()
 
-                    # Gửi thực tế tin nhắc lỗi về nhóm nhà xe / tài xế trên Zalo (bỏ qua nếu là nhóm test)
-                    if settings.AUTO_DISPATCH_OUTBOUND:
-                        target_carrier_group = message.group_id
+                    # Chỉ gửi thực tế tin nhắc lỗi về Zalo nếu:
+                    # 1. Bật cờ AUTO_DISPATCH_OUTBOUND
+                    # 2. Nhóm ở chế độ tự động (is_auto_group == True)
+                    # 3. Không phải là tin nhắn test / kiểm thử 20k / giả lập (is_test_msg == False)
+                    if settings.AUTO_DISPATCH_OUTBOUND and is_auto_group and not is_test_msg:
                         reply_ok = False
                         reply_msg_id = None
-                        is_test_carrier = (
-                            (source_grp and source_grp.is_test)
-                            or (target_carrier_group and (
-                                target_carrier_group.startswith("test_")
-                                or target_carrier_group.startswith("grp_test_")
-                                or target_carrier_group.startswith("pytest_")
-                            ))
-                        )
-                        if target_carrier_group and not target_carrier_group.startswith("direct_") and not is_test_carrier:
+                        if target_carrier_group and not target_carrier_group.startswith("direct_"):
                             reply_ok, reply_msg_id, _ = ZaloDispatcher.send_to_group(
                                 group_id=target_carrier_group,
                                 message=warning_reply_text,
                                 quote_msg_id=message.zalo_message_id,
                             )
-                        elif message.sender_id and not is_test_carrier and not message.sender_id.startswith("test_"):
+                        elif message.sender_id and not message.sender_id.startswith("test_"):
                             reply_ok, reply_msg_id, _ = ZaloDispatcher.send_to_user(
                                 user_id=message.sender_id,
                                 message=warning_reply_text,

@@ -313,20 +313,69 @@ def approve_outbound_message(
     if msg.status == "da_gui":
         return {"ok": True, "status": "da_gui", "message": "Tin nhắn này đã được gửi trước đó."}
 
+    # Kiểm tra xem tin nhắn gốc có phải là tin nhắn thật hay không
+    is_real_msg = False
+    parent_zalo_msg = None
+    for item in msg.items:
+        if item.container_job and item.container_job.message:
+            parent_zalo_msg = item.container_job.message
+            if not (
+                (parent_zalo_msg.group_id and ("test_" in parent_zalo_msg.group_id or "pytest_" in parent_zalo_msg.group_id))
+                or (parent_zalo_msg.zalo_message_id and (parent_zalo_msg.zalo_message_id.startswith("test_") or parent_zalo_msg.zalo_message_id.startswith("pytest_")))
+                or (parent_zalo_msg.sender_id and (parent_zalo_msg.sender_id.startswith("test_") or parent_zalo_msg.sender_id.startswith("pytest_")))
+            ):
+                is_real_msg = True
+                break
+
     # Thực hiện gửi thực tế ra Nhóm Zalo đích
     target_grp = msg.target_group
     target_gid = target_grp.zalo_group_id if target_grp else None
+
+    # Tự động chuyển hướng sang nhóm thật nếu là tin nhắn thực tế mà đích đang trỏ mock group
+    if is_real_msg and (not target_gid or target_gid.startswith("test_") or target_gid.startswith("grp_test_") or (target_grp and target_grp.is_test)):
+        real_dest_grp = db.scalars(
+            select(ZaloGroup)
+            .where(
+                ZaloGroup.is_active == True,
+                ZaloGroup.is_test == False,
+                ZaloGroup.zalo_group_id.isnot(None),
+                ~ZaloGroup.zalo_group_id.like("test_%"),
+                ~ZaloGroup.zalo_group_id.like("pytest_%"),
+                ~ZaloGroup.zalo_group_id.like("direct_%"),
+            )
+            .order_by(ZaloGroup.id.asc())
+        ).first()
+        if real_dest_grp:
+            msg.target_group_id = real_dest_grp.id
+            target_grp = real_dest_grp
+            target_gid = real_dest_grp.zalo_group_id
+
     real_zalo_msg_id = None
     if target_gid:
-        send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
-            group_id=target_gid,
-            message=msg.content,
-        )
+        if target_grp and target_grp.is_test and not is_real_msg:
+            send_ok = True
+            real_zalo_msg_id = f"test_mock_zalo_{uuid4().hex[:12]}"
+            send_err = None
+        else:
+            send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
+                group_id=target_gid,
+                message=msg.content,
+            )
         if not send_ok:
             msg.status = "that_bai"
             msg.last_error = f"Lỗi gửi Zalo: {send_err}"
             db.commit()
             return {"ok": False, "status": "that_bai", "message": f"Gửi tin tới Zalo thất bại: {send_err}"}
+
+    # Gửi phản hồi 1-1 cho người gửi nếu tin nhắn gốc gửi trực tiếp
+    if parent_zalo_msg and parent_zalo_msg.sender_id and is_real_msg:
+        if not parent_zalo_msg.group_id or parent_zalo_msg.group_id.startswith("direct_"):
+            direct_reply = (
+                f"✅ [VSICO ĐÃ PHÊ DUYỆT]\n"
+                f"Tin nhắn thông báo của bạn đã được {operator_name} phê duyệt thành công!\n\n"
+                f"Nội dung thông báo:\n{msg.content}"
+            )
+            ZaloDispatcher.send_to_user(parent_zalo_msg.sender_id, direct_reply)
 
     now = _utc_now()
     msg.status = "da_gui"
@@ -426,10 +475,15 @@ def resend_outbound_message(
     target_gid = target_grp.zalo_group_id if target_grp else None
     real_zalo_msg_id = None
     if target_gid:
-        send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
-            group_id=target_gid,
-            message=msg.content,
-        )
+        if target_grp and target_grp.is_test:
+            send_ok = True
+            real_zalo_msg_id = f"test_mock_zalo_{uuid4().hex[:12]}"
+            send_err = None
+        else:
+            send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
+                group_id=target_gid,
+                message=msg.content,
+            )
         if not send_ok:
             msg.status = "that_bai"
             msg.last_error = f"Lỗi gửi Zalo: {send_err}"
@@ -458,17 +512,17 @@ def resend_outbound_message(
 @outbound_router.post("/seed-samples")
 def seed_outbound_samples(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Tạo các bản ghi kết quả tin nhắn mẫu (Đã gửi, Chờ duyệt, Bị hủy, Thất bại) để người dùng xem và kiểm thử trực quan."""
-    # Tìm nhóm Zalo làm đích
-    target_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == "6469608867469758994"))
+    # Tìm nhóm Zalo làm đích (ưu tiên nhóm test để không gửi ra Zalo thật khi duyệt mẫu)
+    target_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.is_test == True))
     if not target_grp:
-        target_grp = db.scalar(select(ZaloGroup))
+        target_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == "test_sample_group"))
     if not target_grp:
         target_grp = ZaloGroup(
-            zalo_group_id="6469608867469758994",
-            name="Nhóm Điều Độ VSICO - Hải Phòng",
-            group_role="source",
+            zalo_group_id="test_sample_group",
+            name="Nhóm Mẫu Test",
+            group_role="destination",
             is_active=True,
-            is_test=False,
+            is_test=True,
         )
         db.add(target_grp)
         db.flush()

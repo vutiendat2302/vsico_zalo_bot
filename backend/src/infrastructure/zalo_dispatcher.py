@@ -101,7 +101,12 @@ class ZaloDispatcher:
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     outbound_throttler.report_rate_limit(retry_after=3.0)
-                last_error = f"HTTP {e.code}: {e.reason}"
+                try:
+                    err_body = e.read().decode("utf-8")
+                    err_json = json.loads(err_body)
+                    last_error = err_json.get("error") or f"HTTP {e.code}: {e.reason}"
+                except Exception:
+                    last_error = f"HTTP {e.code}: {e.reason}"
                 logger.warning("Lỗi HTTP khi gửi tin nhóm %s (lần %d/%d): %s", group_id, attempt, max_retries, last_error)
             except Exception as e:
                 last_error = str(e)
@@ -176,6 +181,22 @@ class ZaloDispatcher:
                     else:
                         err = resp_body.get("error") or "Lỗi từ ZCA bridge"
                         last_error = err
+                        if resp_body.get("code") == 123 or "123" in str(err):
+                            logger.warning("⚠️ Người nhận %s chưa kết bạn hoặc chặn tin nhắn người lạ (Zalo error 123). Dừng thử lại.", user_id)
+                            break
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    outbound_throttler.report_rate_limit(retry_after=3.0)
+                try:
+                    err_body = e.read().decode("utf-8")
+                    err_json = json.loads(err_body)
+                    last_error = err_json.get("error") or f"HTTP {e.code}: {e.reason}"
+                    if err_json.get("code") == 123 or "123" in str(last_error):
+                        logger.warning("⚠️ Người nhận %s chưa kết bạn hoặc chặn tin nhắn người lạ (Zalo error 123). Dừng thử lại.", user_id)
+                        break
+                except Exception:
+                    last_error = f"HTTP {e.code}: {e.reason}"
+                logger.warning("Lỗi HTTP khi gửi tin tới user %s (lần %d/%d): %s", user_id, attempt, max_retries, last_error)
             except Exception as e:
                 last_error = str(e)
                 logger.warning("Không thể gửi tin tới user %s (lần %d/%d): %s", user_id, attempt, max_retries, last_error)

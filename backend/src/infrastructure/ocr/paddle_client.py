@@ -35,6 +35,8 @@ class PaddleOCRClient:
         - `message.image_url`, `message.url`, `message.href`, `message.src`
         - `attachments` danh sách tệp đính kèm có loại 'image' hoặc đuôi ảnh (.png, .jpg, .jpeg)
         - `event_name` là 'user_send_image'
+        - `msgType` hoặc `msg_type` là 'chat.photo', 'photo', 'image'
+        - Đối tượng `content` chứa `href`, `thumb`, hoặc `params` ảnh
         """
         if not isinstance(payload_dict, dict):
             return False
@@ -48,12 +50,24 @@ class PaddleOCRClient:
         if payload_dict.get("mock_ocr_text") is not None:
             return True
 
+        if str(payload_dict.get("msgType", "")).lower() in ("chat.photo", "photo") or str(payload_dict.get("msg_type", "")).lower() in ("image", "photo", "chat.photo"):
+            return True
+
         nested_msg = payload_dict.get("message")
         if isinstance(nested_msg, dict):
             if nested_msg.get("image_url") or nested_msg.get("image_base64") or nested_msg.get("image_path"):
                 return True
+            if str(nested_msg.get("msgType", "")).lower() in ("chat.photo", "photo") or str(nested_msg.get("msg_type", "")).lower() in ("image", "photo"):
+                return True
             url_candidate = nested_msg.get("url") or nested_msg.get("href") or nested_msg.get("src")
             if url_candidate and cls._is_image_url(str(url_candidate)):
+                return True
+
+        raw_p = payload_dict.get("raw_payload")
+        if isinstance(raw_p, dict):
+            if str(raw_p.get("msgType", "")).lower() in ("chat.photo", "photo"):
+                return True
+            if cls.is_image_payload(raw_p):
                 return True
 
         attachments = payload_dict.get("attachments")
@@ -64,6 +78,18 @@ class PaddleOCRClient:
                     att_url = str(att.get("url") or att.get("href") or "")
                     if att_type in ("image", "photo") or cls._is_image_url(att_url):
                         return True
+
+        # Kiểm tra trường content nếu là đối tượng đính kèm ảnh Zalo
+        for container in (payload_dict, nested_msg if isinstance(nested_msg, dict) else {}, raw_p if isinstance(raw_p, dict) else {}):
+            content = container.get("content")
+            if isinstance(content, dict):
+                for k in ("hdUrl", "normalUrl", "url", "href", "rawUrl", "thumb", "src"):
+                    val = content.get(k)
+                    if val and isinstance(val, str) and (val.startswith(("http://", "https://")) or cls._is_image_url(val)):
+                        return True
+                params = content.get("params")
+                if params and isinstance(params, str) and ("http" in params or ".jpg" in params or ".png" in params):
+                    return True
 
         return False
 
@@ -129,8 +155,13 @@ class PaddleOCRClient:
         if local_result is not None:
             return local_result
 
+        # 4. Fallback Multimodal AI: Sử dụng Gemini Vision khi PaddleOCR cục bộ không khả dụng
+        ai_result = cls._call_ai_vision(base64_str)
+        if ai_result is not None:
+            return ai_result
+
         logger.warning(
-            "Dịch vụ PaddleOCR tại '%s' hiện không phản hồi. Trả về kết quả rỗng.",
+            "Dịch vụ OCR tại '%s' hiện không phản hồi và không có fallback khả dụng. Trả về kết quả rỗng.",
             settings.PADDLE_OCR_URL,
         )
         return "", 0.0, []
@@ -162,6 +193,30 @@ class PaddleOCRClient:
                     if att_url and isinstance(att_url, str) and att_url.strip():
                         return att_url.strip()
 
+        # Tìm trong các đối tượng content và raw_payload (chuẩn hóa sự kiện Zalo)
+        for container in (payload_dict, payload_dict.get("raw_payload") or {}, nested_msg if isinstance(nested_msg, dict) else {}):
+            if not isinstance(container, dict):
+                continue
+            content = container.get("content")
+            if isinstance(content, dict):
+                for k in ("hdUrl", "normalUrl", "url", "href", "rawUrl", "thumb", "src"):
+                    c_url = content.get(k)
+                    if c_url and isinstance(c_url, str) and c_url.strip().startswith(("http://", "https://")):
+                        return c_url.strip()
+                params = content.get("params")
+                if params:
+                    try:
+                        p_obj = json.loads(params) if isinstance(params, str) else params
+                        if isinstance(p_obj, dict):
+                            for k in ("hdUrl", "normalUrl", "url", "rawUrl", "thumb"):
+                                p_url = p_obj.get(k)
+                                if p_url and isinstance(p_url, str) and p_url.strip().startswith(("http://", "https://")):
+                                    return p_url.strip()
+                    except Exception:
+                        pass
+            elif isinstance(content, str) and content.strip().startswith(("http://", "https://")) and cls._is_image_url(content.strip()):
+                return content.strip()
+
         return None
 
     @classmethod
@@ -183,10 +238,13 @@ class PaddleOCRClient:
             return clean_str.split(";base64,", 1)[1].strip()
 
         # Dạng Base64 thuần
-        if len(clean_str) > 100 and not clean_str.startswith(("http://", "https://", "/")) and "\n" not in clean_str:
-            # Kiểm tra cơ bản ký tự base64
-            if re.match(r"^[A-Za-z0-9+/=]+$", clean_str[:100]):
-                return clean_str
+        if not clean_str.startswith(("http://", "https://", "/")) and "\n" not in clean_str and len(clean_str) >= 16:
+            if re.match(r"^[A-Za-z0-9+/=]+$", clean_str):
+                try:
+                    base64.b64decode(clean_str)
+                    return clean_str
+                except Exception:
+                    pass
 
         # Dạng đường dẫn tệp cục bộ
         if os.path.isfile(clean_str):
@@ -202,7 +260,10 @@ class PaddleOCRClient:
             try:
                 req = urllib.request.Request(
                     clean_str,
-                    headers={"User-Agent": "VSICO-Zalo-Bot-OCR/2.0"},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": "https://chat.zalo.me/",
+                    },
                 )
                 with urllib.request.urlopen(req, timeout=settings.OCR_TIMEOUT_SECONDS) as resp:
                     data = resp.read()
@@ -378,3 +439,109 @@ class PaddleOCRClient:
         except Exception as e:
             logger.warning("Lỗi chạy in-process PaddleOCR: %s", e)
             return None
+
+    @classmethod
+    def _detect_mime_type(cls, b64_str: str) -> str:
+        """Nhận diện MIME type của ảnh từ chuỗi Base64."""
+        if b64_str.startswith("/9j/"):
+            return "image/jpeg"
+        if b64_str.startswith("iVBOR"):
+            return "image/png"
+        if b64_str.startswith("UklGR"):
+            return "image/webp"
+        if b64_str.startswith("R0lGOD"):
+            return "image/gif"
+        return "image/jpeg"
+
+    @classmethod
+    def _call_ai_vision(
+        cls, base64_image: str
+    ) -> Optional[tuple[str, float, list[dict[str, Any]]]]:
+        """Fallback Multimodal AI: Sử dụng Google Gemini Vision để bóc tách ký tự từ ảnh khi PaddleOCR không sẵn sàng."""
+        if not settings.AI_ENABLED or not settings.AI_API_KEY:
+            return None
+
+        mime_type = cls._detect_mime_type(base64_image)
+        prompt_text = (
+            "Bạn là hệ thống OCR đọc ảnh lệnh điều xe container và tin nhắn vận tải. "
+            "Hãy trích xuất chính xác 100% nội dung văn bản điều xe (chứa thông tin khách hàng, kho bãi, "
+            "giờ giấc, biển số xe, tên lái xe, số điện thoại, số container, số chì niêm phong) có trong ảnh. "
+            "Chỉ trả về các dòng văn bản đó, mỗi dòng trên một hàng riêng biệt, không thêm lời dẫn, "
+            "không thêm markdown ```. "
+            "Nếu ảnh không có chữ hoặc không có thông tin vận tải/điều xe, chỉ trả về chuỗi rỗng."
+        )
+
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt_text},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": base64_image,
+                            }
+                        },
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.0,
+            },
+        }
+
+        base_url = settings.AI_BASE_URL.rstrip("/")
+        model_name = settings.AI_MODEL_NAME or "gemini-3.5-flash"
+        candidate_models = [model_name]
+        for m in ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]:
+            if m not in candidate_models:
+                candidate_models.append(m)
+
+        data_bytes = json.dumps(payload).encode("utf-8")
+        timeout = max(settings.AI_TIMEOUT_SECONDS, 25)
+
+        for model in candidate_models:
+            url = f"{base_url}/models/{model}:generateContent?key={settings.AI_API_KEY}"
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if resp.status == 200:
+                        body = json.loads(resp.read().decode("utf-8"))
+                        candidates = body.get("candidates") or []
+                        if candidates and "content" in candidates[0]:
+                            parts = candidates[0]["content"].get("parts") or []
+                            if parts and "text" in parts[0]:
+                                extracted = str(parts[0]["text"]).strip()
+                                # Xóa markdown code block nếu có
+                                if extracted.startswith("```"):
+                                    extracted = re.sub(r"^```[a-zA-Z]*\n?", "", extracted)
+                                    extracted = re.sub(r"\n?```$", "", extracted).strip()
+
+                                lower_ext = extracted.lower()
+                                no_text_phrases = (
+                                    "không có chữ", "không có văn bản", "không tìm thấy",
+                                    "no text", "empty", "không thể đọc"
+                                )
+                                if any(p in lower_ext for p in no_text_phrases) and len(extracted) < 100:
+                                    logger.info("Ảnh không chứa văn bản vận tải -> Bỏ qua")
+                                    return "", 0.0, []
+
+                                if extracted:
+                                    lines = [line.strip() for line in extracted.split("\n") if line.strip()]
+                                    items = [{"text": line, "confidence": 0.95, "box": []} for line in lines]
+                                    logger.info(
+                                        "Đã bóc tách thành công %d ký tự từ ảnh qua Gemini Vision (%s)",
+                                        len(extracted),
+                                        model,
+                                    )
+                                    return "\n".join(lines), 0.95, items
+            except Exception as e:
+                logger.warning("Lỗi gọi Gemini Vision với model %s: %s", model, e)
+                continue
+
+        return None

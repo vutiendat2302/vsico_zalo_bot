@@ -1,1 +1,29 @@
 Generic single-database configuration.
+
+Trong kiến trúc của dự án nhaxe-bot (phần backend),
+ thư mục migrations/ đóng vai trò quản lý phiên bản cơ sở dữ liệu (Database Schema Versioning). 
+ Dự án sử dụng Alembic – công cụ migration chuẩn cho SQLAlchemy (thường đi kèm với các dự án Python).
+
+2. Giải thích các file/thư mục con
+env.py: Đây là "trái tim" của Alembic. File này chứa cấu hình để kết nối với database và thiết lập môi trường chạy migration. Nó quyết định cách thức Alembic tương tác với SQLAlchemy để thực thi các lệnh thay đổi schema.
+script.py.mako: Đây là một file template (sử dụng ngôn ngữ Mako). Khi bạn tạo một file migration mới bằng lệnh (ví dụ: alembic revision), Alembic sẽ dùng file này làm khuôn mẫu để sinh ra file code Python chứa các hàm upgrade() và downgrade().
+versions/: Đây là nơi chứa các file migration thực tế.
+Mỗi file trong này đại diện cho một "bước" thay đổi database.
+Ví dụ file 8b530e8da3ec_init_vsico_mysql_schema.py mà bạn thấy là file khởi tạo ban đầu (init) cho schema của hệ thống VSICO.
+Bên trong mỗi file này luôn có 2 hàm chính:
+upgrade(): Chứa code để áp dụng thay đổi (ví dụ: op.create_table(...)).
+downgrade(): Chứa code để hoàn tác thay đổi đó (ví dụ: op.drop_table(...)).
+3. Quy trình làm việc với Migrations
+Khi bạn cần thay đổi cấu trúc dữ liệu (ví dụ: thêm trường phone_number vào bảng drivers):
+
+Cập nhật Model: Bạn sửa file model trong src/domain/ hoặc src/infrastructure/db/models.py.
+Tạo Migration: Chạy lệnh để Alembic tự động so sánh model hiện tại với database và sinh ra file mới trong versions/:
+Run
+alembic revision --autogenerate -m "add_phone_number_to_drivers"
+Kiểm tra: Mở file mới tạo trong versions/ để xem code upgrade/downgrade có đúng không.
+Áp dụng: Chạy lệnh để cập nhật database:
+Run
+alembic upgrade head
+Lưu ý quan trọng:
+
+Tuyệt đối không được sửa thủ công các file đã nằm trong versions/ sau khi đã upgrade lên database, vì sẽ làm sai lệch lịch sử migration.

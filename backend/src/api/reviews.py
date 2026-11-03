@@ -22,9 +22,13 @@ from src.infrastructure.models import (
     OutboundMessage,
     OutboundMessageItem,
     ReviewCase,
+    ZaloGroup,
     ZaloMessage,
 )
 from src.infrastructure.zalo_dispatcher import ZaloDispatcher
+from src.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/reviews", tags=["5. Rà Soát & Phê Duyệt (Reviews & Approvals)"])
 
@@ -134,6 +138,32 @@ def approve_review_case(
         c_jobs = list(db.scalars(select(ContainerJob).where(ContainerJob.message_id == case_obj.message_id)).all())
         jobs_to_update.extend(c_jobs)
 
+    orig_msg = db.get(ZaloMessage, case_obj.message_id) if case_obj.message_id else None
+    is_real_msg = False
+    if orig_msg:
+        is_real_msg = not (
+            (orig_msg.group_id and ("test_" in orig_msg.group_id or "pytest_" in orig_msg.group_id))
+            or (orig_msg.zalo_message_id and (orig_msg.zalo_message_id.startswith("test_") or orig_msg.zalo_message_id.startswith("pytest_")))
+            or (orig_msg.sender_id and (orig_msg.sender_id.startswith("test_") or orig_msg.sender_id.startswith("pytest_")))
+        )
+
+    # Tìm nhóm thật nếu là tin nhắn sản xuất thực tế
+    real_dest_grp = None
+    if is_real_msg:
+        real_dest_grp = db.scalars(
+            select(ZaloGroup)
+            .where(
+                ZaloGroup.is_active == True,
+                ZaloGroup.is_test == False,
+                ZaloGroup.zalo_group_id.isnot(None),
+                ~ZaloGroup.zalo_group_id.like("test_%"),
+                ~ZaloGroup.zalo_group_id.like("pytest_%"),
+                ~ZaloGroup.zalo_group_id.like("direct_%"),
+            )
+            .order_by(ZaloGroup.id.asc())
+        ).first()
+
+    send_warnings: list[str] = []
     for job in jobs_to_update:
         job.validation_status = "valid"
         job.routing_status = "routed"
@@ -143,12 +173,72 @@ def approve_review_case(
             .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
             .where(
                 OutboundMessageItem.container_job_id == job.id,
-                OutboundMessage.status == "cho_duyet",
+                OutboundMessage.status.in_(["cho_duyet", "bo_qua_trung_lap", "that_bai", "da_gui"]),
             )
         )
-        for out_msg in db.scalars(out_stmt):
+        out_messages = list(db.scalars(out_stmt).all())
+
+        # Nếu chưa có OutboundMessage liên kết, thử tìm theo message_id hoặc tự sinh mới
+        if not out_messages and orig_msg:
+            alt_stmt = select(OutboundMessage).where(
+                OutboundMessage.idempotency_key.like(f"outbound_{orig_msg.id}_%")
+            )
+            out_messages = list(db.scalars(alt_stmt).all())
+            for om in out_messages:
+                has_item = db.scalar(
+                    select(OutboundMessageItem).where(
+                        OutboundMessageItem.outbound_message_id == om.id,
+                        OutboundMessageItem.container_job_id == job.id,
+                    )
+                )
+                if not has_item:
+                    db.add(OutboundMessageItem(outbound_message_id=om.id, container_job_id=job.id))
+                    db.flush()
+
+        # Nếu vẫn không có OutboundMessage (ví dụ do bản ghi trước đó chưa sinh), tự sinh OutboundMessage mới để phát hành
+        if not out_messages:
+            from src.domain.models import ExtractedContainerLine
+            from src.outbound.templates import OutboundTemplateBuilder
+
+            line = ExtractedContainerLine(
+                line_no=job.line_no or 1,
+                container_no=job.container_no,
+                container_size=job.container_size,
+                seal_no=job.seal_no,
+                order_type=job.order_type or "tra",
+                warehouse_hint=job.warehouse_hint,
+                customer_hint=job.customer_hint,
+                truck_plate=job.truck_record.truck_plate if job.truck_record else None,
+                driver_name=job.truck_record.driver_name if job.truck_record else None,
+                driver_phone=job.truck_record.driver_phone if job.truck_record else None,
+            )
+            notification_text = OutboundTemplateBuilder.build_customer_notification(line=line)
+            new_om = OutboundMessage(
+                target_group_id=real_dest_grp.id if real_dest_grp else None,
+                order_type=job.order_type or "tra",
+                message_kind="thong_bao_xe",
+                content=notification_text,
+                idempotency_key=f"outbound_approved_{job.id}_{uuid4().hex[:8]}",
+                status="cho_duyet",
+                attempt_count=0,
+            )
+            db.add(new_om)
+            db.flush()
+            db.add(OutboundMessageItem(outbound_message_id=new_om.id, container_job_id=job.id))
+            db.flush()
+            out_messages = [new_om]
+
+        for out_msg in out_messages:
             target_grp = out_msg.target_group
             target_gid = target_grp.zalo_group_id if target_grp else None
+
+            # Tự động chuyển hướng sang nhóm thật nếu là tin nhắn thực tế mà đích đang trỏ mock group
+            if is_real_msg and (not target_gid or target_gid.startswith("test_") or target_gid.startswith("grp_test_") or (target_grp and target_grp.is_test)):
+                if real_dest_grp:
+                    out_msg.target_group_id = real_dest_grp.id
+                    target_grp = real_dest_grp
+                    target_gid = real_dest_grp.zalo_group_id
+
             real_zalo_msg_id = None
             if target_gid and (
                 (target_gid.isdigit() and target_gid != "2001000000000000001")
@@ -161,7 +251,23 @@ def approve_review_case(
                 if not send_ok:
                     out_msg.status = "that_bai"
                     out_msg.last_error = f"Lỗi gửi Zalo: {send_err}"
+                    send_warnings.append(f"Gửi nhóm {target_gid} thất bại: {send_err}")
                     continue
+
+            # Nếu tin nhắn đến từ cuộc hội thoại cá nhân 1-1, gửi phản hồi duyệt thành công trực tiếp cho người gửi
+            if orig_msg and orig_msg.sender_id and is_real_msg:
+                if not orig_msg.group_id or orig_msg.group_id.startswith("direct_"):
+                    direct_content = (
+                        f"✅ [VSICO ĐÃ PHÊ DUYỆT]\n"
+                        f"Yêu cầu vận chuyển container {job.container_no or ''} đã được ĐHVT duyệt thành công.\n\n"
+                        f"Nội dung thông báo:\n{out_msg.content}"
+                    )
+                    u_ok, _, u_err = ZaloDispatcher.send_to_user(
+                        user_id=orig_msg.sender_id,
+                        message=direct_content,
+                    )
+                    if not u_ok:
+                        logger.warning("Không thể gửi tin riêng cho người gửi %s: %s", orig_msg.sender_id, u_err)
 
             out_msg.status = "da_gui"
             out_msg.approved_by = "admin_reviewer"
@@ -186,6 +292,16 @@ def approve_review_case(
             msg.processing_status = "processed"
 
     db.commit()
+
+    if send_warnings:
+        return {
+            "ok": True,
+            "status": "APPROVED_WITH_WARNING",
+            "review_id": review_id,
+            "message": f"Đã phê duyệt ca #{review_id} trong hệ thống. Tuy nhiên gửi Zalo cảnh báo: {'; '.join(send_warnings)}. Vui lòng kiểm tra quyền gửi của Bot trong nhóm Zalo.",
+            "warnings": send_warnings,
+        }
+
     return {
         "ok": True,
         "status": "APPROVED",
@@ -197,23 +313,78 @@ def approve_review_case(
 @router.post("/{review_id}/reject")
 def reject_review_case(
     review_id: int,
-    payload: RejectPayload = Body(...),
+    payload: Optional[RejectPayload] = Body(default=None),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Từ chối chấp nhận bản ghi dữ liệu do sai lệch không thể sửa chữa."""
+    """Từ chối chấp nhận bản ghi dữ liệu do sai lệch không thể sửa chữa.
+
+    1. Cập nhật `ReviewCase.status = 'rejected'`.
+    2. Cập nhật `ContainerJob`: `validation_status = 'rejected'`, `routing_status = 'cancelled'`.
+    3. Hủy các `OutboundMessage` đang chờ duyệt: `status = 'huy'`, `last_error = f"ĐHVT từ chối: {reason}"`.
+    4. Cập nhật `ZaloMessage.processing_status = 'cancelled'` nếu không còn ca pending nào.
+    """
     case_obj = db.get(ReviewCase, review_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy ca rà soát ID={review_id}.")
 
+    reject_reason = (
+        payload.reason
+        if (payload and payload.reason and payload.reason.strip())
+        else "Dữ liệu không chính xác theo kiểm tra thủ công."
+    )
+    now = datetime.now()
+
     case_obj.status = "rejected"
-    case_obj.resolved_at = datetime.now()
+    case_obj.resolved_at = now
     case_obj.resolved_by = "admin_reviewer"
-    case_obj.reason = f"{case_obj.reason or ''} [Từ chối: {payload.reason}]"
+    case_obj.reason = f"{case_obj.reason or ''} [Từ chối: {reject_reason}]"
+
+    # 1. Cập nhật các ContainerJob liên quan
+    jobs_to_cancel: list[ContainerJob] = []
+    if case_obj.container_job_id:
+        job = db.get(ContainerJob, case_obj.container_job_id)
+        if job:
+            jobs_to_cancel.append(job)
+    elif case_obj.message_id:
+        c_jobs = list(db.scalars(select(ContainerJob).where(ContainerJob.message_id == case_obj.message_id)).all())
+        jobs_to_cancel.extend(c_jobs)
+
+    for job in jobs_to_cancel:
+        job.validation_status = "rejected"
+        job.routing_status = "cancelled"
+        job.tms_sync_status = "failed"
+
+        # 2. Hủy các OutboundMessage đang chờ duyệt của job này
+        out_stmt = (
+            select(OutboundMessage)
+            .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
+            .where(
+                OutboundMessageItem.container_job_id == job.id,
+                OutboundMessage.status == "cho_duyet",
+            )
+        )
+        for out_msg in db.scalars(out_stmt).all():
+            out_msg.status = "huy"
+            out_msg.last_error = f"ĐHVT từ chối duyệt: {reject_reason}"
+
+    # 3. Cập nhật tin nhắn Zalo gốc thành 'cancelled' nếu không còn ca pending nào
+    pending_count = db.scalar(
+        select(func.count(ReviewCase.id)).where(
+            ReviewCase.message_id == case_obj.message_id,
+            ReviewCase.status == "pending",
+            ReviewCase.id != case_obj.id,
+        )
+    ) or 0
+
+    if pending_count == 0 and case_obj.message_id:
+        msg = db.get(ZaloMessage, case_obj.message_id)
+        if msg:
+            msg.processing_status = "cancelled"
 
     db.commit()
     return {
         "ok": True,
         "status": "REJECTED",
         "review_id": review_id,
-        "message": f"Đã từ chối ca rà soát ID={review_id}.",
+        "message": f"Đã từ chối ca rà soát ID={review_id} và hủy thông báo gửi khách thành công.",
     }
