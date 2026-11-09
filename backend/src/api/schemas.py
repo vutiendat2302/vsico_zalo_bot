@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ZcaWebhookPayload(BaseModel):
-    """Cấu trúc JSON Payload gửi từ `zca-js/bridge.js` hoặc Postman sang cổng `/webhook`."""
+    """Cấu trúc JSON Payload gửi từ `zca-js` hoặc Postman sang cổng `/webhook`."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -118,6 +118,7 @@ class MessageItemOut(BaseModel):
     id: int
     zalo_message_id: str
     group_id: str
+    group_name: Optional[str] = None
     sender_id: str
     sender_name: Optional[str] = None
     message_type: str

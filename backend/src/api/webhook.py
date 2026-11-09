@@ -1,6 +1,6 @@
 """Module Cổng Tiếp Nhận Sự Kiện Tin Nhắn Thời Gian Thực (Zalo Webhook Gateway).
 
-Cung cấp các endpoint `POST /webhook` và `POST /webhook/zalo` để `zca-js/bridge.js`
+Cung cấp các endpoint `POST /webhook` và `POST /webhook/zalo` để `zca-js` 
 đẩy tin nhắn mới (cả chat trực tiếp 1-1 và chat trong Group) sang Backend.
 Ngay khi nhận được, hệ thống lưu bản ghi thô vào MySQL và kích hoạt hàng đợi FIFO
 (Vào Trước - Ra Trước) để bóc tách và lưu kết quả ngay lập tức.

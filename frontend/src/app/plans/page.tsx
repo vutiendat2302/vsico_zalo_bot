@@ -19,6 +19,7 @@ import {
   createTransportPlan,
   deleteTransportPlan,
   randomizePlanGroups,
+  setAllPlansGroup,
 } from "@/lib/api";
 
 const DEFAULT_GROUP_ID = "6469608867469758994";
@@ -43,6 +44,7 @@ export default function PlansPage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [randomizing, setRandomizing] = useState(false);
+  const [settingDefaultGroup, setSettingDefaultGroup] = useState(false);
   const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -170,6 +172,26 @@ export default function PlansPage() {
     }
   };
 
+  const handleSetAllDefaultGroup = async () => {
+    if (
+      !confirm(
+        "Bạn có chắc chắn muốn đổi tất cả groupId trong kế hoạch về nhóm Zalo DC Logistics (6469608867469758994)?"
+      )
+    )
+      return;
+    try {
+      setSettingDefaultGroup(true);
+      setError(null);
+      const res = await setAllPlansGroup(DEFAULT_GROUP_ID);
+      setImportSuccessMsg(`✅ ${res.message}`);
+      await loadPlans(currentPage, pageSize);
+    } catch (err: any) {
+      setError(err.message || "Lỗi khi gán nhóm mặc định.");
+    } finally {
+      setSettingDefaultGroup(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -218,6 +240,18 @@ export default function PlansPage() {
           >
             <Shuffle className={`w-3.5 h-3.5 ${randomizing ? "animate-spin" : ""}`} />
             <span>{randomizing ? "Đang random..." : "Random 3 Nhóm Zalo"}</span>
+          </button>
+
+          {/* Gán tất cả về nhóm 6469608867469758994 */}
+          <button
+            type="button"
+            onClick={handleSetAllDefaultGroup}
+            disabled={settingDefaultGroup || loading}
+            title="Đổi toàn bộ groupId của các kế hoạch về nhóm Zalo DC Logistics 6469608867469758994"
+            className="flex items-center space-x-1.5 px-3 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition shadow-sm"
+          >
+            <Check className={`w-3.5 h-3.5 ${settingDefaultGroup ? "animate-spin" : ""}`} />
+            <span>{settingDefaultGroup ? "Đang gán..." : "Gán Nhóm 6469608867469758994"}</span>
           </button>
 
           <button

@@ -345,6 +345,20 @@ export async function randomizePlanGroups(
   return res.json();
 }
 
+export async function setAllPlansGroup(
+  groupId: string = "6469608867469758994"
+): Promise<{ ok: boolean; message: string; updated_count: number; group_id: string }> {
+  const query = new URLSearchParams({ group_id: groupId });
+  const res = await fetch(`${API_BASE_URL}/api/plans/set-default-group?${query.toString()}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Lỗi khi cập nhật nhóm: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function getMessages(params?: {
   from_time?: string;
   to_time?: string;

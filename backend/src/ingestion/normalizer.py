@@ -1,9 +1,8 @@
 """Module Tiếp Nhận, Chuẩn Hóa & Chống Trùng Lặp Tin Nhắn (Ingestion & Normalization Layer).
 
-Xử lý sự kiện Webhook đẩy sang từ `zca-js/bridge.js` (hỗ trợ cả tin nhắn trực tiếp 1-1
+Xử lý sự kiện Webhook đẩy sang từ `zca-js` (hỗ trợ cả tin nhắn trực tiếp 1-1
 và tin nhắn trong Group Zalo, cũng như cả 2 định dạng payload lồng và phẳng):
 1. Chuẩn hóa dữ liệu đầu vào (`zalo_message_id`, `group_id`, `sender_id`, `zalo_sent_at`).
-2. Kiểm tra chống trùng lặp (Idempotent Deduplication) theo `zalo_message_id`.
 3. Tự động khởi tạo/cập nhật thông tin nhóm hoặc hội thoại trực tiếp trong `zalo_groups`.
 4. Lưu ngay lập tức bản ghi thô vào `zalo_messages` và đẩy vào hàng đợi `FIFOExtractionQueue`
    để bóc tách tuần tự theo nguyên tắc Vào Trước - Ra Trước (FIFO) thời gian thực.
@@ -62,7 +61,7 @@ class WebhookIngestor:
         """Tiếp nhận payload từ `zca-js`, lưu thô vào MySQL và thực thi bóc tách FIFO ngay lập tức.
 
         Hỗ trợ đồng thời:
-        - Cấu trúc lồng từ `zca-js/bridge.js`: `sender: {id, name}`, `message: {msg_id, text}`
+        - Cấu trúc lồng từ `zca-js`: `sender: {id, name}`, `message: {msg_id, text}`
         - Cấu trúc phẳng từ API/Postman: `msg_id`, `sender_id`, `sender_name`, `text`
 
         Args:

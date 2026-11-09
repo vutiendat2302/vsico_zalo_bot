@@ -552,3 +552,37 @@ def randomize_plan_groups(
         group_distribution=distribution,
     )
 
+
+@router.post("/set-default-group")
+def set_all_plans_default_group(
+    group_id: str = Query(
+        default="6469608867469758994",
+        description="Mã Group ID Zalo muốn gán cho toàn bộ kế hoạch vận chuyển",
+    ),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Cập nhật toàn bộ group_id trong transport_plans về một nhóm Zalo cụ thể.
+
+    Args:
+        group_id (str): Mã Group ID Zalo đích (mặc định: 6469608867469758994).
+        db (Session): Phiên làm việc CSDL.
+
+    Returns:
+        dict[str, Any]: Kết quả số lượng dòng kế hoạch đã được cập nhật.
+    """
+    from sqlalchemy import text
+    target_gid = str(group_id).strip() or "6469608867469758994"
+    result = db.execute(
+        text("UPDATE transport_plans SET group_id = :gid"),
+        {"gid": target_gid},
+    )
+    db.commit()
+    logger.info("Đã cập nhật toàn bộ %s bản ghi kế hoạch về group_id: %s", result.rowcount, target_gid)
+    return {
+        "ok": True,
+        "message": f"Đã cập nhật toàn bộ {result.rowcount} bản ghi kế hoạch về group_id: {target_gid}",
+        "updated_count": result.rowcount,
+        "group_id": target_gid,
+    }
+
+

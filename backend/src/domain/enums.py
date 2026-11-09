@@ -51,8 +51,8 @@ class TmsSyncStatus(str, Enum):
 class OrderType(str, Enum):
     """Loại lệnh vận chuyển container (Đóng hàng xuất hoặc Trả hàng nhập)."""
 
-    DONG = "dong"
-    TRA = "tra"
+    DONG = "load"
+    TRA = "return"
 
 
 class Intent(str, Enum):

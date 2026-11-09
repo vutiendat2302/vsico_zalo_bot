@@ -81,7 +81,7 @@ api  ──►  handlers  ──►  domain  ◄──  infrastructure
 
 Trước khi xác nhận hoàn thành bất kỳ thay đổi nào, bắt buộc phải vượt qua 2 bước kiểm tra:
 
-1. **Kiểm thử tự động**:
+1. **Kiểm thử tự động**: 1 test
 2. **Đo lường độ chính xác Benchmark**:
 
 ## 4. Quy tắc viết comment & tài liệu:
@@ -94,11 +94,12 @@ Trước khi xác nhận hoàn thành bất kỳ thay đổi nào, bắt buộc 
 ## 5. Quy chuẩn phát triển Frontend & Nguyên tắc Zero Mock Data (Strict Invariant)
 
 1. **Tuyệt đối KHÔNG sử dụng Mock Data (Zero Mock Data Policy)**:
+
    - Mọi dữ liệu hiển thị trên giao diện người dùng (Dashboard, Kế hoạch vận chuyển, Quản lý tin nhắn, Danh sách chờ duyệt, Thống kê Taxonomy) **bắt buộc 100% phải được truy vấn thời gian thực từ các API của Backend** (`GET /api/...`).
    - Nghiêm cấm tạo biến mảng tĩnh (static array), faker mock data, hoặc dữ liệu giả lập trong mã nguồn Frontend (`src/app/`, `src/components/`, `src/lib/`).
    - Trường hợp giao diện người dùng cần bổ sung trường dữ liệu hoặc màn hình nghiệp vụ mới: Lập trình viên/Agent **bắt buộc phải triển khai API Backend trước** (bao gồm Model, Migration, Service, Controller, Router), sau đó mới viết mã Frontend gọi API này.
-
 2. **Công nghệ Frontend chuẩn hóa**:
+
    - Framework: **Next.js 14+ (App Router)**.
    - Ngôn ngữ: **TypeScript** (Kiểm tra kiểu dữ liệu nghiêm ngặt, tương thích Pydantic Schemas của Backend).
    - Giao diện: **Tailwind CSS** + **Lucide React Icons**, thiết kế Dark Mode hiện đại (Slate 900 / 950).
@@ -109,11 +110,12 @@ Trước khi xác nhận hoàn thành bất kỳ thay đổi nào, bắt buộc 
 ## 6. Kiến trúc chịu tải cao & Điều tiết tần suất gửi Zalo OA (High-Throughput & Rate Limiting)
 
 1. **Tiếp nhận tải lớn hàng trăm, hàng nghìn nhóm chat**:
+
    - Khi hệ thống mở rộng phục vụ đồng thời hàng trăm/hàng nghìn nhóm chat Zalo, lưu lượng tin nhắn dồn về cùng một thời điểm rất lớn (Traffic Spike).
    - Cổng Webhook Gateway (`POST /webhook`) chỉ thực hiện xác thực chữ ký, khử trùng lặp (`Deduplicator`), ghi nhận cơ sở dữ liệu và đẩy vào Hàng đợi FIFO (`QueuePublisher`), sau đó phản hồi `200 OK` ngay lập tức (< 50ms).
    - Toàn bộ công đoạn bóc tách cú pháp (F1, F2, F3, Regex), đối chiếu kế hoạch vận chuyển, và gọi AI xử lý được thực thi trong Worker ngầm (Background Worker) để không làm nghẽn luồng tiếp nhận.
-
 2. **Điều tiết tần suất gửi ra Zalo OA (Outbound Rate Limiter)**:
+
    - Máy chủ Zalo OA áp dụng giới hạn số lượng request API gửi ra trong một khoảng thời gian nhất định (Rate Limit). Nếu gửi dồn dập sẽ bị phản hồi mã lỗi `HTTP 429 Too Many Requests` và tạm khóa gửi tin.
    - Hệ thống bắt buộc phải tích hợp bộ điều tiết `ZaloOutboundThrottler` dựa trên thuật toán **Token Bucket**:
      - Tốc độ phát hành token mặc định: **10 request/giây**.

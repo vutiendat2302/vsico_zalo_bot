@@ -133,11 +133,12 @@ def parse_flexible_datetime(
         ) from exc
 
 
-def serialize_message(msg: ZaloMessage) -> MessageItemOut:
+def serialize_message(msg: ZaloMessage, group_name: Optional[str] = None) -> MessageItemOut:
     """Chuyển đổi bản ghi ORM `ZaloMessage` kèm các xe, container và Taxonomy sang Schema trả về API.
 
     Args:
         msg (ZaloMessage): Đối tượng ORM `ZaloMessage` từ cơ sở dữ liệu.
+        group_name (Optional[str]): Tên hiển thị của nhóm Zalo tương ứng.
 
     Returns:
         MessageItemOut: Đối tượng dữ liệu chuẩn hóa trả về JSON.
@@ -203,10 +204,16 @@ def serialize_message(msg: ZaloMessage) -> MessageItemOut:
         if latest_run.output_data and "taxonomy" in latest_run.output_data:
             taxonomy = latest_run.output_data["taxonomy"]
 
+    effective_group_name = group_name
+    if not effective_group_name and msg.group_id:
+        if str(msg.group_id).startswith("direct_"):
+            effective_group_name = f"Chat 1-1 ({msg.sender_name or msg.sender_id})"
+
     return MessageItemOut(
         id=msg.id,
         zalo_message_id=msg.zalo_message_id,
         group_id=msg.group_id,
+        group_name=effective_group_name,
         sender_id=msg.sender_id,
         sender_name=msg.sender_name,
         message_type=msg.message_type,
@@ -309,7 +316,13 @@ def query_messages_with_filters(
         stmt = stmt.limit(limit)
 
     records = list(db.scalars(stmt).all())
-    serialized = [serialize_message(r) for r in records]
+    group_ids = {r.group_id for r in records if r.group_id and not str(r.group_id).startswith("direct_")}
+    group_name_map: dict[str, str] = {}
+    if group_ids:
+        groups = list(db.scalars(select(ZaloGroup).where(ZaloGroup.zalo_group_id.in_(group_ids))).all())
+        group_name_map = {g.zalo_group_id: g.name for g in groups if g.name}
+
+    serialized = [serialize_message(r, group_name_map.get(r.group_id)) for r in records]
 
     return MessageListResponse(
         ok=True,
@@ -693,7 +706,9 @@ def get_message_detail(
             detail=f"Không tìm thấy tin nhắn với ID hoặc zalo_message_id = '{message_id}'.",
         )
 
-    serialized = serialize_message(msg)
+    zg = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == msg.group_id))
+    grp_name = zg.name if zg and zg.name else None
+    serialized = serialize_message(msg, grp_name)
     runs_out = [
         {
             "id": r.id,
