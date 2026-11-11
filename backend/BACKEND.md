@@ -4,9 +4,9 @@
 
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Framework](https://img.shields.io/badge/Framework-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![ORM & DB](https://img.shields.io/badge/Database-SQLAlchemy%202.0%20%7C%20MySQL%208.4-4479A1.svg)](https://www.mysql.com/)
+[![ORM & DB](<https://img.shields.io/badge/Database-SQLAlchemy%202.0%20%7C%20MySQL%208.4-4479A1.svg>)](https://www.mysql.com/)
 [![Migrations](https://img.shields.io/badge/Migrations-Alembic-red.svg)](https://alembic.sqlalchemy.org/)
-[![Tests](https://img.shields.io/badge/Pytest-12%2F12%20PASS%20(100%25)-brightgreen.svg)](#9-kiểm-thử-tự-động--đo-lường-độ-chính-xác)
+[![Tests](<https://img.shields.io/badge/Pytest-12%2F12%20PASS%20(100%25)-brightgreen.svg>)](#9-kiểm-thử-tự-động--đo-lường-độ-chính-xác)
 
 ---
 
@@ -275,24 +275,24 @@ Hệ thống cung cấp đa dạng phương thức vận hành phục vụ từ 
 
 Hệ thống tích hợp sẵn `Makefile` chuẩn hóa toàn bộ các tác vụ vận hành thường gặp:
 
-| Lệnh Makefile | Lệnh thực thi tương đương | Chức năng nghiệp vụ |
-| :--- | :--- | :--- |
-| **`make run`** | `python run.py` | Khởi chạy FastAPI Webhook & TMS REST API (Cổng 8000) |
-| **`make test`** | `pytest tests -v` | Chạy toàn bộ 12 test suite tự động bằng Pytest |
-| **`make test-txt`** | `python scripts/run_txt_tests.py --all` | Chạy kiểm thử toàn bộ 21 tệp input TXT fixtures |
-| **`make db-up`** | `docker compose up -d mysql` | Khởi động container MySQL 8.4 ngầm bằng Docker Compose |
-| **`make db-down`** | `docker compose stop mysql` | Tạm dừng container MySQL |
-| **`make db-check`** | `python scripts/manage_db.py check` | Kiểm tra kết nối MySQL và phiên bản Alembic hiện tại |
-| **`make db-status`** | `python scripts/manage_db.py status` | Thống kê chi tiết số lượng bản ghi của toàn bộ 17 bảng |
-| **`make db-migrate`** | `alembic upgrade head` | Áp dụng toàn bộ migration Alembic lên bản mới nhất (HEAD) |
-| **`make db-shell`** | `docker exec -it vsico-zalo-mysql mysql...` | Mở MySQL Interactive Shell bên trong container |
-| **`make db-clean`** | `python scripts/manage_db.py clean --runtime -y` | Dọn dẹp dữ liệu tin nhắn/xe/cont runtime (**GIỮ master data & plans**) |
-| **`make db-clean-tests`** | `python scripts/manage_db.py clean --tests` | Dọn dẹp chỉ các bản ghi kiểm thử tự động (`pytest_*`, `test_*`) |
-| **`make db-clean-plans`** | `python scripts/manage_db.py clean --plans -y` | Dọn dẹp riêng bảng kế hoạch vận chuyển (`transport_plans`) |
-| **`make db-clean-all`** | `python scripts/manage_db.py clean --all -y` | Dọn dẹp **TRẮNG toàn bộ 17 bảng** trong database (giữ cấu trúc) |
-| **`make db-reset`** | `python scripts/manage_db.py reset -y` | Reset toàn bộ DB (Drop tables & chạy lại migrations) |
-| **`make docker-up`** | `docker compose up -d` | Khởi chạy dịch vụ container hóa chạy ngầm |
-| **`make docker-down`** | `docker compose down` | Dừng và thu hồi tài nguyên container |
+| Lệnh Makefile                    | Lệnh thực thi tương đương                   | Chức năng nghiệp vụ                                                            |
+| :-------------------------------- | :------------------------------------------------- | :--------------------------------------------------------------------------------- |
+| **`make run`**            | `python run.py`                                  | Khởi chạy FastAPI Webhook & TMS REST API (Cổng 8000)                            |
+| **`make test`**           | `pytest tests -v`                                | Chạy toàn bộ 12 test suite tự động bằng Pytest                              |
+| **`make test-txt`**       | `python scripts/run_txt_tests.py --all`          | Chạy kiểm thử toàn bộ 21 tệp input TXT fixtures                              |
+| **`make db-up`**          | `docker compose up -d mysql`                     | Khởi động container MySQL 8.4 ngầm bằng Docker Compose                        |
+| **`make db-down`**        | `docker compose stop mysql`                      | Tạm dừng container MySQL                                                         |
+| **`make db-check`**       | `python scripts/manage_db.py check`              | Kiểm tra kết nối MySQL và phiên bản Alembic hiện tại                       |
+| **`make db-status`**      | `python scripts/manage_db.py status`             | Thống kê chi tiết số lượng bản ghi của toàn bộ 17 bảng                  |
+| **`make db-migrate`**     | `alembic upgrade head`                           | Áp dụng toàn bộ migration Alembic lên bản mới nhất (HEAD)                  |
+| **`make db-shell`**       | `docker exec -it vsico-zalo-mysql mysql...`      | Mở MySQL Interactive Shell bên trong container                                   |
+| **`make db-clean`**       | `python scripts/manage_db.py clean --runtime -y` | Dọn dẹp dữ liệu tin nhắn/xe/cont runtime (**GIỮ master data & plans**) |
+| **`make db-clean-tests`** | `python scripts/manage_db.py clean --tests`      | Dọn dẹp chỉ các bản ghi kiểm thử tự động (`pytest_*`, `test_*`)      |
+| **`make db-clean-plans`** | `python scripts/manage_db.py clean --plans -y`   | Dọn dẹp riêng bảng kế hoạch vận chuyển (`transport_plans`)               |
+| **`make db-clean-all`**   | `python scripts/manage_db.py clean --all -y`     | Dọn dẹp **TRẮNG toàn bộ 17 bảng** trong database (giữ cấu trúc)     |
+| **`make db-reset`**       | `python scripts/manage_db.py reset -y`           | Reset toàn bộ DB (Drop tables & chạy lại migrations)                           |
+| **`make docker-up`**      | `docker compose up -d`                           | Khởi chạy dịch vụ container hóa chạy ngầm                                   |
+| **`make docker-down`**    | `docker compose down`                            | Dừng và thu hồi tài nguyên container                                          |
 
 ---
 
@@ -584,26 +584,26 @@ Cơ sở dữ liệu của dự án sử dụng **MySQL 8.4** kết hợp **SQLA
 
 Dữ liệu được tổ chức thành 3 nhóm nghiệp vụ chính:
 
-| Nhóm dữ liệu | Tên bảng (Table Name) | Mô tả vai trò nghiệp vụ | Cơ chế dọn dẹp an toàn |
-| :--- | :--- | :--- | :--- |
-| **1. Runtime / Nghiệp vụ** | `zalo_messages` | Tin nhắn thô nguyên bản nhận từ Zalo OA Webhook | Xóa khi cần làm sạch môi trường test |
-| | `extraction_runs` | Lịch sử các phiên bóc tách (AI / Rule-based) | Xóa khi cần làm sạch môi trường test |
-| | `truck_records` | Lượt xe được trích xuất (Biển số, Mooc, Lái xe, SĐT) | Xóa khi cần làm sạch môi trường test |
-| | `container_jobs` | Quản lý từng Container (Trạng thái validation, routing, TMS) | Xóa khi cần làm sạch môi trường test |
-| | `review_cases` | Hàng đợi duyệt thủ công dành cho Điều hành Vận tải (ĐHVT) | Xóa khi cần làm sạch môi trường test |
-| | `bot_replies` | Lịch sử tin bot phản hồi nhà xe nhắc lỗi & hạn sửa 30 phút | Xóa khi cần làm sạch môi trường test |
-| | `outbound_messages` | Tin nhắn thông báo điều xe gửi tới nhóm Zalo khách hàng | Xóa khi cần làm sạch môi trường test |
-| | `outbound_message_items` | Bảng trung gian liên kết Container vào tin outbound | Xóa khi cần làm sạch môi trường test |
-| | `tms_sync_logs` | Nhật ký chi tiết mọi cuộc gọi API đồng bộ sang `be-tms` | Xóa khi cần làm sạch môi trường test |
-| | `activity_logs` | Nhật ký thao tác người dùng và sự kiện hệ thống | Xóa khi cần làm sạch môi trường test |
-| **2. Kế hoạch vận chuyển** | `transport_plans` | Kế hoạch điều vận hằng ngày (nạp từ file Excel / CSV hoặc API) | Xóa theo ngày hoặc ghi đè khi import mới |
-| **3. Master / Danh mục** | `customers` | Danh mục khách hàng chuẩn đồng bộ từ TMS | Bảo toàn dữ liệu (Không xóa khi dọn runtime) |
-| | `warehouses` | Danh mục kho đóng/trả hàng chuẩn đồng bộ từ TMS | Bảo toàn dữ liệu (Không xóa khi dọn runtime) |
-| | `customer_aliases` | Tên gọi tắt / bí danh của khách hàng | Bảo toàn dữ liệu (Không xóa khi dọn runtime) |
-| | `warehouse_aliases` | Tên gọi tắt / bí danh của kho hàng | Bảo toàn dữ liệu (Không xóa khi dọn runtime) |
-| | `route_maps` | Bảng ánh xạ: Khách hàng + Kho + Loại lệnh -> Nhóm Zalo nhận tin | Bảo toàn dữ liệu (Không xóa khi dọn runtime) |
-| | `zalo_groups` | Danh mục nhóm Zalo (Nhóm nhà xe, Nhóm khách, Nhóm nội bộ) | Bảo toàn dữ liệu (Không xóa khi dọn runtime) |
-| **Hệ thống Migration** | `alembic_version` | Quản lý mã revision migration hiện tại của Alembic | **Tuyệt đối KHÔNG xóa** khi clean dữ liệu |
+| Nhóm dữ liệu                      | Tên bảng (Table Name)    | Mô tả vai trò nghiệp vụ                                             | Cơ chế dọn dẹp an toàn                            |
+| :----------------------------------- | :------------------------- | :----------------------------------------------------------------------- | :----------------------------------------------------- |
+| **1. Runtime / Nghiệp vụ**   | `zalo_messages`          | Tin nhắn thô nguyên bản nhận từ Zalo OA Webhook                    | Xóa khi cần làm sạch môi trường test            |
+|                                      | `extraction_runs`        | Lịch sử các phiên bóc tách (AI / Rule-based)                       | Xóa khi cần làm sạch môi trường test            |
+|                                      | `truck_records`          | Lượt xe được trích xuất (Biển số, Mooc, Lái xe, SĐT)          | Xóa khi cần làm sạch môi trường test            |
+|                                      | `container_jobs`         | Quản lý từng Container (Trạng thái validation, routing, TMS)        | Xóa khi cần làm sạch môi trường test            |
+|                                      | `review_cases`           | Hàng đợi duyệt thủ công dành cho Điều hành Vận tải (ĐHVT)   | Xóa khi cần làm sạch môi trường test            |
+|                                      | `bot_replies`            | Lịch sử tin bot phản hồi nhà xe nhắc lỗi & hạn sửa 30 phút     | Xóa khi cần làm sạch môi trường test            |
+|                                      | `outbound_messages`      | Tin nhắn thông báo điều xe gửi tới nhóm Zalo khách hàng        | Xóa khi cần làm sạch môi trường test            |
+|                                      | `outbound_message_items` | Bảng trung gian liên kết Container vào tin outbound                  | Xóa khi cần làm sạch môi trường test            |
+|                                      | `tms_sync_logs`          | Nhật ký chi tiết mọi cuộc gọi API đồng bộ sang `be-tms`       | Xóa khi cần làm sạch môi trường test            |
+|                                      | `activity_logs`          | Nhật ký thao tác người dùng và sự kiện hệ thống               | Xóa khi cần làm sạch môi trường test            |
+| **2. Kế hoạch vận chuyển** | `transport_plans`        | Kế hoạch điều vận hằng ngày (nạp từ file Excel / CSV hoặc API) | Xóa theo ngày hoặc ghi đè khi import mới         |
+| **3. Master / Danh mục**      | `customers`              | Danh mục khách hàng chuẩn đồng bộ từ TMS                         | Bảo toàn dữ liệu (Không xóa khi dọn runtime)    |
+|                                      | `warehouses`             | Danh mục kho đóng/trả hàng chuẩn đồng bộ từ TMS                | Bảo toàn dữ liệu (Không xóa khi dọn runtime)    |
+|                                      | `customer_aliases`       | Tên gọi tắt / bí danh của khách hàng                              | Bảo toàn dữ liệu (Không xóa khi dọn runtime)    |
+|                                      | `warehouse_aliases`      | Tên gọi tắt / bí danh của kho hàng                                 | Bảo toàn dữ liệu (Không xóa khi dọn runtime)    |
+|                                      | `route_maps`             | Bảng ánh xạ: Khách hàng + Kho + Loại lệnh -> Nhóm Zalo nhận tin | Bảo toàn dữ liệu (Không xóa khi dọn runtime)    |
+|                                      | `zalo_groups`            | Danh mục nhóm Zalo (Nhóm nhà xe, Nhóm khách, Nhóm nội bộ)       | Bảo toàn dữ liệu (Không xóa khi dọn runtime)    |
+| **Hệ thống Migration**       | `alembic_version`        | Quản lý mã revision migration hiện tại của Alembic                 | **Tuyệt đối KHÔNG xóa** khi clean dữ liệu |
 
 ---
 
@@ -751,42 +751,42 @@ Bảng dưới đây tổng hợp tất cả các câu lệnh thao tác với c�
 
 #### 1. Quản trị Container MySQL (Docker)
 
-| Lệnh | Chức năng chi tiết |
-| :--- | :--- |
-| `make db-up` hoặc `docker compose up -d mysql` | Khởi chạy container MySQL 8.4 ngầm |
-| `make db-down` hoặc `docker compose stop mysql` | Tạm dừng container MySQL |
-| `docker compose restart mysql` | Khởi động lại dịch vụ MySQL |
-| `docker compose logs -f mysql` | Xem nhật ký hoạt động thời gian thực của MySQL Server |
-| `make db-shell` | Mở MySQL Interactive Shell trực tiếp bên trong container |
-| `docker exec -it vsico-zalo-mysql mysql -u root -p123456 vsico_zalo_bot` | Đăng nhập thẳng vào schema `vsico_zalo_bot` |
+| Lệnh                                                                      | Chức năng chi tiết                                         |
+| :------------------------------------------------------------------------- | :------------------------------------------------------------ |
+| `make db-up` hoặc `docker compose up -d mysql`                        | Khởi chạy container MySQL 8.4 ngầm                         |
+| `make db-down` hoặc `docker compose stop mysql`                       | Tạm dừng container MySQL                                    |
+| `docker compose restart mysql`                                           | Khởi động lại dịch vụ MySQL                             |
+| `docker compose logs -f mysql`                                           | Xem nhật ký hoạt động thời gian thực của MySQL Server |
+| `make db-shell`                                                          | Mở MySQL Interactive Shell trực tiếp bên trong container  |
+| `docker exec -it vsico-zalo-mysql mysql -u root -p123456 vsico_zalo_bot` | Đăng nhập thẳng vào schema `vsico_zalo_bot`            |
 
 #### 2. Quản lý Phiên Bản Schema & Migrations (Alembic)
 
-| Lệnh | Chức năng chi tiết |
-| :--- | :--- |
-| `alembic current` | Xem mã revision migration hiện tại đang áp dụng trên database |
-| `alembic history --verbose` | Xem toàn bộ lịch sử các bản migrations theo thứ tự thời gian |
-| `make db-migrate` hoặc `alembic upgrade head` | Nâng cấp cấu trúc database lên phiên bản mới nhất (HEAD) |
-| `alembic downgrade -1` | Lùi lại 1 phiên bản migration gần nhất (Rollback) |
-| `alembic downgrade base` | Lùi về điểm khởi đầu (Xóa toàn bộ schema của alembic) |
-| `alembic revision --autogenerate -m "mo_ta"` | Tự động phát hiện thay đổi trong `src/infrastructure/models.py` và sinh file migration mới |
-| `alembic stamp head` | Đánh dấu database đang ở HEAD mà không chạy lệnh DDL (Dùng sửa lỗi lệch desync) |
+| Lệnh                                              | Chức năng chi tiết                                                                                 |
+| :------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
+| `alembic current`                                | Xem mã revision migration hiện tại đang áp dụng trên database                                  |
+| `alembic history --verbose`                      | Xem toàn bộ lịch sử các bản migrations theo thứ tự thời gian                                 |
+| `make db-migrate` hoặc `alembic upgrade head` | Nâng cấp cấu trúc database lên phiên bản mới nhất (HEAD)                                     |
+| `alembic downgrade -1`                           | Lùi lại 1 phiên bản migration gần nhất (Rollback)                                               |
+| `alembic downgrade base`                         | Lùi về điểm khởi đầu (Xóa toàn bộ schema của alembic)                                      |
+| `alembic revision --autogenerate -m "mo_ta"`     | Tự động phát hiện thay đổi trong `src/infrastructure/models.py` và sinh file migration mới |
+| `alembic stamp head`                             | Đánh dấu database đang ở HEAD mà không chạy lệnh DDL (Dùng sửa lỗi lệch desync)          |
 
 #### 3. Kiểm Tra Kết Nối & Sức Khỏe Cơ Sở Dữ Liệu
 
-| Lệnh | Chức năng chi tiết |
-| :--- | :--- |
-| `make db-check` | Kiểm tra trạng thái kết nối MySQL, host, database name và revision Alembic |
-| `make db-status` | Xuất bảng thống kê số dòng hiện có trong từng bảng |
-| `curl -s http://localhost:8000/api/health \| jq .` | Kiểm tra kết nối DB và bộ đếm bản ghi qua API Health Check |
+| Lệnh                                               | Chức năng chi tiết                                                            |
+| :-------------------------------------------------- | :------------------------------------------------------------------------------- |
+| `make db-check`                                   | Kiểm tra trạng thái kết nối MySQL, host, database name và revision Alembic |
+| `make db-status`                                  | Xuất bảng thống kê số dòng hiện có trong từng bảng                     |
+| `curl -s http://localhost:8000/api/health \| jq .` | Kiểm tra kết nối DB và bộ đếm bản ghi qua API Health Check               |
 
 #### 4. Sao Lưu (Backup) & Phục Hồi (Restore) Dữ Liệu
 
-| Lệnh | Chức năng chi tiết |
-| :--- | :--- |
+| Lệnh                                                                                                                   | Chức năng chi tiết                                              |
+| :---------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------- |
 | `docker exec -i vsico-zalo-mysql mysqldump -u root -p123456 vsico_zalo_bot > backup_vsico_$(date +%Y%m%d_%H%M%S).sql` | Xuất toàn bộ dữ liệu và cấu trúc ra file `.sql` sao lưu |
-| `docker exec -i vsico-zalo-mysql mysqldump -u root -p123456 --no-data vsico_zalo_bot > schema_only.sql` | Chỉ sao lưu cấu trúc bảng (không kèm dữ liệu) |
-| `docker exec -i vsico-zalo-mysql mysql -u root -p123456 vsico_zalo_bot < backup_file.sql` | Phục hồi toàn bộ dữ liệu từ file sao lưu `.sql` |
+| `docker exec -i vsico-zalo-mysql mysqldump -u root -p123456 --no-data vsico_zalo_bot > schema_only.sql`               | Chỉ sao lưu cấu trúc bảng (không kèm dữ liệu)             |
+| `docker exec -i vsico-zalo-mysql mysql -u root -p123456 vsico_zalo_bot < backup_file.sql`                             | Phục hồi toàn bộ dữ liệu từ file sao lưu `.sql`          |
 
 #### 5. Các Câu Lệnh SQL Hữu Ích Thường Dùng Khi Giám Sát & Vận Hành
 
@@ -952,31 +952,33 @@ Toàn bộ kiến trúc tuân thủ nghiêm ngặt nguyên lý **Open/Closed Pri
 Để quản lý và vận hành trực quan luồng tin nhắn đồ sộ từ hàng trăm, hàng nghìn nhóm chat Zalo của các nhà xe miền Bắc và miền Nam, hệ thống đã trang bị giao diện Quản trị Dashboard hoàn chỉnh tại thư mục `frontend/`.
 
 ### 12.1. Công nghệ & Nguyên tắc kiến trúc Frontend
+
 - **Công nghệ**: **Next.js 14+ (App Router)**, **TypeScript**, **Tailwind CSS**, **Lucide React**.
 - **Nguyên tắc bất biến Zero Mock Data**: Toàn bộ dữ liệu hiển thị 100% được truy vấn từ các API REST của Backend (`GET /api/...`). Tuyệt đối không sử dụng dữ liệu giả lập, mảng tĩnh hay mock data trên giao diện.
 
 ### 12.2. Các màn hình chức năng chính
 
 1. **Tổng Quan Hệ Thống (`/`)**:
+
    - **Thẻ chỉ số vận hành thời gian thực (KPI Cards)**: Tổng tin nhận, Tin đã xử lý thành công, Tin chờ rà soát thủ công, Tin rác/xã giao bỏ qua, Số tin đang chờ trong hàng đợi FIFO, Số tin thông báo Bot đã gửi ra Zalo OA.
    - **Giám sát Outbound Rate Limiter**: Theo dõi cơ chế Token Bucket (10 req/s, Burst 20, Dynamic Exponential Backoff khi gặp lỗi HTTP 429 từ máy chủ Zalo).
    - **Quản lý Hàng đợi FIFO**: Kiểm tra độ dài hàng đợi và hỗ trợ nút kích hoạt rút cạn hàng đợi thủ công (*Manual Drain FIFO*).
    - **Biểu đồ thống kê theo ngày** & **Feed tin nhắn trực tiếp**.
-
 2. **Kế Hoạch Vận Chuyển Hằng Ngày (`/plans`)**:
+
    - Giao diện bảng tương thích 100% tệp mẫu điều độ thực tế `backend/tests/data_test/ketnoi.xlsx` (bao gồm đầy đủ 22 cột: Tuyến vận chuyển, Xuất/Nhập, Số cont, Số seal, Kích cỡ cont, Tải trọng, Giờ hẹn, Khách hàng, Loại hàng, Chuyến tàu, Bãi nâng/hạ, Đội xe, Biển số, Địa chỉ đóng/trả, Group ID, Cán bộ giao nhận, Ghi chú, Phát sinh...).
    - **Tự động phân định Lệnh Đóng/Mở**: Dựa trên cột `Hàng (Xuất/Nhập)` để xác định chính xác `order_type` là `dong` (Xuất) hay `tra` (Nhập).
    - **Bộ lọc đa tiêu chí**: Lọc tức thì theo Ngày kế hoạch, Số cont, Tên khách hàng, Loại lệnh đóng/trả.
    - **Import Excel (.xlsx) / CSV trực tiếp**: Tự động bóc tách ngày vận chuyển từ dòng tiêu đề (ví dụ: `KẾ HOẠCH VẬN CHUYỂN NGÀY 12/10/2026 (T2)`), tự động bổ sung và ánh xạ cột `Group ID = 6469608867469758994` khi đối soát tin nhắn nhà xe.
    - **Hỗ trợ CRUD đầy đủ**: Thêm mới kế hoạch thủ công, xóa dòng kế hoạch trực tiếp trên bảng.
-
 3. **Quản Lý & Truy Vấn Tin Nhắn (`/messages`)**:
+
    - **Thanh Tab lọc nhanh trạng thái**: Lọc tức thì chỉ với 1 click giữa *Tất cả*, *✅ Thành công (processed)*, *⏳ Chờ duyệt (needs_review)*, *🚫 Bị hủy (cancelled)*, *⚠️ Thất bại (failed)*, *💬 Tin rác / Bỏ qua*.
    - Cột **Trạng thái** trực quan: Phân biệt rõ ràng các badge màu sắc, kèm nút bấm liên kết nhanh `Duyệt ngay` trỏ thẳng tới hàng đợi phê duyệt.
    - Bộ lọc chuyên sâu theo Trạng thái tin nhắn, Group ID Zalo, User ID người gửi, Khoảng ngày bắt đầu và kết thúc.
    - Modal xem chi tiết tin nhắn: Hiển thị Bản ghi chuẩn (Canonical Record JSON), danh sách các xe bóc tách (`truck_plate`, `driver_name`, `driver_phone`), danh sách container (`cont_no`, `seal_no`, `order_type`, `plan_date`), các cảnh báo bất thường ISO 6346, và nội dung tin Bot đã gửi phản hồi cho nhà xe.
-
 4. **Kết Quả Tin Nhắn & Thông Báo Gửi Đi (`/results`)**:
+
    - Trang chuyên biệt theo dõi toàn diện kết quả các tin nhắn thông báo điều xe gửi ra Zalo OA.
    - **Theo dõi 4 trạng thái cốt lõi**:
      - **Đã gửi (`da_gui`)**: Tin nhắn đã xuất bản thành công tới nhóm Zalo khách hàng.
@@ -984,12 +986,12 @@ Toàn bộ kiến trúc tuân thủ nghiêm ngặt nguyên lý **Open/Closed Pri
      - **Bị hủy (`huy`)**: Tin nhắn bị hủy do thay đổi cuốc xe, hỏng xe hoặc điều độ từ chối.
      - **Thất bại (`that_bai`)**: Gửi thất bại do lỗi mạng hoặc bị giới hạn tốc độ Zalo OA (Rate Limit HTTP 429).
    - Thao tác trực tiếp: Nút **Phê duyệt gửi (Approve)**, **Hủy tin (Cancel)**, **Gửi lại (Resend)**, và nút **Tạo mẫu kiểm thử (Seed Samples)**.
-
 5. **Hàng Đợi Rà Soát & Phê Duyệt (`/reviews`)**:
+
    - Quy trình **Human-in-the-Loop** dành cho điều độ viên: Tập trung toàn bộ các ca tin nhắn có cảnh báo nghiệp vụ (sai Check Digit container theo ISO 6346 Mod 11, thiếu thông tin bắt buộc, có biển rơ-moóc cần xác minh...).
    - Thao tác trực tiếp: Nhấn **Phê duyệt (Approve)** hoặc **Từ chối (Reject - kèm nhập lý do)**, gọi ngay tới API Backend để cập nhật trạng thái bản ghi trong cơ sở dữ liệu.
-
 6. **Thống Kê Taxonomy Nhận Diện Tin Nhắn (`/statistics`)**:
+
    - **Bảng 1 (Hạng mục dữ liệu nhận diện)**: Thống kê chi tiết 6 nhóm trường (1.1 Nhận diện lệnh, 1.2 Xe & tài xế, 1.3 Container & chì, 1.4 Địa điểm & tuyến, 1.5 Thời gian, 1.6 Bất thường/phát sinh). Hiển thị số tin phát hiện, tỷ lệ %, các kiểu viết thực tế và trích xuất ví dụ điển hình từ database.
    - **Bảng 2 (40 Tình huống tin nhắn thực tế)**: Liệt kê chi tiết từ T01 đến T40, số tin phân loại chính, số tin có đặc điểm, quy tắc phân loại, và danh sách mã tin nhắn khớp. Hỗ trợ tìm kiếm nhanh theo mã hoặc tên tình huống.
 
@@ -1049,6 +1051,7 @@ OCR_LANG=vi
 Có thể lựa chọn 1 trong 2 phương án sau để chạy máy chủ PaddleOCR nội bộ:
 
 #### Phương án 1: Khởi chạy Microservice Python (Khuyên dùng)
+
 ```bash
 # Cài đặt thư viện PaddleOCR nếu chưa có
 pip install paddlepaddle paddleocr
@@ -1059,6 +1062,7 @@ make ocr-run
 ```
 
 #### Phương án 2: Khởi chạy bằng Docker Container
+
 ```bash
 docker run -d --name vsico-paddleocr \
   -p 8866:8866 \
@@ -1070,6 +1074,7 @@ docker run -d --name vsico-paddleocr \
 ### 13.4. Định dạng Webhook gửi ảnh & Kiểm thử
 
 Cổng Webhook `POST /webhook` hỗ trợ tiếp nhận ảnh dưới các hình thức:
+
 - **Chuỗi Base64**: `"image_base64": "data:image/png;base64,..."`
 - **Đường dẫn URL ảnh**: `"image_url": "https://..."`
 - **Đường dẫn file trên server**: `"image_path": "/path/to/image.jpg"`
@@ -1077,5 +1082,3 @@ Cổng Webhook `POST /webhook` hỗ trợ tiếp nhận ảnh dưới các hình
 
 Tài liệu kiểm thử chi tiết kèm mã cURL mẫu và kết quả đầu ra:
 👉 Xem file [**`tests/postman/13_kiem_thu_tach_text_tu_anh_paddleocr.md`**](./tests/postman/13_kiem_thu_tach_text_tu_anh_paddleocr.md).
-
-

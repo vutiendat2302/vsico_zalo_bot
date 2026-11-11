@@ -1,121 +1,141 @@
-# 🤖 NHAXE-BOT: QUY TẮC PHÁT TRIỂN & VẬN HÀNH (DEVELOPER & AGENT RULES)
+# AGENTS.md
 
-Tài liệu này định nghĩa các nguyên tắc kiến trúc và quy chuẩn phát triển bắt buộc cho AI Agent và lập trình viên khi làm việc trong dự án **`nhaxe-bot`** (Task 2 - PM TMS VSICO).
+## Tổng quan dự án
+
+**VSICO Zalo Bot & TMS Integration** là hệ thống tự động hóa tiếp nhận, bóc tách, đối chiếu kế hoạch và điều phối thông báo vận tải container đa kênh gồm các thành phần:
+
+- **`backend`**: Backend FastAPI sử dụng Python 3.12+, SQLAlchemy 2.0 ORM, Alembic, Pydantic v2, MySQL 8.4+, MinIO, Snowflake ID 64-bit, hàng đợi bất đồng bộ `FIFOQueue`, bộ điều tiết `ZaloOutboundThrottler` (Token Bucket) và tích hợp hai chiều với phần mềm `be-tms` (Tài liệu: [`backend/BACKEND.md`](./backend/BACKEND.md)).
+- **`frontend`**: Frontend Web Quản lý (dành cho ĐHVT & Admin) sử dụng Next.js 14+ (App Router), React 18+, TypeScript 5+, Tailwind CSS, Lucide Icons, Shadcn. (Tài liệu: [`frontend/FRONTEND.md`](./frontend/FRONTEND.md)).
+- **`ai-service`**: Service AI & OCR riêng biệt (Python 3.12+, FastAPI), stateless: backend gửi kèm ngữ cảnh (tin trước, chuyến đang hoạt động) trong mỗi request, service không truy cập MySQL. Đảm nhiệm: phân loại ý định (tạo mới / bổ sung / đổi xe / hủy / hỏi thông tin / không rõ), phân đoạn đa xe/đa lệnh, bóc tách và liên kết thực thể (biển số, tài xế, SĐT, số cont, seal) kèm `confidence` và `evidence`, OCR ảnh/PDF scan (PaddleOCR, fallback Gemini Vision), và map địa chỉ kho nhiều tầng (thói quen nhà xe → fuzzy → LLM chọn ứng viên). Mọi kiểm tra tất định (ISO 6346, chuẩn hóa biển số/SĐT) thuộc `backend`; SĐT được che trước khi gọi cloud LLM. Chỉ giao tiếp nội bộ với `backend` (Tài liệu: [`ai-service/AISERVICE.md`](./ai-service/AISERVICE.md)).
+- **`database`**: Đặc tả thiết kế các bảng dữ liệu MySQL, sơ đồ ERD, quy ước khóa chính Snowflake ID 64-bit và khóa đồng bộ TMS (Tài liệu: [`database/DATABASE.md`](./database/DATABASE.md)).
+- **`zca-js`**: Cầu nối Zalo (Node.js ESM) lắng nghe sự kiện WebSocket thời gian thực từ các nhóm Zalo và cung cấp HTTP REST Server để phát hành tin nhắn (Tài liệu: [`zca-js/ZCA_BRIDGE.md`](./zca-js/ZCA_BRIDGE.md)).
+- **`docs`**: Thư mục lưu trữ tập trung tài liệu kiến trúc, đặc tả tích hợp API TMS và quy trình nghiệp vụ ĐHVT và các test Postman.
+- **`docker-compose.yml` & `.env`**: Cấu hình chạy hạ tầng (MySQL 8.4+, MinIO) và tệp biến môi trường cục bộ **duy nhất** đặt tại thư mục gốc của dự án.
+- **Không dùng dữ liệu fake, mock, giả ở cả FE và BE (trong code chạy thật)**: Chỉ lấy dữ liệu thật từ cơ sở dữ liệu qua API; nếu không có dữ liệu thì hiển thị trạng thái trống (`EmptyState` một dòng). Trong môi trường kiểm thử (`tests/`) được phép dùng MSW (Mock Service Worker) hoặc mock tương ứng.
+- **Quy chuẩn Comment/Docstring**: Tất cả các class, hàm, phương thức đều phải có comment/docstring tiếng Việt ngắn gọn nêu rõ đặc điểm và nghiệp vụ chính của phương thức đó.
+- **Quy chuẩn viết tài liệu**: Mọi tài liệu thiết kế chuyên nghiệp, không được dùng icon.
+---
+
+## Hệ thống Kỹ năng Chuyên biệt (`.agents/skills/`)
+
+Trước khi thực hiện công việc ở phân hệ nào, Agent cần đọc và áp dụng skill tương ứng tại `.agents/skills/`:
+
+- [`vsico-backend`](./.agents/skills/vsico-backend/SKILL.md): Phát triển, sửa lỗi, refactor và kiểm thử Backend FastAPI tại `backend/`.
+- [`vsico-frontend`](./.agents/skills/vsico-frontend/SKILL.md): Phát triển, sửa lỗi, refactor và kiểm thử Frontend Next.js 14+ tại `frontend/`.
+- [`vsico-ai-service`](./.agents/skills/vsico-ai-service/SKILL.md): Phát triển AI Provider, OCR Vision, NLP Extraction và Map kho GP1–GP4 tại `ai-service/`.
+- [`vsico-database`](./.agents/skills/vsico-database/SKILL.md): Thiết kế schema, Snowflake ID, khóa TMS và quản lý Alembic migrations.
+- [`vsico-infra`](./.agents/skills/vsico-infra/SKILL.md): Quản lý `docker-compose.yml`, tệp `.env` tập trung, MinIO và cầu nối Zalo `zca-js/`.
+- [`vsico-docs`](./.agents/skills/vsico-docs/SKILL.md): Chuẩn hóa tài liệu kỹ thuật (`BACKEND.md`, `FRONTEND.md`, `AISERVICE.md`, `DATABASE.md`, `docs/`) và sơ đồ Mermaid.
 
 ---
 
-## 1. Nguyên tắc kiến trúc cốt lõi (Core Architecture Principles)
+## Quy tắc làm việc chung
 
-### 1.1. Phụ thuộc một chiều (One-Way Dependency)
+- Đọc phần triển khai liên quan và các quy ước ở những file lân cận trước khi chỉnh sửa.
+- Chỉ thay đổi trong phạm vi yêu cầu; không tái cấu trúc những phần không liên quan.
+- Bảo toàn mọi thay đổi hiện có của người dùng vì working tree có thể chưa sạch.
+- Không xóa, ghi đè hoặc định dạng lại các file không liên quan.
+- Ưu tiên giải pháp nhỏ nhất nhưng vẫn giải quyết đầy đủ yêu cầu.
+- Không thêm thư viện mới nếu không thực sự cần thiết.
+- Không commit kết quả build (`.next/`, `dist/`, `__pycache__/`), file sinh tự động, cấu hình IDE, phiên đăng nhập Zalo (`credentials.json`, `cookies.json`, `qr.png`), thông tin bí mật hoặc file môi trường cục bộ (`.env`).
+- Cập nhật tài liệu tương ứng (`BACKEND.md`, `FRONTEND.md`, `AISERVICE.md`, `DATABASE.md`, `ZCA_BRIDGE.md`, `docs/`) khi hành vi, cấu hình hoặc quy trình phát triển thay đổi.
 
-Hệ thống tuân thủ nghiêm ngặt mô hình **Clean Architecture**:
+---
 
+## Quy ước backend
+
+- Chạy các lệnh Python, Pytest, Alembic và Makefile từ thư mục `backend` (sử dụng môi trường ảo `.venv`).
+- Tuân theo cấu trúc phân tầng Clean Architecture hiện có trong `backend/src`, gồm: `api`, `ingestion`, `messaging`, `parsing`, `domain`, `validation`, `handlers`, `outbound`, `infrastructure`, `observability` và `config`.
+- Giữ router (`src/api/`) và cổng `POST /webhook` mỏng (< 50ms): chỉ xác thực, lưu tin nhắn thô vào `zalo_messages`, đẩy vào `FIFOQueue` và trả ngay `200 OK`.
+- Đặt nghiệp vụ điều phối trong `handlers/`, quy tắc nghiệp vụ thuần khiết (kiểm tra chữ số container ISO 6346 Modulo 11, chuẩn hóa biển số xe, SĐT 10 số) trong `domain/`, và truy cập dữ liệu MySQL / MinIO / Zalo Bridge / TMS API trong `infrastructure/`. Lõi `domain/` tuyệt đối không import thư viện HTTP hay ORM bên ngoài.
+- Sử dụng Pydantic request/response schema (`src/api/schemas.py`) tại biên API, không trả trực tiếp SQLAlchemy ORM entity.
+- **Quy ước ID**:
+  - Toàn bộ khóa chính `id` của các bảng trong hệ thống Bot sử dụng **Snowflake ID 64-bit (`BigInteger`)** sinh ở tầng ứng dụng (không dùng `AUTO_INCREMENT`).
+  - Toàn bộ khóa đồng bộ từ phần mềm TMS (`tms_customer_id`, `tms_warehouse_id`, `tms_carrier_id`, `tms_user_id`, `tms_dispatch_id`, `tms_order_id`) đều lưu dưới dạng **`BigInteger` (8 bytes)** có đánh Index để tối ưu bộ nhớ và tốc độ truy vấn; các mã chữ lưu riêng ở cột `code`.
+- **Quản lý Tài khoản (`users`), Nhà xe (`carriers`) & Nhóm Zalo (`zalo_info`)**:
+  - Tất cả nhân viên ĐHVT sinh hoạt chung trong nhóm Zalo ĐHVT nội bộ (`zalo_info` có `role = 'dhvt'`), liên kết qua `users.zalo_info_id` (quan hệ Nhiều `users` - Một `zalo_info`).
+  - Định danh nhân viên ĐHVT khi quote duyệt `"ok"` trên Zalo thông qua đối chiếu `zalo_messages.sender_id == users.zalo_user_id`, và dùng chung tài khoản `users` đó cho tính năng đăng nhập Web quản lý (phân quyền `role = 'admin' | 'dhvt'`).
+  - Nhóm Zalo nhà xe (`role = 'car'`) và Kế hoạch vận chuyển (`transport_plans`) liên kết trực tiếp với bảng `carriers` qua khóa ngoại `carrier_id`.
+- **Lưu trữ File & Ảnh (MinIO)**: Lưu thông tin file trong bảng `files` gồm `file_key`, `bucket`, `object_key`, `sha256` (không lưu cứng URL tĩnh); khi cần xem thì sinh Presigned URL tạm thời.
+- Không thay đổi ID, quan hệ khóa ngoại, trường audit (`activity_logs`) và thời điểm trong vòng đời đối tượng nếu nghiệp vụ không yêu cầu.
+- Thêm hoặc cập nhật unit/integration test (`backend/tests/`) khi thay đổi hành vi nghiệp vụ.
+- Mọi lời gọi sang `ai-service` và `be-tms` phải đi qua client dùng chung, luôn gửi kèm header xác thực nội bộ (`X-Internal-Token` hoặc Bearer Token TMS), tự động che SĐT tài xế (`0903xxxx59`) trước khi gửi AI và không log nội dung nhạy cảm.
+
+### Kiểm tra backend
+
+```bash
+cd backend
+pytest tests -v
 ```
-api  ──►  handlers  ──►  domain  ◄──  infrastructure
-                │
-                ▼
-            messaging / ingestion
+
+Kiểm tra kết nối MySQL và trạng thái bảng:
+
+```bash
+cd backend
+python scripts/manage_db.py check
+python scripts/manage_db.py status
 ```
 
-- **Lõi `domain/` là thuần khiết (Pure Domain)**:
-  - Tuyệt đối **KHÔNG IMPORT** từ `api`, `infrastructure`, `ingestion`, `handlers`.
-  - Không import các thư viện HTTP, Web framework, Database driver, hoặc Zalo SDK.
-  - Chỉ chứa Domain Models, Enums, Business Rules thuần (ISO 6346, regex chuẩn hóa, matching).
-- **Phụ thuộc hướng tâm**: Tầng ngoài phụ thuộc vào tầng trong, tầng trong không biết gì về tầng ngoài.
+---
 
-### 1.2. Cô lập Zalo Payload (Zalo Schema Isolation)
+## Quy ước frontend
 
-- Cấu trúc Payload thô của Zalo **chỉ được phép tồn tại** tại 2 nơi duy nhất:
-  1. `src/api/schemas/zalo.py` (Khai báo cấu trúc dữ liệu HTTP).
-  2. `src/ingestion/normalizer.py` (Chuyển đổi thành model nội bộ).
-- Từ tầng `messaging`, `handlers`, `domain` trở đi, hệ thống **chỉ sử dụng model nội bộ `InboundMessage`**.
-- Khi Zalo thay đổi cấu trúc webhook hoặc hệ thống bổ sung kênh Telegram/Viber, lõi nghiệp vụ hoàn toàn không bị ảnh hưởng.
+- Chạy các lệnh `npm` từ thư mục `frontend`.
+- **Tổ chức theo domain (`src/features/<domain>/`)**: Không dồn mọi endpoint và interface vào một file duy nhất. `src/lib/api/client.ts` chỉ làm fetch wrapper dùng chung (base URL, xử lý lỗi, bắt 401); từng nghiệp vụ (`reviews`, `messages`, `outbound`, `plans`, `directory`, `statistics`, `users`) tách riêng `api.ts`, `hooks.ts`, `columns.tsx`, `components/`.
+- **Đồng bộ kiểu dữ liệu từ OpenAPI**: Sử dụng `openapi-typescript` sinh tự động từ schema OpenAPI của FastAPI ra `src/types/api.d.ts` (không sửa tay file này).
+- **Quản lý dữ liệu, Bảng & Realtime**: Dùng **TanStack Query** cho server state/caching và **TanStack Table** cho bảng dữ liệu (`DataTable`). Cập nhật thời gian thực sử dụng **SSE (`/api/events/stream`)** kết hợp **Polling có chu kỳ (`refetchInterval: 10000` khi tab active)** làm dự phòng.
+- **Xác thực & Phân quyền (`Auth`)**: Lưu token trong **`httpOnly` cookie** (không dùng `localStorage`). Sử dụng `src/middleware.ts` để chặn route theo phiên đăng nhập và phân quyền `role` (`dhvt` / `admin`, riêng `/admin/users` chỉ dành cho `admin`).
+- **Tái sử dụng thành phần dùng chung**: Đặt primitive của `shadcn/ui` (`--radius: 0.25rem`) tại `src/components/ui/` và thành phần dùng chung (`DataTable`, `StatusText`, `PageHeader`, `EmptyState`, `FilterBar`) tại `src/components/shared/`.
+- Khi chỉnh sửa màn hình lấy dữ liệu, bắt buộc xử lý đầy đủ các trạng thái: `loading`, dữ liệu rỗng (`EmptyState`), `error` (`error.tsx`) và phân quyền (`admin` / `dhvt`).
+- **Quy ước Snowflake ID**: Định nghĩa một lần `export type Id = string;`. Backend trả Snowflake ID 64-bit dưới dạng chuỗi trong JSON và Frontend giữ nguyên kiểu `string` (tránh vượt quá `Number.MAX_SAFE_INTEGER` của JavaScript).
+- Tuân thủ nghiêm ngặt nguyên tắc thiết kế giao diện điều hành trong [`frontend/FRONTEND.md`](./frontend/FRONTEND.md) (bảng dữ liệu là trung tâm, trang `reviews` bố cục 2 cột Master–Detail, bo góc tối đa `rounded-sm`, không đổ bóng/gradient/icon trang trí).
+- **FE không bao giờ gọi trực tiếp `ai-service`, `zca-js`, `MySQL`, `MinIO` hay `be-tms`**; mọi tính năng đều phải gọi qua REST API của `backend` (`NEXT_PUBLIC_API_URL`).
 
-### 1.3. Cổng Webhook không chứa logic nghiệp vụ (Thin Webhook Gateway)
+### Kiểm tra frontend
 
-- `src/api/webhook.py` chỉ thực hiện đúng 3 nhiệm vụ:
-  1. Xác thực chữ ký Zalo (`verify_zalo_signature`).
-  2. Chuẩn hóa payload sang `InboundMessage` & lọc trùng lặp (`Deduplicator`).
-  3. Đẩy vào hàng đợi `QueuePublisher.publish()` và phản hồi ngay lập tức `200 OK` (`{"status": "ENQUEUED"}`).
-- **Tuyệt đối KHÔNG**: Bóc tách dữ liệu xe, gọi Database, đọc file shipping hay gọi LLM bên trong Webhook Handler.
-
-### 1.4. Phân định rõ 2 luồng API
-
-- **Zalo Webhook Gateway (`POST /webhook`)**: Dành riêng cho máy chủ Zalo OA đẩy sự kiện tin nhắn thô.
-- **TMS Functional REST APIs (`/api/trips/...`, `/api/health`)**: Dành riêng cho phần mềm TMS quản lý chuyến xe trực tiếp qua JSON có cấu trúc rõ ràng.
-
-### 1.5. Mở rộng Intent mới bằng cách thêm file mới (Open/Closed Principle)
-
-- Tuyệt đối không viết chuỗi `if/elif/else` dài trong core logic để xử lý loại tin nhắn mới.
-- Khi có Intent mới:
-  1. Thêm enum vào `domain/enums.py`.
-  2. Tạo một file Handler độc lập trong `handlers/<new_intent>.py` kế thừa `BaseHandler`.
-  3. Đăng ký từ khóa nhận diện trong `messaging/classifier/rule_based.py`.
-  4. Đăng ký 1 dòng duy nhất vào `IntentRouter` trong `main.py`:
-     ```python
-     router.register(Intent.NEW_INTENT, new_handler)
-     ```
-
-### 1.6. Xuất bản thông báo qua Template (Template Isolation)
-
-- Tuyệt đối không hardcode chuỗi thông báo tiếng Việt gửi khách hàng trong mã nguồn xử lý.
-- Mọi nội dung gửi đi phải được nạp và render thông qua `TemplateEngine` từ thư mục `outbound/templates/`.
-- Hỗ trợ ghi đè mẫu tin theo từng mã khách hàng cụ thể (`templates/customers/<khach_hang_id>_<loai>.txt`).
-
-### 1.7. Khả năng chống chịu lỗi ngoại vi (Resilience & Graceful Degradation)
-
-- Mọi sự cố ngoại vi (LLM server ngoại tuyến/timeout, Zalo API lỗi mạng, sai định dạng file shipping) **tuyệt đối không được làm sập Queue Worker**.
-- Phải luôn có cơ chế Fallback (ví dụ: Fallback từ LLM sang Rule-based Parser) kèm cảnh báo `admin_alert`.
+```bash
+cd frontend
+npm run lint
+npm run build
+```
 
 ---
 
-## 2. Quy tắc bất biến bắt buộc (Strict Invariants)
+## Quy ước ai-service
 
-1. **Bảo toàn file `zalo.md`**:
-   - Tuyệt đối **KHÔNG ĐƯỢC CHẠM VÀO, SỬA ĐỔI HOẶC XÓA** file `/backend/zalo.md` tại thư mục gốc. Đây là tài liệu thiết kế gốc bất biến.
-2. **Zero External Dependencies**:
-   - Toàn bộ mã nguồn dự án chỉ sử dụng thư viện chuẩn của **Python 3.10+** (`re`, `json`, `datetime`, `dataclasses`, `http.server`, `urllib`, `queue`, `unittest`).
-   - Không được thêm thư viện ngoài (như `requests`, `fastapi`, `flask`, `pydantic`) vào môi trường runtime bắt buộc.
+- Chạy các lệnh Python từ thư mục `ai-service`, trong virtual environment riêng (`.venv`), không cài package vào Python hệ thống.
+- Tuân theo cấu trúc thư mục chuẩn: `providers`, `ocr`, `context`, `extraction`, `warehouse_matcher` (`gp1` ➔ `gp4`), `routers`, `schemas`, `core`.
+- Provider AI phải implement theo interface chung `base_provider.py`; không gọi thẳng SDK của Gemini (hoặc provider khác) từ router hay service ngoài lớp `providers`.
+- Định nghĩa schema request/response bằng Pydantic v2 tại `schemas/`, đặc biệt với các endpoint yêu cầu structured output (danh sách xe/container bóc tách, phân loại ý định, kết quả map kho); không trả JSON/dict tự do không có schema.
+- Toàn bộ endpoint expose cho `backend` phải xác thực bằng header nội bộ (`X-Internal-Token` khớp `INTERNAL_SECRET`); không expose endpoint ra ngoài mạng công cộng, không nhận traffic trực tiếp từ FE.
+- **Bảo mật dữ liệu cá nhân (PII Masking)**: Bắt buộc che SĐT tài xế (`0903xxxx59`) trước khi gửi prompt lên Cloud LLM và khôi phục lại sau khi nhận kết quả; không log nội dung chứa dữ liệu nhạy cảm; ghi nhận đầy đủ `model_name`, `prompt_version`, `latency_ms` để đồng bộ vào bảng `extraction_runs`.
+- **Chiến lược Map địa chỉ kho**: Nếu dòng kế hoạch đã có số container thì lấy kho trực tiếp từ kế hoạch (`plan_cont`). Nếu chưa, chạy tuần tự và dừng ở tầng đầu tiên đủ confidence: `habit` (thói quen nhà xe theo `address_normalized`, `carrier_id`) ➔ `fuzzy` (khớp chuỗi trên danh mục kho của khách) ➔ `vector` (Qdrant 768-dim, chưa triển khai) ➔ `llm` (chọn trong danh sách kho ứng viên do backend gửi). Không đủ confidence thì trả `unresolved` để backend tạo ca duyệt cho ĐHVT. `classifier` chỉ làm khi đủ dữ liệu huấn luyện. Mỗi kết quả trả về `warehouse_id`, `confidence`, `source`.
+- Không tự ý thêm provider mới (Groq, OpenRouter, v.v.) hoặc đổi model mặc định (`gemini-3.5-flash`) nếu không có yêu cầu rõ ràng; khi thêm phải tuân theo đúng interface `base_provider.py`.
+- Giữ type hint đầy đủ cho toàn bộ các hàm/phương thức public và kiểm tra format/type bằng `ruff` / `mypy` nếu đã cấu hình.
+- Không commit API key (`AI_API_KEY`, `INTERNAL_SECRET`, v.v.) vào source; chỉ đọc từ tệp `.env` duy nhất ở thư mục gốc dự án.
 
-## 3. Quy chuẩn kiểm thử & Đánh giá (Testing & Verification)
+### Kiểm tra ai-service
 
-Trước khi xác nhận hoàn thành bất kỳ thay đổi nào, bắt buộc phải vượt qua 2 bước kiểm tra:
-
-1. **Kiểm thử tự động**:
-2. **Đo lường độ chính xác Benchmark**:
-
-## 4. Quy tắc viết comment & tài liệu:
-
-- Tất cả các class, phương thức được sinh ra đều phải viết comment chi tiết, chuyên nghiệp bằng tiếng Việt.
-- Tất cả các module và API mới đều phải viết tài liệu kiểm thử Postman/cURL chi tiết dưới dạng file Markdown (`.md`).
-
----
-
-## 5. Quy chuẩn phát triển Frontend & Nguyên tắc Zero Mock Data (Strict Invariant)
-
-1. **Tuyệt đối KHÔNG sử dụng Mock Data (Zero Mock Data Policy)**:
-   - Mọi dữ liệu hiển thị trên giao diện người dùng (Dashboard, Kế hoạch vận chuyển, Quản lý tin nhắn, Danh sách chờ duyệt, Thống kê Taxonomy) **bắt buộc 100% phải được truy vấn thời gian thực từ các API của Backend** (`GET /api/...`).
-   - Nghiêm cấm tạo biến mảng tĩnh (static array), faker mock data, hoặc dữ liệu giả lập trong mã nguồn Frontend (`src/app/`, `src/components/`, `src/lib/`).
-   - Trường hợp giao diện người dùng cần bổ sung trường dữ liệu hoặc màn hình nghiệp vụ mới: Lập trình viên/Agent **bắt buộc phải triển khai API Backend trước** (bao gồm Model, Migration, Service, Controller, Router), sau đó mới viết mã Frontend gọi API này.
-
-2. **Công nghệ Frontend chuẩn hóa**:
-   - Framework: **Next.js 14+ (App Router)**.
-   - Ngôn ngữ: **TypeScript** (Kiểm tra kiểu dữ liệu nghiêm ngặt, tương thích Pydantic Schemas của Backend).
-   - Giao diện: **Tailwind CSS** + **Lucide React Icons**, thiết kế Dark Mode hiện đại (Slate 900 / 950).
-   - Tầng kết nối: Tập trung toàn bộ hàm gọi API tại `frontend/src/lib/api.ts`, cấu hình `API_BASE_URL` qua biến môi trường `NEXT_PUBLIC_API_URL` (mặc định `http://localhost:8000`).
+```bash
+cd ai-service
+pytest -v
+```
 
 ---
 
-## 6. Kiến trúc chịu tải cao & Điều tiết tần suất gửi Zalo OA (High-Throughput & Rate Limiting)
+## Thay đổi database và API
 
-1. **Tiếp nhận tải lớn hàng trăm, hàng nghìn nhóm chat**:
-   - Khi hệ thống mở rộng phục vụ đồng thời hàng trăm/hàng nghìn nhóm chat Zalo, lưu lượng tin nhắn dồn về cùng một thời điểm rất lớn (Traffic Spike).
-   - Cổng Webhook Gateway (`POST /webhook`) chỉ thực hiện xác thực chữ ký, khử trùng lặp (`Deduplicator`), ghi nhận cơ sở dữ liệu và đẩy vào Hàng đợi FIFO (`QueuePublisher`), sau đó phản hồi `200 OK` ngay lập tức (< 50ms).
-   - Toàn bộ công đoạn bóc tách cú pháp (F1, F2, F3, Regex), đối chiếu kế hoạch vận chuyển, và gọi AI xử lý được thực thi trong Worker ngầm (Background Worker) để không làm nghẽn luồng tiếp nhận.
+- Xem schema các bảng (`database/DATABASE.md`) và ORM model (`backend/src/infrastructure/models.py`) là hợp đồng dữ liệu dùng chung giữa `backend`, `frontend` và `ai-service`.
+- **Mọi thay đổi về bảng, cột, kiểu dữ liệu hoặc quan hệ đều phải thông báo rõ ràng với người dùng**, cập nhật đồng bộ tài liệu `database/DATABASE.md` và tạo script migration Alembic (`alembic revision --autogenerate -m "..."`, `alembic upgrade head`). Tuyệt đối không sửa thủ công các file migration đã áp dụng trong `backend/migrations/versions/`.
+- Khi thay đổi hợp đồng API của `backend`, phải cập nhật đồng bộ Pydantic DTO (`backend/src/api/schemas.py`), chạy lại `openapi-typescript` để cập nhật `frontend/src/types/api.d.ts`, cập nhật `frontend/src/features/<domain>/api.ts` và tài liệu liên quan.
+- Khi thay đổi hợp đồng API giữa `backend` và `ai-service` (request/response của `/extract`, `/ocr`, `/match-warehouse`), phải cập nhật đồng bộ client phía `backend`, schema Pydantic phía `ai-service` và tài liệu [`ai-service/AISERVICE.md`](./ai-service/AISERVICE.md).
+- Không đưa thông tin đăng nhập, mật khẩu, token hoặc dữ liệu thật vào mã nguồn hay tệp mẫu `.env.example`.
 
-2. **Điều tiết tần suất gửi ra Zalo OA (Outbound Rate Limiter)**:
-   - Máy chủ Zalo OA áp dụng giới hạn số lượng request API gửi ra trong một khoảng thời gian nhất định (Rate Limit). Nếu gửi dồn dập sẽ bị phản hồi mã lỗi `HTTP 429 Too Many Requests` và tạm khóa gửi tin.
-   - Hệ thống bắt buộc phải tích hợp bộ điều tiết `ZaloOutboundThrottler` dựa trên thuật toán **Token Bucket**:
-     - Tốc độ phát hành token mặc định: **10 request/giây**.
-     - Dung lượng tối đa của bucket (Burst Capacity): **20 tokens**.
-     - Cơ chế chống sốc (Dynamic Backoff): Tự động tạm hoãn và lùi thời gian gửi theo hàm mũ khi nhận cảnh báo hoặc phản hồi `429` từ Zalo.
+---
+
+## Kiểm tra và bàn giao
+
+- Chạy kiểm tra đúng phạm vi trước, sau đó chạy test/build toàn bộ phân hệ bị ảnh hưởng nếu có thể.
+- Chạy `git diff --check` và xem lại diff cuối cùng trước khi hoàn thành.
+- Báo cáo rõ nội dung đã thay đổi, kiểm tra nào đã thành công và kiểm tra nào chưa thể chạy.
+- Không thông báo hoàn thành nếu biên dịch, lint hoặc test vẫn lỗi; cần mô tả rõ lỗi còn lại.

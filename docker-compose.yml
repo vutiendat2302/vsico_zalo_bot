@@ -1,0 +1,46 @@
+# =============================================================================
+# docker-compose.yml — HẠ TẦNG CONTAINER TRUNG TÂM DỰ ÁN VSICO ZALO BOT
+# Quản lý tập trung: MySQL 8.4 (Cơ sở dữ liệu) & MinIO (Lưu trữ File/Ảnh S3)
+# Tự động đọc biến môi trường từ tệp `.env` duy nhất tại thư mục gốc.
+# =============================================================================
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: vsico-zalo-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-123456}
+      MYSQL_DATABASE: ${DB_NAME:-vsico_zalo_bot}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - vsico_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: vsico-zalo-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "9000:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    command: server /data --console-address ":9001"
+    volumes:
+      - vsico_minio_data:/data
+
+volumes:
+  vsico_mysql_data:
+  vsico_minio_data:

@@ -42,16 +42,16 @@ test-txt:
 	$(PYTHON) scripts/run_txt_tests.py --all
 
 docker-up:
-	docker compose up -d
+	docker compose -f ../docker-compose.yml --env-file ../.env up -d
 
 docker-down:
-	docker compose down
+	docker compose -f ../docker-compose.yml --env-file ../.env down
 
 db-up:
-	docker compose up -d mysql
+	docker compose -f ../docker-compose.yml --env-file ../.env up -d mysql
 
 db-down:
-	docker compose stop mysql
+	docker compose -f ../docker-compose.yml --env-file ../.env stop mysql
 
 db-check:
 	$(PYTHON) scripts/manage_db.py check

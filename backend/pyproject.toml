@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "vsico-zalo-bot"
 version = "1.0.0"
 description = "VSICO Zalo Bot - Hệ thống tiếp nhận, bóc tách & định tuyến tin nhắn nhà xe (FastAPI + SQLAlchemy 2.0 + MySQL)"
-readme = "README.md"
+readme = "BACKEND.md"
 requires-python = ">=3.10"
 authors = [
     { name = "VSICO Development Team", email = "dev@vsico.com.vn" }
