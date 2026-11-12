@@ -8,7 +8,6 @@ description: >-
   RBAC dhvt/admin), SSE/polling realtime, hoặc frontend lint/build/test. Không sử dụng cho Backend-only,
   AI Service, SQL migration, Docker hoặc tài liệu.
 ---
-
 # VSICO Frontend — Engineering Standards & Development Guide
 
 Làm việc trong thư mục `frontend/`. Tài liệu kiến trúc chuẩn nằm tại `frontend/FRONTEND.md`.
@@ -78,20 +77,32 @@ frontend/
 
 ## 3. Quy chuẩn Thiết kế Giao diện Điều hành (Strict UI Rules)
 
-1. **Bố cục**:
-   - Bảng dữ liệu (`DataTable`) là thành phần chính. Không dùng lưới thẻ (card) để liệt kê bản ghi.
-   - Trang `reviews/` dùng bố cục 2 cột Master–Detail (danh sách trái, chi tiết phải), không mở modal, không chuyển trang.
-   - Bộ lọc `FilterBar` nằm trên bảng, gọn trên 1 hàng, mặc định lọc ngày hôm nay.
-   - Không lồng Card/Modal. Modal chỉ dùng để xác nhận hành động nguy hiểm (như hủy chuyến).
-2. **Hình thức**:
-   - Bo góc tối đa `rounded-sm` (2–4px), `--radius: 0.25rem`. Cấm `rounded-lg`, `rounded-xl`, `rounded-2xl`, `rounded-full` (trừ chấm tròn trạng thái).
-   - Không đổ bóng (`shadow-*`), không `bg-gradient-*`, không hiệu ứng mờ kính. Phân tách bằng đường kẻ `1px`.
-   - Chữ 13–14px, số liệu dùng `tabular-nums`. Số cont, biển số, seal, SĐT dùng font `monospace`.
-   - Không dùng icon trang trí, không dùng emoji.
-3. **Nội dung**:
-   - Trạng thái hiển thị bằng chấm màu + một từ (`StatusText`), không dùng badge lớn.
-   - Ngày giờ ngắn theo ngữ cảnh: hôm nay `14:05`, khác ngày `12/11 14:05`.
-   - Toast chỉ bật cho kết quả thao tác của chính người dùng; cập nhật realtime chỉ đổi dòng tại chỗ.
+### 3.1. Bố cục
+
+- Thông minh, có dashboard thống kê, chia các trang hợp lý.
+- Hành động nằm ngay tại dòng hoặc ở thanh cố định. Hỗ trợ phím tắt cho thao tác lặp lại (lên/xuống chọn dòng, Enter mở, phím duyệt/từ chối).
+- Không Card/Modal lồng nhau.
+
+### 3.2. Hình thức
+
+- Không đổ bóng, không gradient, không hiệu ứng mờ kính. Phân tách bằng đường kẻ `1px`.
+- Bảng màu: back trắng, còn lại sẽ là tím... Tối đa 3-4 màu trong dự án này thôi. Màu ngữ nghĩa (đỏ, vàng, xanh) chỉ dùng cho trạng thái, không dùng làm nền trang trí.
+- Chữ cỡ 13–14px, mật độ dòng gọn. Số liệu dùng `tabular-nums`. Số cont, biển số, seal, SĐT dùng font `monospace` để dễ đối chiếu.
+- Icon chỉ dùng khi thay được chữ (nút đóng, sắp xếp, tải lên). Không icon trang trí, không emoji, không minh họa.
+- Hoạt ảnh tối thiểu. Chỉ có hiệu ứng chuyển trạng thái nhanh (<150ms), không hoạt ảnh vào trang. Hiệu ứng hover vào các button, các dòng.
+
+### 3.3. Nội dung
+
+- Ít chữ nhất có thể mà vẫn đủ nghĩa. Nhãn là danh từ ngắn ("Biển số", "Kho"), nút là động từ ngắn ("Duyệt", "Từ chối", "Gửi lại").
+- Không viết đoạn mô tả, tiêu đề chào mừng hay câu hướng dẫn dài. Cần giải thích thì dùng tooltip một dòng.
+- Trạng thái hiển thị bằng chấm màu + một từ (`StatusText`), không dùng badge lớn.
+- Ngày giờ ngắn theo ngữ cảnh: hôm nay `14:05`, khác ngày `12/11 14:05`.
+- Thông báo (toast) chỉ cho kết quả thao tác của chính người dùng. Cập nhật realtime thì đổi dòng tại chỗ, không bật thông báo.
+- Các hành động delete, update, thông báo ... không dùng mặc định của hệ thống. Sử dụng dựa vào form của thư viện.
+
+### 3.4. Cách kiểm soát
+
+- Mọi màn hình mới phải trả lời được: người điều hành cần làm gì ở đây, và mất bao nhiêu thao tác?
 
 ---
 

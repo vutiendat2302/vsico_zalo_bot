@@ -29,9 +29,6 @@ Dự án áp dụng quy chuẩn đặt tên file tài liệu rõ ràng theo đú
 | **`zca-js/ZCA_BRIDGE.md`** | Tài liệu kỹ thuật mô-đun cầu nối Zalo WebSocket Listener & Outbound REST Server. |
 | **`docs/`** *(Thư mục tài liệu gốc)* | Lưu trữ tập trung toàn bộ tài liệu thiết kế hệ thống, hợp đồng dữ liệu (`DATA_CONTRACT.md`), đặc tả API TMS, báo cáo và slide thuyết trình. |
 
-> [!CAUTION]
-> **Quy tắc bất biến**: Tuyệt đối **KHÔNG ĐƯỢC CHẠM VÀO, SỬA ĐỔI HOẶC XÓA** file `/backend/zalo.md`.
-
 ---
 
 ## 2. Quy chuẩn Trình bày & Sơ đồ Mermaid
@@ -43,6 +40,5 @@ Dự án áp dụng quy chuẩn đặt tên file tài liệu rõ ràng theo đú
    - Chỉ sử dụng các loại sơ đồ chuẩn: `flowchart TD` / `flowchart LR`, `sequenceDiagram`, `erDiagram`, `stateDiagram-v2`, `classDiagram`.
    - Luôn đặt nhãn nút có ký tự đặc biệt (ngoặc đơn, ngoặc vuông, dấu hai chấm, `<br/>`) trong dấu ngoặc kép `id["Nhãn (Chi tiết)"]` để tránh lỗi cú pháp render.
 3. **Tài liệu Kiểm thử Postman / cURL**:
-   - Mọi module hoặc endpoint REST API mới trên Backend/AI Service đều phải có hướng dẫn kiểm thử bằng `curl` hoặc Postman chi tiết dưới dạng file Markdown (`.md`) tại `backend/tests/postman/` hoặc `docs/`.
-4. **Đồng bộ Khi Thay đổi Thiết kế**:
-   - Khi thay đổi cấu trúc bảng trong `database/DATABASE.md`, phải đồng bộ sang `backend/database.md` và `docs/DATABASE_DESIGN.md` để đảm bảo tính nhất quán 100%.
+   - Mọi module hoặc endpoint REST API mới trên Backend/AI Service đều phải có hướng dẫn kiểm thử bằng `curl` hoặc Postman chi tiết dưới dạng file Markdown (`.md`) tại `backend/tests/postman/`.
+

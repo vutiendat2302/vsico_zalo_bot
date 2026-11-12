@@ -2,7 +2,7 @@
 name: vsico-database
 description: >-
   Thiết kế, cập nhật schema, viết và kiểm tra Alembic migrations, tối ưu hóa truy vấn và
-  chỉ mục MySQL 8.4 cho dự án VSICO Zalo Bot tại database/, backend/src/infrastructure/models.py,
+  chỉ mục MySQL 8.4+ cho dự án VSICO Zalo Bot tại database/, backend/src/infrastructure/models.py,
   backend/migrations/ và backend/scripts/manage_db.py. Sử dụng khi thêm bảng mới, sửa cột,
   thiết lập khóa chính Snowflake ID 64-bit, khóa ngoại, đồng bộ ID từ TMS (BigInteger),
   hoặc chạy lệnh quản trị/dọn dẹp dữ liệu MySQL.
@@ -10,13 +10,13 @@ description: >-
 
 # VSICO Database — Schema Design & Migration Guide
 
-Làm việc với tài liệu đặc tả tại `database/DATABASE.md` (và `backend/database.md`), ORM Models tại `backend/src/infrastructure/models.py` và Alembic Migrations tại `backend/migrations/`.
+Làm việc với tài liệu đặc tả tại `database/DATABASE.md`, ORM Models tại `backend/src/infrastructure/models.py` và Alembic Migrations tại `backend/migrations/`.
 
 ---
 
-## 1. Kiến trúc 17 Bảng Cốt lõi & Phân nhóm Dữ liệu
+## 1. Kiến trúc các Bảng Cốt lõi & Phân nhóm Dữ liệu
 
-Cơ sở dữ liệu **MySQL 8.4** (`utf8mb4_unicode_ci`) gồm **17 bảng** chia làm 4 phân nhóm:
+Cơ sở dữ liệu **MySQL 8.4+** (`utf8mb4_unicode_ci`) gồm **17 bảng** chia làm 4 phân nhóm:
 
 1. **Danh mục & Tài khoản (Master & Auth Data — 6 bảng)**:
    - `users`: Tài khoản nội bộ (`admin`, `dhvt`) đăng nhập Web quản lý, gắn `zalo_user_id` (khớp `sender_id` Zalo cá nhân) và `zalo_info_id` (trỏ về nhóm Zalo ĐHVT chung).

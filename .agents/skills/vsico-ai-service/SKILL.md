@@ -23,31 +23,19 @@ Mã nguồn trong `ai-service/app/` là trung tâm xử lý trí tuệ nhân t�
 ```text
 ai-service/
 ├── app/
-│   ├── core/                    # Cấu hình môi trường (config.py đọc từ ../.env), Logging và Security Token
-│   ├── providers/               # BaseProvider & GeminiProvider / OpenAICompatibleProvider
-│   ├── ocr/                     # Multi-modal OCR Engine:
-│   │   ├── paddle_engine.py     # Kết nối máy chủ PaddleOCR tự host (nhận diện lệnh điều xe chụp ảnh)
-│   │   ├── vision_fallback.py   # Fallback Gemini Vision khi ảnh mờ, nghiêng hoặc chữ viết tay
-│   │   └── image_preprocessor.py# Tiền xử lý ảnh, kiểm tra SHA256 và tải file từ MinIO
-│   ├── context/                 # Conversation Context Manager:
-│   │   ├── context_builder.py   # Ghép ngữ cảnh hội thoại (Quote/Reply, tin nhắn trước của cùng nhà xe)
-│   │   └── intent_resolver.py   # Phân loại ý định: Tạo mới / Bổ sung (Supplement) / Đổi xe (Update) / Hủy
-│   ├── extraction/              # NLP Information Extraction Pipeline:
-│   │   ├── segmenter.py         # Context-aware Message Segmentation (Tách đa xe, đa cont, kế thừa kho/khách)
-│   │   ├── ner_extractor.py     # Bóc tách thực thể: Xe, Rơ-moóc, Tài xế, SĐT, Số Cont, Số Seal, Giờ hẹn
-│   │   ├── privacy_masker.py    # Tự động che SĐT (0903xxxx59) trước khi gọi Cloud LLM & khôi phục sau xử lý
-│   │   └── iso6346_verifier.py  # Thẩm định chữ số kiểm tra Modulo 11 cho Container
-│   ├── warehouse_matcher/       # Giải thuật Map Địa chỉ Kho 4 tầng (GP1 -> GP4):
-│   │   ├── gp1_vector_search.py # GP1: Vector hóa địa chỉ so khớp trên Qdrant (768-dim)
-│   │   ├── gp2_carrier_habit.py # GP2: Tra cứu trực tiếp theo thói quen viết tắt của từng nhà xe (carrier_id)
-│   │   ├── gp3_classifier.py    # GP3: Mô hình phân loại học máy khi dữ liệu huấn luyện đủ lớn
-│   │   └── gp4_llm_resolver.py  # GP4: LLM phân giải ngữ cảnh địa chỉ phức tạp / nhập kiểu mới
-│   ├── schemas/                 # Pydantic v2 Schemas chặt chẽ cho mọi Request & Response
-│   ├── routers/                 # FastAPI Endpoints: extract.py, ocr.py, match_warehouse.py, health.py
-│   └── main.py                  # Khởi tạo FastAPI Application và Middleware
-├── tests/                       # Pytest Unit & Integration Test Suites
-├── AISERVICE.md                 # Tài liệu kỹ thuật chi tiết của AI Service
-└── pyproject.toml               # Khai báo Python Dependencies
+│   ├── core/            # config (đọc ../.env), logging, xác thực X-Internal-Token
+│   ├── providers/       # base_provider, Gemini, OpenAI-compatible, privacy_masker
+│   ├── ocr/             # paddle_engine, vision_fallback, image_preprocessor
+│   ├── analyze/         # service.py: intent + phân đoạn + bóc tách + liên kết, một lần gọi
+│   ├── warehouse/       # matcher.py, habit.py, fuzzy.py, llm.py, vector.py (sau), classifier.py (sau)
+│   ├── prompts/         # prompt có version
+│   ├── schemas/         # Pydantic v2: request/response, có confidence + evidence
+│   ├── routers/         # analyze.py, ocr.py, match_warehouse.py, health.py (prefix /v1)
+│   └── main.py
+├── evals/               # chạy fixtures, đo độ chính xác
+├── tests/
+├── AISERVICE.md
+└── pyproject.toml
 ```
 
 ---

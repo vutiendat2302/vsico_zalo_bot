@@ -9,7 +9,6 @@ description: >-
   TMS sync hoặc backend pytest. Không sử dụng cho công việc chỉ liên quan Frontend Next.js,
   AI Service độc lập, Docker hoặc tài liệu.
 ---
-
 # VSICO Backend — Engineering Standards & Development Guide
 
 Làm việc trong thư mục `backend/`.
