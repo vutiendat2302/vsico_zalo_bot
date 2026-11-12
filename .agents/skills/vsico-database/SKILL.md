@@ -16,7 +16,7 @@ Làm việc với tài liệu đặc tả tại `database/DATABASE.md`, ORM Mode
 
 ## 1. Kiến trúc các Bảng Cốt lõi & Phân nhóm Dữ liệu
 
-Cơ sở dữ liệu **MySQL 8.4+** (`utf8mb4_unicode_ci`) gồm **17 bảng** chia làm 4 phân nhóm:
+Cơ sở dữ liệu **MySQL 8.4+** (`utf8mb4_unicode_ci`) gồm **19 bảng** chia làm 4 phân nhóm:
 
 1. **Danh mục & Tài khoản (Master & Auth Data — 6 bảng)**:
    - `users`: Tài khoản nội bộ (`admin`, `dhvt`) đăng nhập Web quản lý, gắn `zalo_user_id` (khớp `sender_id` Zalo cá nhân) và `zalo_info_id` (trỏ về nhóm Zalo ĐHVT chung).
@@ -24,16 +24,18 @@ Cơ sở dữ liệu **MySQL 8.4+** (`utf8mb4_unicode_ci`) gồm **17 bảng** c
    - `customers`: Danh mục Khách hàng đồng bộ từ TMS (`tms_customer_id`, `code`, `name`, `short_name`).
    - `warehouses`: Danh mục Kho đóng/trả hàng đồng bộ từ TMS (`tms_warehouse_id`, `customer_id`, `zalo_info_id`).
    - `zalo_info`: Danh bạ nhóm/tài khoản Zalo (`role = 'customer' | 'car' | 'dhvt'`, `carrier_id`, `send_mode`).
-   - `route_maps`: Ma trận định tuyến (`customer_id` + `warehouse_id` + `order_type` ➔ `zalo_info_id`).
+   - `route_maps`: Ma trận định tuyến (`customer_id` + `warehouse_id` + `order_type` -> `zalo_info_id`).
 2. **Kế hoạch Vận chuyển (Planning Data — 1 bảng)**:
    - `transport_plans`: Kế hoạch điều vận hằng ngày kéo từ TMS (`tms_dispatch_id`, `tms_order_id`, `carrier_id`, `customer_id`, `warehouse_id`) hoặc import từ Excel/CSV (`source_file_id`).
-3. **Nghiệp vụ Runtime (Runtime Operational Data — 9 bảng)**:
+3. **Nghiệp vụ Runtime (Runtime Operational Data — 11 bảng)**:
    - `zalo_messages`: Tin nhắn thô từ Webhook Zalo (bất biến).
    - `extraction_runs`: Nhật ký các phiên bóc tách (Regex, PaddleOCR, Gemini AI).
    - `truck_records`: Thông tin lượt xe (Đầu kéo, Lái xe, SĐT, hỗ trợ sửa xe qua `parent_truck_record_id`).
-   - `container_jobs`: Thực thể trung tâm quản lý từng container (gắn `transport_plan_id`, `warehouse_id`, `truck_record_id`, `parent_job_id`).
-   - `outbound_messages`: Bản tin thông báo gửi nhóm Zalo khách hàng (gắn `container_job_id`, `approved_by_user_id`).
-   - `bot_replies`: Theo dõi tin Bot nhắc nhà xe bổ sung thông tin (kèm `fix_deadline`).
+   - `container_jobs`: Thực thể trung tâm quản lý từng container (gắn `transport_plan_id`, `warehouse_id`, `truck_record_id`, `version`).
+   - `outbound_messages`: Bản tin thông báo gửi nhóm Zalo khách hàng/nhà xe/ĐHVT.
+   - `outbound_message_items`: Bảng nối tin thông báo với các chuyến được báo kèm `job_version` (khóa chống gửi trùng).
+   - `message_drafts`: Bản nháp gom tin nhắn rời rạc theo cửa sổ thời gian (Debounce).
+   - `bot_replies`: Theo dõi tin Bot hỏi nhà xe bổ sung thông tin hoặc giải quyết mâu thuẫn.
    - `review_cases`: Hàng đợi các ca bất thường chờ ĐHVT duyệt (`assigned_to_user_id`, `resolved_by_user_id`).
    - `tms_sync_logs`: Nhật ký gọi API đồng bộ hai chiều với `be-tms`.
    - `activity_logs`: Nhật ký kiểm toán (Audit Trail) gắn `user_id` và cặp `entity_type` + `entity_id`.
@@ -45,7 +47,7 @@ Cơ sở dữ liệu **MySQL 8.4+** (`utf8mb4_unicode_ci`) gồm **17 bảng** c
 ## 2. Quy tắc Bất biến về Kiểu Dữ liệu & Khóa (Strict Key Conventions)
 
 1. **Khóa chính Nội bộ (`id`) dùng Snowflake ID 64-bit**:
-   - Toàn bộ 17 bảng trong hệ thống Bot bắt buộc dùng kiểu `BigInteger` (`BIGINT`) với giá trị **Snowflake ID 64-bit** sinh từ tầng ứng dụng.
+   - Toàn bộ 19 bảng trong hệ thống Bot bắt buộc dùng kiểu `BigInteger` (`BIGINT`) với giá trị **Snowflake ID 64-bit** sinh từ tầng ứng dụng.
    - **Không sử dụng `AUTO_INCREMENT`** cho các bảng chuẩn mới.
 2. **Khóa Đồng bộ từ TMS (`tms_*_id`) dùng `BigInteger`**:
    - Tất cả các trường lưu ID gốc từ phần mềm TMS (`tms_customer_id`, `tms_warehouse_id`, `tms_carrier_id`, `tms_user_id`, `tms_dispatch_id`, `tms_order_id`) đều lưu dưới dạng **`BigInteger` (8 bytes)**, có đánh `Index`.
@@ -60,7 +62,7 @@ Cơ sở dữ liệu **MySQL 8.4+** (`utf8mb4_unicode_ci`) gồm **17 bảng** c
 Khi có bất kỳ thay đổi nào về cấu trúc bảng:
 
 1. **Cập nhật Tài liệu Thiết kế trước**:
-   - Cập nhật `database/DATABASE.md` (và đồng bộ `backend/database.md`) kèm thông báo rõ các trường thay đổi cho người dùng.
+   - Cập nhật `database/DATABASE.md` kèm thông báo rõ các trường thay đổi cho người dùng.
 2. **Cập nhật SQLAlchemy Models**:
    - Chỉnh sửa `backend/src/infrastructure/models.py` khớp 100% với tài liệu thiết kế.
 3. **Sinh Kịch bản Migration Tự động**:

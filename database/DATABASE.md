@@ -26,12 +26,12 @@ sequenceDiagram
     participant D as ĐHVT
 
     Z->>OA: Gửi tin điều xe vào nhóm nhà xe
-    OA->>B: Webhooknpm run dev
+    OA->>B: Webhook
 
     B-->>OA: Trả 200 ngay
 
     B->>B: Lọc tin rác, phân loại ý định
-    B->>B: Trích xuất và chuẩn hóa thông tinnpm run dev
+    B->>B: Trích xuất và chuẩn hóa thông tin
 
     B->>T: Lấy kế hoạch chuyến xe
     T-->>B: Danh sách chuyến còn trống
@@ -108,7 +108,6 @@ erDiagram
     zalo_messages ||--o{ container_jobs : "sinh ra"
     extraction_runs |o--o{ container_jobs : "lượt bóc tách"
     truck_records |o--o{ container_jobs : "xe kéo cont"
-    container_jobs |o--o{ container_jobs : "bản sửa"
     transport_plans |o--o{ container_jobs : "dòng kế hoạch được gán"
     warehouses |o--o{ container_jobs : "kho"
     customers |o--o{ warehouses : "sở hữu"
@@ -120,10 +119,18 @@ erDiagram
     warehouses |o--o{ route_maps : "kho"
     zalo_info ||--o{ route_maps : "nơi nhận thông báo"
     zalo_info ||--o{ outbound_messages : "nơi nhận"
-    container_jobs |o--o{ outbound_messages : "thông báo cho cont"
+    outbound_messages ||--o{ outbound_message_items : "gồm các chuyến"
+    container_jobs ||--o{ outbound_message_items : "đã báo theo phiên bản"
+    zalo_messages |o--o{ outbound_messages : "tin gốc để reply"
+    outbound_messages |o--o{ bot_replies : "tin hỏi của Bot"
+    message_drafts |o--o{ bot_replies : "câu hỏi thuộc bản nháp"
+    container_jobs |o--o{ bot_replies : "chuyến liên quan"
+    zalo_info ||--o{ message_drafts : "nhóm nhà xe"
+    carriers |o--o{ message_drafts : "nhà xe"
+    outbound_messages |o--o{ review_cases : "thông báo nhóm ĐHVT"
     users |o--o{ outbound_messages : "phê duyệt"
     zalo_messages ||--o{ bot_replies : "nhắc sửa"
-    zalo_messages ||--o{ review_cases : "phát sinh"
+    zalo_messages |o--o{ review_cases : "phát sinh"
     container_jobs |o--o{ review_cases : "liên quan"
     users |o--o{ review_cases : "được giao / xử lý"
     users |o--o{ activity_logs : "thực hiện"
@@ -217,12 +224,12 @@ erDiagram
         bigint message_id FK
         bigint extraction_run_id FK
         bigint truck_record_id FK
-        bigint parent_job_id FK
         bigint transport_plan_id FK
         bigint warehouse_id FK
         string address_normalized
         string warehouse_match_source
         string container_no
+        int version "tăng khi đổi trường nghiệp vụ"
         string status
         string tms_sync_status
     }
@@ -248,30 +255,63 @@ erDiagram
     outbound_messages {
         bigint id PK "Snowflake ID"
         bigint zalo_info_id FK
-        bigint container_job_id FK
+        bigint source_message_id FK
         bigint approved_by_user_id FK
-        string order_type
+        string order_type "nullable"
+        string message_kind
+        string zalo_msg_id UK
         string status
     }
     bot_replies {
         bigint id PK "Snowflake ID"
         bigint message_id FK
-        string status
+        bigint outbound_message_id FK
+        bigint container_job_id FK
+        bigint draft_id FK
+        bigint answered_message_id FK
+        string question_type
+        string question_status
     }
     review_cases {
         bigint id PK "Snowflake ID"
-        bigint message_id FK
+        bigint message_id FK "nullable"
         bigint container_job_id FK
         bigint assigned_to_user_id FK
         bigint resolved_by_user_id FK
+        bigint notify_outbound_message_id FK
         string case_type
+        string category "review | alert"
+        string priority "urgent | normal"
         string status
+        int job_version_at_open
+        int occurrence_count
+        datetime due_at
     }
     tms_sync_logs {
         bigint id PK "Snowflake ID"
         bigint container_job_id FK
         string operation
+        string idempotency_key
+        int attempt_count
         string status
+    }
+    message_drafts {
+        bigint id PK "Snowflake ID"
+        bigint zalo_info_id FK
+        bigint carrier_id FK
+        bigint first_message_id FK
+        bigint last_message_id FK
+        string group_id
+        string sender_id
+        string status
+        datetime expires_at
+    }
+    outbound_message_items {
+        bigint id PK "Snowflake ID"
+        bigint outbound_message_id FK
+        bigint container_job_id FK
+        int job_version
+        string message_kind
     }
     activity_logs {
         bigint id PK "Snowflake ID"
@@ -284,39 +324,43 @@ erDiagram
 
 **Quy ước Khóa chính (Snowflake ID) & Khóa đồng bộ TMS:**
 
-- **Khóa chính nội bộ (`id`)**: Toàn bộ 17 bảng trong hệ thống Bot sử dụng **Snowflake ID 64-bit (`BigInteger`)** do tầng ứng dụng sinh tự động (không dùng `AUTO_INCREMENT`), đảm bảo duy nhất toàn cục, phân tán tốt và sắp xếp tăng dần theo thời gian.
+- **Khóa chính nội bộ (`id`)**: Toàn bộ 19 bảng trong hệ thống Bot sử dụng **Snowflake ID 64-bit (`BigInteger`)** do tầng ứng dụng sinh tự động (không dùng `AUTO_INCREMENT`), đảm bảo duy nhất toàn cục, phân tán tốt và sắp xếp tăng dần theo thời gian.
 - **Khóa đồng bộ từ TMS (`tms_*_id`)**: Lưu dưới dạng **`BigInteger` (8 bytes)** thay vì `String` để tối ưu dung lượng bộ nhớ và tốc độ tìm kiếm B-Tree Index (do trên TMS các khóa `customer_id`, `warehouse_id`, `carrier_id`, `user_id`, `dispatch_id`, `order_id` đều là số nguyên). Các mã hiển thị dạng chữ (nếu có) được tách riêng vào cột `code`.
 
 **Quan hệ logic (không có khóa ngoại vật lý trong sơ đồ):**
 
 - `zalo_messages.quote_msg_id` trỏ tới `zalo_messages.zalo_message_id` của tin được trích dẫn.
-- `users.zalo_user_id` khớp với `zalo_messages.sender_id` để nhận diện chính xác nhân viên ĐHVT nào vừa quote duyệt tin trong nhóm Zalo ĐHVT chung.
+- `users.zalo_user_id` khớp với `zalo_messages.sender_id` để nhận diện nhân viên ĐHVT khi hỏi tra cứu Bot trên Zalo (chỉ đọc). Duyệt, sửa, từ chối chỉ thực hiện trên Web; nhóm Zalo ĐHVT chỉ nhận thông báo một chiều.
+- Khi người dùng quote một tin của Bot: `zalo_messages.quote_msg_id` được đối chiếu với `outbound_messages.zalo_msg_id` (nơi duy nhất lưu ID tin Bot đã gửi); từ đó tra ra `bot_replies` (câu hỏi đang chờ), `outbound_message_items` (các chuyến đã báo) hoặc `review_cases` (tin thông báo ĐHVT).
+- `container_jobs` được sửa tại chỗ: mỗi lần đổi trường nghiệp vụ thì `version` + 1, giá trị cũ → mới ghi vào `activity_logs.details`. Không tạo dòng `container_jobs` mới cho bản sửa.
 - `activity_logs` tham chiếu mọi bảng qua cặp `entity_type` + `entity_id` (`BigInteger` Snowflake ID).
 - Một Zalo có nhiều khách và một khách có nhiều Zalo: lưu bằng nhiều dòng trong `route_maps` (mỗi dòng là một cặp khách – nơi nhận).
 
 ### 3.2 Schema
 
-Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân chia theo 4 nhóm chức năng:
+Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân chia theo 4 nhóm chức năng:
 
 | STT | Tên bảng CSDL       | Nhóm chức năng       | Vai trò nghiệp vụ chính                                                              |
 | :-: | :-------------------- | :---------------------- | :--------------------------------------------------------------------------------------- |
 |  1  | `zalo_messages`     | Nghiệp vụ Runtime     | Lưu tin nhắn thô ban đầu nhận từ Webhook Zalo                                     |
 |  2  | `zalo_info`         | Danh mục & Cấu hình  | Danh bạ nhóm Zalo (Nhóm Nhà xe, Nhóm Khách hàng, Nhóm ĐHVT chung)               |
-|  3  | `users`             | Danh mục & Cấu hình  | Tài khoản nội bộ (ĐHVT, Admin) đăng nhập Web quản lý và duyệt tin trên Zalo |
+|  3  | `users`             | Danh mục & Cấu hình  | Tài khoản nội bộ (ĐHVT, Admin) đăng nhập Web quản lý; nhận diện ĐHVT khi hỏi Bot trên Zalo |
 |  4  | `carriers`          | Danh mục & Cấu hình  | Danh mục Nhà xe / Đội xe chuẩn đồng bộ từ phần mềm TMS                        |
 |  5  | `customers`         | Danh mục & Cấu hình  | Danh mục Khách hàng chuẩn đồng bộ từ TMS (không chứa thông tin Zalo)          |
 |  6  | `warehouses`        | Danh mục & Cấu hình  | Danh mục Kho đóng/trả hàng đồng bộ từ TMS                                       |
 |  7  | `transport_plans`   | Kế hoạch Vận chuyển | Kế hoạch vận chuyển hằng ngày (Đồng bộ từ TMS hoặc Import từ Excel/CSV)      |
-|  8  | `outbound_messages` | Nghiệp vụ Runtime     | Bản tin thông báo chuyến xe gửi ra Zalo của khách hàng                           |
+|  8  | `outbound_messages` | Nghiệp vụ Runtime     | Mọi tin Bot gửi ra Zalo (khách, nhà xe, nhóm ĐHVT); nơi duy nhất lưu `zalo_msg_id`                           |
 |  9  | `truck_records`     | Nghiệp vụ Runtime     | Thông tin lượt xe (Đầu kéo, Lái xe, SĐT)                                         |
 | 10 | `container_jobs`    | Nghiệp vụ Runtime     | Thực thể trung tâm quản lý từng công việc container                              |
 | 11 | `extraction_runs`   | Nghiệp vụ Runtime     | Nhật ký các phiên bóc tách dữ liệu (AI, Regex, OCR)                              |
-| 12 | `bot_replies`       | Nghiệp vụ Runtime     | Theo dõi tin Bot nhắc tài xế/nhà xe sửa lỗi                                       |
-| 13 | `review_cases`      | Nghiệp vụ Runtime     | Hàng đợi các ca cần Điều hành vận tải (ĐHVT) duyệt tay                       |
+| 12 | `bot_replies`       | Nghiệp vụ Runtime     | Theo dõi câu hỏi Bot đặt cho nhà xe và trạng thái trả lời                                       |
+| 13 | `review_cases`      | Nghiệp vụ Runtime     | Hàng đợi ca cần ĐHVT duyệt và cảnh báo hệ thống (xử lý trên Web)                       |
 | 14 | `tms_sync_logs`     | Nghiệp vụ Runtime     | Nhật ký gọi API đồng bộ dữ liệu sang phần mềm TMS                              |
 | 15 | `route_maps`        | Danh mục & Cấu hình  | Ma trận định tuyến: Khách hàng + Kho + Loại lệnh ➔ Zalo nhận tin               |
 | 16 | `activity_logs`     | Nghiệp vụ Runtime     | Nhật ký kiểm toán (Audit Trail) thao tác người dùng & hệ thống                 |
 | 17 | `files`             | Lưu trữ               | Lưu thông tin file và đường dẫn (MinIO)                                           |
+| 18 | `message_drafts`   | Nghiệp vụ Runtime     | Bản nháp gom tin rời rạc theo (nhóm, người gửi), có hạn chờ debounce             |
+| 19 | `outbound_message_items` | Nghiệp vụ Runtime | Chuyến nào, phiên bản nào đã được báo trong tin gửi đi (chống gửi trùng) |
 
 ---
 
@@ -332,7 +376,7 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 | `zalo_info_id`      | `BigInteger`    | **FK** (`zalo_info.id`), Nullable, **Index** | `NULL`       | Nhóm hoặc tài khoản đã đăng ký nhận tin này; `NULL` nếu nhóm/tài khoản chưa có trong `zalo_info`  |
 | `sender_id`         | `String(128)`   | Not Null, **Index**                                  |                | ID tài khoản người dùng Zalo của người gửi (tài xế, nhà xe, hoặc nhân viên ĐHVT)                       |
 | `sender_name`       | `String(255)`   | Nullable                                                   | `NULL`       | Tên hiển thị Zalo của người gửi tại thời điểm nhận tin                                                     |
-| `quote_msg_id`      | `String(128)`   | Nullable, **Index**                                  | `NULL`       | ID tin nhắn Zalo được trích dẫn (dùng khi ĐHVT quote duyệt "ok" hoặc sửa)                                   |
+| `quote_msg_id`      | `String(128)`   | Nullable, **Index**                                  | `NULL`       | ID tin Zalo được trích dẫn. Đối chiếu với `zalo_messages.zalo_message_id` (tin người dùng) hoặc `outbound_messages.zalo_msg_id` (tin của Bot) |
 | `message_type`      | `String(32)`    | Not Null                                                   | `'text'`     | Loại tin nhắn: `'text'` (văn bản), `'image'` (hình ảnh lệnh điều xe), `'file'` (tệp đính kèm)       |
 | `message_text`      | `Text`          | Nullable                                                   | `NULL`       | Nội dung văn bản nguyên bản của tin nhắn (giữ nguyên ký tự `\n`, icon)                                    |
 | `raw_payload`       | `JSON`          | Not Null                                                   |                | Toàn bộ cấu trúc JSON thô máy chủ Zalo đẩy về (để debug / audit)                                           |
@@ -348,7 +392,7 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 
 #### BẢNG 2: `zalo_info`
 
-> **Ý nghĩa**: Danh bạ Zalo quản lý các nhóm/tài khoản Zalo (Nhóm Nhà xe, Nhóm Khách hàng, Nhóm ĐHVT nội bộ chung). Đồng thời quản lý chế độ gửi tin (Tự động / Chờ duyệt).
+> **Ý nghĩa**: Danh bạ Zalo quản lý các nhóm/tài khoản Zalo (Nhóm Nhà xe, Nhóm Khách hàng, Nhóm ĐHVT nội bộ chung). Đồng thời quản lý chế độ gửi tin (Tự động / Chờ duyệt trên Web). Nhóm ĐHVT chỉ nhận thông báo một chiều từ Bot.
 
 | Tên trường  | Kiểu dữ liệu   | Ràng buộc                                               | Mặc định    | Ý nghĩa & Quy tắc nghiệp vụ                                                                                                               |
 | :------------- | :---------------- | :-------------------------------------------------------- | :------------- | :--------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -369,7 +413,7 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 
 #### BẢNG 3: `users`
 
-> **Ý nghĩa**: Quản lý tài khoản nhân viên nội bộ (ĐHVT và Admin) để đăng nhập vào Web quản lý (Dashboard) và định danh người duyệt lệnh trên nhóm Zalo ĐHVT chung.
+> **Ý nghĩa**: Quản lý tài khoản nhân viên nội bộ (ĐHVT và Admin) để đăng nhập vào Web quản lý (Dashboard) và nhận diện nhân viên ĐHVT khi hỏi tra cứu Bot trên Zalo (chỉ đọc, không duyệt qua Zalo).
 
 | Tên trường     | Kiểu dữ liệu   | Ràng buộc                                                | Mặc định | Ý nghĩa & Quy tắc nghiệp vụ                                                                                                                |
 | :---------------- | :---------------- | :--------------------------------------------------------- | :---------- | :---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -379,11 +423,11 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 | `password_hash` | `String(255)`   | Not Null                                                   |             | Mật khẩu đã mã hóa một chiều (Bcrypt / Argon2)                                                                                          |
 | `full_name`     | `String(255)`   | Not Null                                                   |             | Họ và tên đầy đủ của nhân viên ĐHVT / Admin                                                                                          |
 | `role`          | `String(32)`    | Not Null, **Index**                                  | `'dhvt'`  | Phân quyền hệ thống: `'admin'` (Quản trị toàn quyền), `'dhvt'` (Nhân viên Điều hành vận tải)                                 |
-| `zalo_user_id`  | `String(128)`   | **Unique**, Nullable, **Index**                | `NULL`    | ID tài khoản Zalo cá nhân của nhân viên (khớp với `zalo_messages.sender_id` khi nhân viên quote duyệt `'ok'` trong nhóm ĐHVT) |
+| `zalo_user_id`  | `String(128)`   | **Unique**, Nullable, **Index**                | `NULL`    | ID tài khoản Zalo cá nhân của nhân viên (khớp `zalo_messages.sender_id` để Bot nhận diện ĐHVT khi hỏi tra cứu trên Zalo) |
 | `zalo_info_id`  | `BigInteger`    | **FK** (`zalo_info.id`), Nullable, **Index** | `NULL`    | Nhóm Zalo ĐHVT chung mà nhân viên này tham gia (Quan hệ Nhiều `users` thuộc Một nhóm `zalo_info` có `role = 'dhvt'`)          |
 | `tms_user_id`   | `BigInteger`    | **Unique**, Nullable, **Index**                | `NULL`    | ID tài khoản người dùng tương ứng trên phần mềm TMS (kiểu số nguyên `BigInteger` từ TMS)                                       |
 | `forwarder_id`  | `BigInteger`    | Nullable, **Index**                                  | `NULL`    | ID đơn vị Forwarder trên phần mềm TMS mà tài khoản này phụ trách                                                                    |
-| `is_active`     | `Boolean`       | Not Null                                                   | `True`    | Trạng thái hoạt động của tài khoản (`False` = Khóa đăng nhập và ngừng quyền duyệt trên Zalo)                                 |
+| `is_active`     | `Boolean`       | Not Null                                                   | `True`    | Trạng thái hoạt động của tài khoản (`False` = Khóa đăng nhập Web và ngừng nhận diện trên Zalo)                |
 | `last_login_at` | `DateTime(UTC)` | Nullable                                                   | `NULL`    | Thời điểm đăng nhập Web quản lý gần nhất                                                                                              |
 | `created_at`    | `DateTime(UTC)` | Not Null                                                   | `utc_now` | Thời điểm tạo tài khoản                                                                                                                   |
 | `updated_at`    | `DateTime(UTC)` | Nullable                                                   | `NULL`    | Thời điểm cập nhật thông tin tài khoản gần nhất                                                                                       |
@@ -488,25 +532,26 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 
 #### BẢNG 8: `outbound_messages`
 
-> **Ý nghĩa**: Lưu trữ các bản tin thông báo chuyến xe hoàn chỉnh gửi tới Zalo của khách hàng.
+> **Ý nghĩa**: Mọi tin Bot gửi ra Zalo (khách hàng, nhà xe, nhóm ĐHVT), mỗi tin một dòng. Đây là **nơi duy nhất** lưu `zalo_msg_id` của tin Bot đã gửi. Tin thông báo khách gom nhiều chuyến thì các chuyến được liên kết qua bảng `outbound_message_items`.
 
-| Tên trường           | Kiểu dữ liệu   | Ràng buộc                                                     | Mặc định     | Ý nghĩa & Quy tắc nghiệp vụ                                                                    |
-| :---------------------- | :---------------- | :-------------------------------------------------------------- | :-------------- | :-------------------------------------------------------------------------------------------------- |
-| `id`                  | `BigInteger`    | **PK**, Snowflake ID                                      |                 | Khóa chính Snowflake 64-bit của tin gửi đi                                                     |
-| `zalo_info_id`        | `BigInteger`    | **FK** (`zalo_info.id`), Not Null, **Index**      |                 | Nhóm hoặc tài khoản Zalo khách hàng nhận tin                                                 |
-| `container_job_id`    | `BigInteger`    | **FK** (`container_jobs.id`), Nullable, **Index** | `NULL`        | Công việc container được thông báo trong bản tin này                                       |
-| `order_type`          | `String(16)`    | Not Null                                                        |                 | Loại mẫu thông báo: `'dong'` (Đóng hàng) hoặc `'tra'` (Trả hàng)                      |
-| `message_kind`        | `String(32)`    | Not Null                                                        | `'initial'`   | Phân loại tin: `'initial'` (Tin báo lần đầu), `'driver_change'` (Tin đổi xe/tài xế)   |
-| `content`             | `Text`          | Not Null                                                        |                 | Nội dung văn bản tiếng Việt hoàn chỉnh gửi khách (render theo template)                    |
-| `review_zalo_msg_id`  | `String(128)`   | **Unique**, Nullable                                      | `NULL`        | ID tin nhắn nháp gửi vào nhóm ĐHVT nội bộ để quote `'ok'`                               |
-| `approved_by_user_id` | `BigInteger`    | **FK** (`users.id`), Nullable, **Index**          | `NULL`        | Tài khoản nhân viên ĐHVT / Admin đã duyệt phát hành (`NULL` nếu nhóm tự động gửi) |
-| `approved_at`         | `DateTime(UTC)` | Nullable                                                        | `NULL`        | Thời điểm tin được phê duyệt                                                                |
-| `status`              | `String(32)`    | Not Null, **Index**                                       | `'cho_duyet'` | Trạng thái gửi: `'cho_duyet'`, `'da_gui'`, `'that_bai'`, `'huy'`                         |
-| `attempt_count`       | `Integer`       | Not Null                                                        | `0`           | Số lần đã thử gửi qua cổng Zalo Dispatcher                                                   |
-| `last_error`          | `Text`          | Nullable                                                        | `NULL`        | Chi tiết lỗi gửi tin nếu thất bại                                                             |
-| `created_at`          | `DateTime(UTC)` | Not Null                                                        | `utc_now`     | Thời điểm tạo bản tin                                                                          |
-| `sent_at`             | `DateTime(UTC)` | Nullable                                                        | `NULL`        | Thời điểm gửi tin thành công tới khách hàng                                                |
+| Tên trường            | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định    | Ý nghĩa & Quy tắc nghiệp vụ                                                                                         |
+| :-------------------- | :-------------- | :------------------------------------------------------- | :---------- | :------------------------------------------------------------------------------------------------------------------ |
+| `id`                  | `BigInteger`    | **PK**, Snowflake ID                                     |             | Khóa chính Snowflake 64-bit của tin gửi đi                                                                           |
+| `zalo_info_id`        | `BigInteger`    | **FK** (`zalo_info.id`), Not Null, **Index**             |             | Nhóm hoặc tài khoản Zalo nhận tin (khách, nhà xe hoặc nhóm ĐHVT)                                                     |
+| `source_message_id`   | `BigInteger`    | **FK** (`zalo_messages.id`), Nullable, **Index**         | `NULL`      | Tin gốc (của nhà xe, khách hoặc ĐHVT) mà Bot reply vào; `NULL` với tin Bot chủ động gửi                              |
+| `order_type`          | `String(16)`    | Nullable                                                 | `NULL`      | `'dong'` hoặc `'tra'` cho tin thông báo khách; `NULL` với `answer`, `ask`, `carrier_confirm`, `dhvt_notify`          |
+| `message_kind`        | `String(32)`    | Not Null                                                 | `'initial'` | `'initial'` (báo lần đầu), `'driver_change'` (đổi xe/tài xế), `'cancel'` (hủy), `'answer'` (trả lời câu hỏi), `'ask'` (hỏi nhà xe bổ sung), `'carrier_confirm'` (xác nhận cho nhà xe), `'dhvt_notify'` (thông báo nhóm ĐHVT) |
+| `content`             | `Text`          | Not Null                                                 |             | Nội dung văn bản gửi đi (render theo template hoặc form mẫu)                                                         |
+| `zalo_msg_id`         | `String(128)`   | **Unique**, Nullable                                     | `NULL`      | ID tin trên Zalo sau khi gửi thành công. Dùng để quote khi đổi xe/hủy chuyến và để khớp khi người dùng quote tin Bot |
+| `approved_by_user_id` | `BigInteger`    | **FK** (`users.id`), Nullable, **Index**                 | `NULL`      | Nhân viên ĐHVT / Admin duyệt trên Web (`NULL` nếu gửi tự động)                                                       |
+| `approved_at`         | `DateTime(UTC)` | Nullable                                                 | `NULL`      | Thời điểm duyệt trên Web                                                                                             |
+| `status`              | `String(32)`    | Not Null, **Index**                                      | `'cho_gui'` | `'cho_duyet'` (chờ ĐHVT duyệt trên Web), `'cho_gui'` (sẵn sàng, chờ worker gửi), `'da_gui'`, `'that_bai'`, `'huy'`   |
+| `attempt_count`       | `Integer`       | Not Null                                                 | `0`         | Số lần đã thử gửi qua cổng Zalo                                                                                      |
+| `last_error`          | `Text`          | Nullable                                                 | `NULL`      | Chi tiết lỗi gửi tin nếu thất bại                                                                                    |
+| `created_at`          | `DateTime(UTC)` | Not Null                                                 | `utc_now`   | Thời điểm tạo bản tin                                                                                                |
+| `sent_at`             | `DateTime(UTC)` | Nullable                                                 | `NULL`      | Thời điểm gửi thành công                                                                                             |
 
+> Duyệt tin chờ gửi khách (`status = 'cho_duyet'`) chỉ thực hiện trên Web. Nhóm Zalo ĐHVT nhận thông báo (`message_kind = 'dhvt_notify'`) và Bot không nhận lệnh duyệt từ nhóm này.
 ---
 
 #### BẢNG 9: `truck_records`
@@ -521,7 +566,7 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 | `parent_truck_record_id` | `BigInteger`    | **FK** (`truck_records.id`), Nullable                  | `NULL`    | Bản ghi xe cũ nếu đây là tin cập nhật/sửa thông tin xe                                       |
 | `truck_plate`            | `String(32)`    | Nullable, **Index**                                      | `NULL`    | Biển số xe đầu kéo đã chuẩn hóa (VD: `15C-283.94`)                                          |
 | `driver_name`            | `String(255)`   | Nullable                                                       | `NULL`    | Họ tên tài xế (đã chuẩn hóa Title Case, bỏ tiền tố "Lái xe", "bác")                       |
-| `driver_phone`           | `String(32)`    | Nullable                                                       | `NULL`    | Số điện thoại tài xế (chuẩn 10 chữ số bắt đầu bằng `0`, bảo mật mask 3 đầu 3 cuối) |
+| `driver_phone`           | `String(32)`    | Nullable                                                       | `NULL`    | Số điện thoại tài xế, **lưu số thật** (10 chữ số bắt đầu bằng `0`). Chỉ che (`0903xxxx59`) khi hiển thị trên Web, ghi log hoặc gửi LLM đám mây |
 | `created_at`             | `DateTime(UTC)` | Not Null                                                       | `utc_now` | Thời gian ghi nhận lượt xe                                                                         |
 | `updated_at`             | `DateTime(UTC)` | Not Null                                                       | `utc_now` | Thời gian ghi nhận lượt cập nhật xe                                                              |
 
@@ -534,10 +579,9 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 | Tên trường              | Kiểu dữ liệu   | Ràng buộc                                                      | Mặc định       | Ý nghĩa & Quy tắc nghiệp vụ                                                                                          |
 | :------------------------- | :---------------- | :--------------------------------------------------------------- | :---------------- | :------------------------------------------------------------------------------------------------------------------------ |
 | `id`                     | `BigInteger`    | **PK**, Snowflake ID                                       |                   | Khóa chính Snowflake 64-bit định danh việc container                                                                 |
-| `message_id`             | `BigInteger`    | **FK** (`zalo_messages.id`), Not Null, **Index**   |                   | Tin nhắn gốc sinh ra container này                                                                                     |
+| `message_id`             | `BigInteger`    | **FK** (`zalo_messages.id`), Not Null, **Index**   |                   | Tin nhắn đầu tiên sinh ra container này (các tin cập nhật về sau ghi ở `activity_logs`) |
 | `extraction_run_id`      | `BigInteger`    | **FK** (`extraction_runs.id`), Nullable                  | `NULL`          | Lượt bóc tách sinh ra bản ghi này (chạy lại bóc tách sẽ sinh bản mới)                                        |
 | `truck_record_id`        | `BigInteger`    | **FK** (`truck_records.id`), Nullable, **Index**   | `NULL`          | Xe chịu trách nhiệm kéo container này                                                                                |
-| `parent_job_id`          | `BigInteger`    | **FK** (`container_jobs.id`), Nullable                   | `NULL`          | Bản ghi cha nếu đây là tin cập nhật/sửa thông tin cont cũ                                                       |
 | `transport_plan_id`      | `BigInteger`    | **FK** (`transport_plans.id`), Nullable, **Index** | `NULL`          | Dòng kế hoạch vận chuyển được gán cho container này (kết quả cuối của bước đối chiếu)                  |
 | `container_no`           | `String(16)`    | Nullable, **Index**                                        | `NULL`          | Số Container gồm 4 chữ cái + 7 chữ số (VD: `TGCU2203372`)                                                         |
 | `container_size`         | `String(16)`    | Nullable                                                         | `NULL`          | Kích thước vỏ cont: `'20'`, `'40'`, `'45'`                                                                      |
@@ -545,15 +589,18 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 | `order_type`             | `String(16)`    | Nullable                                                         | `NULL`          | Loại lệnh: `'dong'` (đóng hàng/hạ bãi), `'tra'` (trả hàng/mở cont/nhập)                                    |
 | `warehouse_id`           | `BigInteger`    | **FK** (`warehouses.id`), Nullable, **Index**      | `NULL`          | ID kho chuẩn sau khi match qua bảng kế hoạch                                                                          |
 | `address_normalized`     | `String(255)`   | Nullable, **Index**                                        | `NULL`          | Địa chỉ nhà xe viết đã chuẩn hóa (bỏ dấu, viết thường). Khóa tra cứu thói quen từng nhà xe khi map kho |
-| `warehouse_match_source` | `String(16)`    | Nullable                                                         | `NULL`          | Cách xác định kho: `'plan_cont'`, `'gp1'`, `'gp2'`, `'gp3'`, `'gp4'` hoặc `'human'` (ĐHVT chọn)        |
+| `warehouse_match_source` | `String(16)`    | Nullable                                                         | `NULL`          | Cách xác định kho: `'plan_cont'` (lấy từ kế hoạch theo cont), `'habit'` (thói quen nhà xe), `'fuzzy'`, `'vector'`, `'llm'` hoặc `'human'` (ĐHVT chọn) |
 | `estimated_at`           | `DateTime(UTC)` | Nullable                                                         | `NULL`          | Giờ hẹn có mặt tại kho (bóc tách từ tin nhắn hoặc kế hoạch)                                                   |
 | `note`                   | `Text`          | Nullable                                                         | `NULL`          | Ghi chú phát sinh của container                                                                                        |
+| `version`                | `Integer`       | Not Null                                                         | `1`             | Phiên bản nghiệp vụ của chuyến. Tăng `+1` khi đổi biển số, tài xế, SĐT, seal, kho, số cont, giờ hẹn hoặc khi hủy; **không** tăng khi chỉ đổi `tms_sync_status`, `updated_at`, `extraction_run_id` |
 | `status`                 | `String(32)`    | Not Null, **Index**                                        | `'pending'`     | Trạng thái thẩm định: `'pending'`, `'valid'`, `'needs_review'`, `'rejected'`, `'cancelled'`                |
 | `tms_sync_status`        | `String(32)`    | Not Null                                                         | `'not_started'` | Trạng thái đồng bộ sang TMS: `'not_started'`, `'synced'`, `'failed'`                                           |
 | `created_at`             | `DateTime(UTC)` | Not Null                                                         | `utc_now`       | Thời gian tạo bản ghi                                                                                                  |
 | `updated_at`             | `DateTime(UTC)` | Not Null                                                         | `utc_now`       | Thời gian cập nhật bản ghi gần nhất                                                                                 |
 
 > Chỉ mục khuyến nghị: (`address_normalized`, `warehouse_id`), phục vụ tra cứu thói quen map kho theo nhà xe khi dòng kế hoạch chưa có sẵn số container.
+
+> Quy tắc sửa tại chỗ (hướng A): khi nhà xe đổi xe, tài xế, seal hoặc ĐHVT sửa dữ liệu, Bot cập nhật trực tiếp dòng `container_jobs`, tăng `version` và ghi giá trị cũ → mới vào `activity_logs.details`. `version` là khóa chống gửi trùng tin khách (`outbound_message_items`) và là căn cứ kiểm tra "dữ liệu có đổi kể từ lúc mở ca" (`review_cases.job_version_at_open`).
 
 ---
 
@@ -579,59 +626,94 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 
 #### BẢNG 12: `bot_replies`
 
-> **Ý nghĩa**: Theo dõi các tin nhắn cảnh báo thiếu thông tin do Bot tự động phản hồi lại lái xe/nhà xe (cấu hình gửi ngay hoặc sau n phút kể từ khi phát hiện lỗi).
+> **Ý nghĩa**: Theo dõi các câu hỏi Bot đặt cho nhà xe (thiếu trường, số cont sai, chọn chuyến) cho tới khi nhà xe trả lời hoặc quá hạn. Nội dung và trạng thái gửi tin nằm ở `outbound_messages` (`message_kind = 'ask'`); bảng này chỉ giữ **trạng thái câu hỏi**.
 
-| Tên trường    | Kiểu dữ liệu   | Ràng buộc                                                    | Mặc định   | Ý nghĩa & Quy tắc nghiệp vụ                                                                                         |
-| :--------------- | :---------------- | :------------------------------------------------------------- | :------------ | :----------------------------------------------------------------------------------------------------------------------- |
-| `id`           | `BigInteger`    | **PK**, Snowflake ID                                     |               | Khóa chính Snowflake 64-bit của tin nhắc lỗi                                                                        |
-| `message_id`   | `BigInteger`    | **FK** (`zalo_messages.id`), Not Null, **Index** |               | Tin nhắn gốc bị thiếu trường                                                                                       |
-| `zalo_id`      | `String(128)`   | Not Null                                                       |               | ID tài khoản hoặc nhóm Zalo nhận tin nhắc lỗi                                                                     |
-| `zalo_msg_id`  | `String(128)`   | **Unique**, Nullable                                     | `NULL`      | ID tin nhắn phản hồi trên Zalo mà Bot vừa gửi                                                                     |
-| `reply_text`   | `Text`          | Not Null                                                       |               | Nội dung Bot nhắn: chỉ rõ thiếu biển số, thiếu cont, sai chì,...                                                |
-| `fix_deadline` | `DateTime(UTC)` | Not Null                                                       |               | Thời hạn tài xế phải phản hồi sửa tin (Mặc định = `created_at + 180 phút`)                                 |
-| `status`       | `String(32)`    | Not Null                                                       | `'cho_sua'` | Trạng thái: `'cho_sua'` (Chờ sửa), `'da_sua'` (Đã sửa kịp hạn), `'qua_han'`, `'da_gui'`, `'that_bai'` |
-| `sent_at`      | `DateTime(UTC)` | Nullable                                                       | `NULL`      | Thời điểm Bot gửi tin nhắc thành công qua Zalo                                                                    |
-| `created_at`   | `DateTime(UTC)` | Not Null                                                       | `utc_now`   | Thời điểm tạo yêu cầu sửa                                                                                         |
+| Tên trường            | Kiểu dữ liệu    | Ràng buộc                                                  | Mặc định        | Ý nghĩa & Quy tắc nghiệp vụ                                                                                 |
+| :-------------------- | :-------------- | :--------------------------------------------------------- | :-------------- | :---------------------------------------------------------------------------------------------------------- |
+| `id`                  | `BigInteger`    | **PK**, Snowflake ID                                       |                 | Khóa chính Snowflake 64-bit của câu hỏi                                                                      |
+| `message_id`          | `BigInteger`    | **FK** (`zalo_messages.id`), Not Null, **Index**           |                 | Tin gốc của nhà xe làm phát sinh câu hỏi                                                                     |
+| `outbound_message_id` | `BigInteger`    | **FK** (`outbound_messages.id`), Nullable, **Unique**      | `NULL`          | Tin Bot đã hỏi. `zalo_msg_id` lấy qua đây; `NULL` khi chưa gửi                                               |
+| `container_job_id`    | `BigInteger`    | **FK** (`container_jobs.id`), Nullable, **Index**          | `NULL`          | Chuyến liên quan đến câu hỏi (nếu đã xác định)                                                               |
+| `draft_id`            | `BigInteger`    | **FK** (`message_drafts.id`), Nullable, **Index**          | `NULL`          | Bản nháp mà câu hỏi thuộc về (nếu có)                                                                        |
+| `question_type`       | `String(32)`    | Not Null                                                   |                 | `'select_trip'` (chọn chuyến), `'missing_fields'` (thiếu trường), `'invalid_cont'` (số cont sai)            |
+| `context_data`        | `JSON`          | Nullable                                                   | `NULL`          | Danh sách lựa chọn hoặc các trường đang thiếu để ghép câu trả lời                                            |
+| `question_status`     | `String(32)`    | Not Null, **Index**                                        | `'cho_tra_loi'` | `'cho_tra_loi'`, `'da_tra_loi'`, `'qua_han'`, `'huy'`. Trạng thái gửi tin xem ở `outbound_messages.status`   |
+| `answered_message_id` | `BigInteger`    | **FK** (`zalo_messages.id`), Nullable                      | `NULL`          | Tin nhà xe trả lời câu hỏi                                                                                   |
+| `answered_at`         | `DateTime(UTC)` | Nullable                                                   | `NULL`          | Thời điểm nhà xe trả lời                                                                                     |
+| `fix_deadline`        | `DateTime(UTC)` | Not Null                                                   |                 | Hạn nhà xe phải trả lời (mặc định `created_at + 180 phút`); quá hạn thì `question_status = 'qua_han'` và tạo ca cho ĐHVT |
+| `created_at`          | `DateTime(UTC)` | Not Null                                                   | `utc_now`       | Thời điểm tạo câu hỏi                                                                                        |
 
+> Ghép câu trả lời: khi nhà xe quote một tin của Bot, lấy `zalo_messages.quote_msg_id` so với `outbound_messages.zalo_msg_id`, từ đó tìm `bot_replies` có `question_status = 'cho_tra_loi'`, gộp câu trả lời vào bản nháp hoặc chuyến rồi đặt `'da_tra_loi'`.
 ---
 
 #### BẢNG 13: `review_cases`
 
-> **Ý nghĩa**: Hàng đợi các trường hợp bất thường cần nhân viên Điều Hành Vận Tải (ĐHVT) can thiệp, duyệt hoặc từ chối (trên Web hoặc qua nhóm Zalo ĐHVT chung).
+> **Ý nghĩa**: Hàng đợi ca cần Điều hành vận tải (ĐHVT) can thiệp và cảnh báo hệ thống. ĐHVT duyệt, sửa, từ chối **trên Web**. Mọi ca đều được Bot thông báo một chiều vào nhóm Zalo ĐHVT theo form mẫu (kèm liên kết sang Web): ca `urgent` gửi ngay, ca `normal` gom 1 đến 2 phút.
 
-| Tên trường           | Kiểu dữ liệu   | Ràng buộc                                                     | Mặc định   | Ý nghĩa & Quy tắc nghiệp vụ                                                                                             |
-| :---------------------- | :---------------- | :-------------------------------------------------------------- | :------------ | :--------------------------------------------------------------------------------------------------------------------------- |
-| `id`                  | `BigInteger`    | **PK**, Snowflake ID                                      |               | Khóa chính Snowflake 64-bit của ca duyệt                                                                                 |
-| `message_id`          | `BigInteger`    | **FK** (`zalo_messages.id`), Not Null, **Index**  |               | Tin nhắn phát sinh lỗi                                                                                                    |
-| `container_job_id`    | `BigInteger`    | **FK** (`container_jobs.id`), Nullable, **Index** | `NULL`      | Container cụ thể gặp lỗi (nếu có)                                                                                      |
-| `case_type`           | `String(32)`    | Not Null                                                        |               | Phân loại lỗi: `'missing_fields'`, `'invalid_iso'`, `'unknown_carrier'`, `'group_mismatch'`, `'low_confidence'` |
-| `reason`              | `Text`          | Not Null                                                        |               | Lý do bằng tiếng Việt giải thích vì sao cần duyệt thủ công                                                        |
-| `details`             | `JSON`          | Nullable                                                        | `NULL`      | Dữ liệu chi tiết lỗi dạng JSON phục vụ hiển thị màn hình Review                                                   |
-| `status`              | `String(32)`    | Not Null, **Index**                                       | `'pending'` | Trạng thái ca: `'pending'` (Chờ xử lý), `'approved'` (Đã duyệt), `'rejected'` (Từ chối)                      |
-| `assigned_to_user_id` | `BigInteger`    | **FK** (`users.id`), Nullable, **Index**          | `NULL`      | Tài khoản nhân viên ĐHVT được phân công xử lý (`users.id`)                                                     |
-| `resolved_by_user_id` | `BigInteger`    | **FK** (`users.id`), Nullable, **Index**          | `NULL`      | Tài khoản nhân viên ĐHVT / Admin đã duyệt hoặc từ chối (trên Web hoặc khớp qua `users.zalo_user_id`)         |
-| `resolution`          | `JSON`          | Nullable                                                        | `NULL`      | Kết quả chỉnh sửa bổ sung thông tin của ĐHVT                                                                         |
-| `created_at`          | `DateTime(UTC)` | Not Null                                                        | `utc_now`   | Thời điểm phát sinh ca nghi ngờ                                                                                         |
-| `resolved_at`         | `DateTime(UTC)` | Nullable                                                        | `NULL`      | Thời điểm xử lý xong ca                                                                                                 |
+| Tên trường                | Kiểu dữ liệu    | Ràng buộc                                                     | Mặc định    | Ý nghĩa & Quy tắc nghiệp vụ                                                                                           |
+| :------------------------ | :-------------- | :------------------------------------------------------------ | :---------- | :-------------------------------------------------------------------------------------------------------------------- |
+| `id`                      | `BigInteger`    | **PK**, Snowflake ID                                          |             | Khóa chính Snowflake 64-bit của ca                                                                                     |
+| `message_id`              | `BigInteger`    | **FK** (`zalo_messages.id`), Nullable, **Index**              | `NULL`      | Tin nhắn phát sinh ca; `NULL` với cảnh báo hệ thống không xuất phát từ tin nhắn                                        |
+| `container_job_id`        | `BigInteger`    | **FK** (`container_jobs.id`), Nullable, **Index**             | `NULL`      | Container liên quan (nếu có)                                                                                           |
+| `case_type`               | `String(32)`    | Not Null, **Index**                                           |             | Xem bảng loại ca bên dưới                                                                                              |
+| `category`                | `String(16)`    | Not Null, **Index**                                           | `'review'`  | `'review'` (ca cần quyết định) hoặc `'alert'` (cảnh báo hệ thống, chỉ cần đánh dấu đã xử lý)                          |
+| `priority`                | `String(16)`    | Not Null, **Index**                                           | `'normal'`  | `'urgent'` (báo nhóm Zalo ĐHVT ngay) hoặc `'normal'` (gom 1 đến 2 phút). Hàng đợi Web sắp theo `priority`, `due_at`   |
+| `reason`                  | `Text`          | Not Null                                                      |             | Lý do bằng tiếng Việt giải thích vì sao cần xử lý                                                                      |
+| `details`                 | `JSON`          | Nullable                                                      | `NULL`      | Dữ liệu chi tiết (gợi ý của Bot, giá trị cũ → mới, danh sách dòng kế hoạch ứng viên)                                   |
+| `job_version_at_open`     | `Integer`       | Nullable                                                      | `NULL`      | `container_jobs.version` lúc tạo ca; khác `version` hiện tại thì ca bị coi là dữ liệu đã đổi, yêu cầu tải lại           |
+| `occurrence_count`        | `Integer`       | Not Null                                                      | `1`         | Số lần cùng ca (cùng cont, cùng `case_type`) phát sinh khi đang mở; gộp vào ca cũ thay vì tạo dòng mới                 |
+| `status`                  | `String(32)`    | Not Null, **Index**                                           | `'pending'` | `'pending'`, `'approved'`, `'rejected'`, `'sync_failed'` (duyệt xong nhưng ghi TMS lỗi, chờ Gửi lại), `'resolved'` (đã xử lý cảnh báo) |
+| `due_at`                  | `DateTime(UTC)` | Nullable, **Index**                                           | `NULL`      | Hạn xử lý; quá hạn thì nhắc lần 1, quá lần nhắc thứ hai thì báo admin                                                  |
+| `escalation_level`        | `Integer`       | Not Null                                                      | `0`         | `0` chưa nhắc, `1` đã nhắc lần 1, `2` đã báo admin                                                                     |
+| `last_reminded_at`        | `DateTime(UTC)` | Nullable                                                      | `NULL`      | Lần nhắc gần nhất, dùng để không nhắc lặp quá sớm                                                                      |
+| `notified_at`             | `DateTime(UTC)` | Nullable                                                      | `NULL`      | Thời điểm Bot thông báo ca vào nhóm Zalo ĐHVT                                                                          |
+| `notify_outbound_message_id` | `BigInteger` | **FK** (`outbound_messages.id`), Nullable                     | `NULL`      | Tin thông báo trong nhóm ĐHVT (`message_kind = 'dhvt_notify'`); `zalo_msg_id` lấy qua đây để reply "đã xử lý bởi ai"    |
+| `assigned_to_user_id`     | `BigInteger`    | **FK** (`users.id`), Nullable, **Index**                      | `NULL`      | ĐHVT đang nhận xử lý (người khác thấy đang có người xử lý)                                                             |
+| `resolved_by_user_id`     | `BigInteger`    | **FK** (`users.id`), Nullable, **Index**                      | `NULL`      | ĐHVT / Admin đã duyệt, từ chối hoặc đóng ca trên Web                                                                   |
+| `resolution`              | `JSON`          | Nullable                                                      | `NULL`      | Kết quả ĐHVT chọn hoặc sửa                                                                                             |
+| `created_at`              | `DateTime(UTC)` | Not Null                                                      | `utc_now`   | Thời điểm phát sinh ca                                                                                                 |
+| `resolved_at`             | `DateTime(UTC)` | Nullable                                                      | `NULL`      | Thời điểm xử lý xong                                                                                                   |
 
+**Các loại ca (`case_type`):**
+
+| Giá trị                   | `category` | Tình huống                                                                |
+| :------------------------ | :--------- | :------------------------------------------------------------------------ |
+| `missing_fields`          | review     | Thiếu trường bắt buộc, không đủ dữ liệu để render hoặc ghi TMS            |
+| `invalid_iso`             | review     | Số container sai chuẩn ISO 6346 mà nhà xe không sửa                       |
+| `unknown_carrier`         | review     | Không xác định được nhà xe                                                |
+| `group_mismatch`          | review     | Nhóm lạ có thực thể nghiệp vụ, hoặc không xác định được nơi nhận tin khách |
+| `low_confidence`          | review     | AI trả kết quả độ tin cậy thấp                                            |
+| `plan_not_found`          | review     | Không thấy số cont trong kế hoạch và không gán được dòng trống            |
+| `multiple_plans`          | review     | Cont khớp nhiều dòng kế hoạch hoặc thuộc nhà xe khác                      |
+| `seal_mismatch`           | review     | Lệch seal hoặc trường kế hoạch giữa tin nhắn và dữ liệu hiện có           |
+| `cancel_request`          | review     | Nhà xe đề nghị hủy chuyến                                                 |
+| `customer_change_request` | review     | Khách đề nghị đổi giờ, đổi xe hoặc hủy                                    |
+| `reply_overdue`           | review     | Nhà xe quá hạn trả lời câu hỏi của Bot (`bot_replies.fix_deadline`)       |
+| `tms_sync_failed`         | alert      | Ghi TMS lỗi sau 3 lần thử lại                                             |
+| `zalo_send_failed`        | alert      | Gửi Zalo lỗi sau 3 lần thử lại                                            |
+| `plan_sync_failed`        | alert      | Kéo kế hoạch hoặc danh mục từ TMS lỗi                                     |
+| `queue_backlog`           | alert      | Hàng đợi xử lý tồn đọng                                                   |
 ---
 
 #### BẢNG 14: `tms_sync_logs`
 
-> **Ý nghĩa**: Nhật ký tích hợp ghi lại mọi cuộc gọi API đồng bộ dữ liệu container đã xử lý sang phần mềm nghiệp vụ `be-tms`.
+> **Ý nghĩa**: Nhật ký mọi lần gọi API ghi dữ liệu sang `be-tms`, mỗi lần thử một dòng. Quy ước thống nhất: mọi giá trị trạng thái và tên thao tác viết chữ thường, dạng `snake_case`.
 
-| Tên trường        | Kiểu dữ liệu   | Ràng buộc                                                     | Mặc định | Ý nghĩa & Quy tắc nghiệp vụ                                          |
-| :------------------- | :---------------- | :-------------------------------------------------------------- | :---------- | :------------------------------------------------------------------------ |
-| `id`               | `BigInteger`    | **PK**, Snowflake ID                                      |             | Khóa chính Snowflake 64-bit nhật ký đồng bộ                        |
-| `container_job_id` | `BigInteger`    | **FK** (`container_jobs.id`), Not Null, **Index** |             | Container được đồng bộ                                              |
-| `operation`        | `String(64)`    | Not Null                                                        |             | Tên thao tác: `'CREATE_TRIP'`, `'UPDATE_DRIVER'`, `'CANCEL_TRIP'` |
-| `request_data`     | `JSON`          | Nullable                                                        | `NULL`    | Payload gửi đi sang máy chủ TMS                                       |
-| `response_data`    | `JSON`          | Nullable                                                        | `NULL`    | Dữ liệu phản hồi từ máy chủ TMS                                    |
-| `http_status`      | `Integer`       | Nullable                                                        | `NULL`    | Mã phản hồi HTTP (VD: `200`, `201`, `422`, `500`)              |
-| `status`           | `String(32)`    | Not Null                                                        |             | Kết quả: `'SUCCESS'`, `'FAILED'`, `'RETRYING'`                    |
-| `error_message`    | `Text`          | Nullable                                                        | `NULL`    | Chi tiết lỗi nếu không gọi được sang TMS                          |
-| `created_at`       | `DateTime(UTC)` | Not Null                                                        | `utc_now` | Thời gian phát sinh lệnh gọi API                                      |
+| Tên trường         | Kiểu dữ liệu    | Ràng buộc                                                      | Mặc định  | Ý nghĩa & Quy tắc nghiệp vụ                                                                              |
+| :----------------- | :-------------- | :------------------------------------------------------------- | :-------- | :------------------------------------------------------------------------------------------------------- |
+| `id`               | `BigInteger`    | **PK**, Snowflake ID                                           |           | Khóa chính Snowflake 64-bit nhật ký đồng bộ                                                               |
+| `container_job_id` | `BigInteger`    | **FK** (`container_jobs.id`), Not Null, **Index**              |           | Container được đồng bộ                                                                                    |
+| `operation`        | `String(64)`    | Not Null                                                       |           | `'create_trip'`, `'update_driver'`, `'cancel_trip'`                                                       |
+| `idempotency_key`  | `String(128)`   | Not Null, **Index**                                            |           | Khóa idempotency gửi kèm TMS; các lần thử lại và nút Gửi lại dùng lại đúng khóa này                       |
+| `attempt_count`    | `Integer`       | Not Null                                                       | `1`       | Thứ tự lần thử trong cùng `idempotency_key` (tối đa 3 lần tự động)                                        |
+| `request_data`     | `JSON`          | Nullable                                                       | `NULL`    | Payload gửi sang TMS                                                                                      |
+| `response_data`    | `JSON`          | Nullable                                                       | `NULL`    | Dữ liệu TMS phản hồi                                                                                      |
+| `http_status`      | `Integer`       | Nullable                                                       | `NULL`    | Mã HTTP (`200`, `201`, `422`, `500`...)                                                                   |
+| `status`           | `String(32)`    | Not Null                                                       |           | `'success'`, `'failed'`, `'retrying'` (kết quả của từng lần thử)                                          |
+| `error_message`    | `Text`          | Nullable                                                       | `NULL`    | Chi tiết lỗi nếu không gọi được TMS                                                                       |
+| `created_at`       | `DateTime(UTC)` | Not Null                                                       | `utc_now` | Thời điểm gọi API                                                                                         |
 
+> Quan hệ trạng thái: lần thử `success` gần nhất ứng với `container_jobs.tms_sync_status = 'synced'`; hết 3 lần mà vẫn `failed` thì đặt `container_jobs.tms_sync_status = 'failed'` và tạo ca `tms_sync_failed`.
 ---
 
 #### BẢNG 15: `route_maps`
@@ -692,5 +774,49 @@ Hệ thống quản lý tổng cộng **17 bảng dữ liệu** được phân c
 | `meta`           | `JSON`          | Nullable                                                       | `NULL`      | Rộng, cao, hướng xoay, số trang                               |
 | `created_at`     | `DateTime(UTC)` | Not Null                                                       | `utc_now`   | Thời điểm ghi nhận                                            |
 | `deleted_at`     | `DateTime(UTC)` | Nullable                                                       | `NULL`      | Xóa mềm khi hết hạn lưu                                      |
+
+---
+
+#### BẢNG 18: `message_drafts`
+
+> **Ý nghĩa**: Bản nháp gom các tin rời rạc của cùng một người gửi trong một nhóm (mỗi mảnh chỉ có một phần thông tin xe). Có hạn chờ (debounce 1 đến 3 phút); đủ trường thì chốt sớm, hết hạn thì xử lý theo trạng thái đang có.
+
+| Tên trường         | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định  | Ý nghĩa & Quy tắc nghiệp vụ                                                                                 |
+| :----------------- | :-------------- | :------------------------------------------------------- | :-------- | :---------------------------------------------------------------------------------------------------------- |
+| `id`               | `BigInteger`    | **PK**, Snowflake ID                                     |           | Khóa chính Snowflake 64-bit của bản nháp                                                                     |
+| `zalo_info_id`     | `BigInteger`    | **FK** (`zalo_info.id`), Not Null, **Index**             |           | Nhóm Zalo nhà xe nơi phát sinh bản nháp                                                                      |
+| `carrier_id`       | `BigInteger`    | **FK** (`carriers.id`), Nullable, **Index**              | `NULL`    | Nhà xe của nhóm (lấy từ `zalo_info.carrier_id`)                                                              |
+| `group_id`         | `String(128)`   | Not Null                                                 |           | ID nhóm Zalo (giữ nguyên giá trị webhook), cùng `sender_id` tạo khóa gom bản nháp                            |
+| `sender_id`        | `String(128)`   | Not Null                                                 |           | ID người gửi Zalo                                                                                            |
+| `status`           | `String(16)`    | Not Null, **Index**                                      | `'open'`  | `'open'` (đang gom), `'flushed'` (đã chuyển thành chuyến), `'waiting_reply'` (đã hỏi nhà xe, chờ trả lời), `'expired'` (hết hạn, bỏ), `'cancelled'` |
+| `entities`         | `JSON`          | Not Null                                                 |           | Thực thể đã gộp theo từng xe: số cont, biển số, tài xế, SĐT, seal, giờ đến                                   |
+| `first_message_id` | `BigInteger`    | **FK** (`zalo_messages.id`), Not Null                    |           | Tin đầu tiên mở bản nháp                                                                                     |
+| `last_message_id`  | `BigInteger`    | **FK** (`zalo_messages.id`), Not Null                    |           | Tin gần nhất được gộp vào                                                                                    |
+| `message_count`    | `Integer`       | Not Null                                                 | `1`       | Số tin đã gộp                                                                                                |
+| `expires_at`       | `DateTime(UTC)` | Not Null, **Index**                                      |           | Hạn debounce; bộ hẹn giờ quét các bản nháp `open` có `expires_at <= now`                                     |
+| `flushed_at`       | `DateTime(UTC)` | Nullable                                                 | `NULL`    | Thời điểm chốt hoặc đóng bản nháp                                                                            |
+| `created_at`       | `DateTime(UTC)` | Not Null                                                 | `utc_now` | Thời điểm mở bản nháp                                                                                        |
+| `updated_at`       | `DateTime(UTC)` | Not Null                                                 | `utc_now` | Lần gộp tin gần nhất                                                                                         |
+
+> Chỉ mục khuyến nghị: (`group_id`, `sender_id`, `status`). Tại một thời điểm chỉ có một bản nháp `open` cho mỗi (`group_id`, `sender_id`); MySQL không hỗ trợ unique có điều kiện nên kiểm tra ở tầng ứng dụng (khóa dòng khi gộp). Khi tin mới có thực thể cùng loại nhưng khác giá trị (ví dụ hai biển số khác nhau) thì đóng bản nháp cũ và mở bản nháp mới.
+
+---
+
+#### BẢNG 19: `outbound_message_items`
+
+> **Ý nghĩa**: Bảng nối giữa tin thông báo gửi khách và các chuyến được báo trong tin đó, kèm **phiên bản** đã báo. Là khóa chống gửi trùng: một chuyến ở một phiên bản chỉ được báo một lần cho mỗi loại tin.
+
+| Tên trường            | Kiểu dữ liệu    | Ràng buộc                                                 | Mặc định  | Ý nghĩa & Quy tắc nghiệp vụ                                                                       |
+| :-------------------- | :-------------- | :-------------------------------------------------------- | :-------- | :------------------------------------------------------------------------------------------------ |
+| `id`                  | `BigInteger`    | **PK**, Snowflake ID                                      |           | Khóa chính Snowflake 64-bit                                                                        |
+| `outbound_message_id` | `BigInteger`    | **FK** (`outbound_messages.id`), Not Null, **Index**      |           | Tin gửi đi chứa chuyến này                                                                         |
+| `container_job_id`    | `BigInteger`    | **FK** (`container_jobs.id`), Not Null, **Index**         |           | Chuyến được báo                                                                                    |
+| `job_version`         | `Integer`       | Not Null                                                  |           | `container_jobs.version` tại thời điểm báo                                                         |
+| `message_kind`        | `String(32)`    | Not Null                                                  |           | Sao từ `outbound_messages.message_kind`; chỉ dùng `'initial'`, `'driver_change'`, `'cancel'`       |
+| `created_at`          | `DateTime(UTC)` | Not Null                                                  | `utc_now` | Thời điểm ghi nhận                                                                                 |
+
+> Ràng buộc duy nhất: **UNIQUE** (`container_job_id`, `job_version`, `message_kind`). Hai worker cùng xử lý một chuyến sẽ có một bên vi phạm khóa và dừng, không gửi trùng.
+> Chỉ tạo dòng cho tin thông báo khách (`initial`, `driver_change`, `cancel`). Tin xác nhận cho nhà xe (`carrier_confirm`) không tạo dòng ở đây vì nhà xe có thể nhắn lặp và vẫn cần được xác nhận lại; tin này truy theo `outbound_messages.source_message_id`.
+> Tra "khách quote tin này là các chuyến nào": `zalo_messages.quote_msg_id` ➔ `outbound_messages.zalo_msg_id` ➔ các dòng của bảng này.
 
 ---

@@ -55,6 +55,31 @@ class ZaloGroup(Base):
     )
 
 
+class User(Base):
+    """Bảng 3: `users` — Quản lý tài khoản nhân viên nội bộ (ĐHVT và Admin)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="dhvt", index=True)
+    zalo_user_id: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True, index=True)
+    zalo_info_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("zalo_groups.id"), nullable=True, index=True)
+    tms_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, nullable=True, index=True)
+    forwarder_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, onupdate=utc_now
+    )
+
+
 class Customer(Base):
     """Bảng 5: `customers` — Danh mục khách hàng chuẩn đồng bộ từ PM TMS."""
 

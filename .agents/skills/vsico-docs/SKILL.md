@@ -25,7 +25,7 @@ Dự án áp dụng quy chuẩn đặt tên file tài liệu rõ ràng theo đú
 | **`backend/BACKEND.md`** | Tài liệu kỹ thuật chi tiết của Backend FastAPI, cấu trúc Clean Architecture, Makefile, CLI và quản trị DB. |
 | **`frontend/FRONTEND.md`** | Tài liệu kỹ thuật của Frontend Dashboard (Next.js 14 App Router, TypeScript, Zero Mock Data, UI/UX). |
 | **`ai-service/AISERVICE.md`** | Tài liệu kỹ thuật của AI & OCR Microservice (Provider, OCR Vision, NLP Extraction, GP1-GP4 Warehouse Matching). |
-| **`database/DATABASE.md`** | Đặc tả chi tiết 17 bảng CSDL MySQL 8.4, Snowflake ID 64-bit, ERD Mermaid và quy tắc đồng bộ TMS (` đồng bộ với backend/database.md`). |
+| **`database/DATABASE.md`** | Đặc tả chi tiết 19 bảng CSDL MySQL 8.4, Snowflake ID 64-bit, ERD Mermaid và quy tắc đồng bộ TMS. |
 | **`zca-js/ZCA_BRIDGE.md`** | Tài liệu kỹ thuật mô-đun cầu nối Zalo WebSocket Listener & Outbound REST Server. |
 | **`docs/`** *(Thư mục tài liệu gốc)* | Lưu trữ tập trung toàn bộ tài liệu thiết kế hệ thống, hợp đồng dữ liệu (`DATA_CONTRACT.md`), đặc tả API TMS, báo cáo và slide thuyết trình. |
 
