@@ -2,11 +2,12 @@
 name: vsico-frontend
 description: >-
   Phát triển, sửa lỗi, refactor, review và kiểm thử Frontend Dashboard tại frontend/
-  sử dụng Next.js 14+ (App Router), React 18, TypeScript 5, TanStack Query, TanStack Table,
-  Tailwind CSS, shadcn/ui, openapi-typescript và Playwright. Sử dụng khi làm page, features/<domain>,
-  shared component (DataTable, StatusText, FilterBar), middleware.ts, authentication (httpOnly cookie,
-  RBAC dhvt/admin), SSE/polling realtime, hoặc frontend lint/build/test. Không sử dụng cho Backend-only,
-  AI Service, SQL migration, Docker hoặc tài liệu.
+  sử dụng Next.js 16+ (App Router, Turbopack), React 19, TypeScript 5, Tailwind CSS v4,
+  ESLint 9, TanStack Query, TanStack Table, shadcn/ui, openapi-typescript và Playwright.
+  Sử dụng khi làm page, features/<domain>, shared component (DataTable, StatusText, FilterBar),
+  middleware.ts/proxy, authentication (httpOnly cookie, RBAC dhvt/admin), SSE/polling realtime,
+  hoặc frontend lint/build/test. Không sử dụng cho Backend-only, AI Service, SQL migration,
+  Docker hoặc tài liệu.
 ---
 # VSICO Frontend — Engineering Standards & Development Guide
 

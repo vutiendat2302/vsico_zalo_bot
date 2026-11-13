@@ -8,28 +8,40 @@ Phục vụ giao diện Quản trị và Điều hành vận tải (ĐHVT) theo 
 - Thao tác: Duyệt gửi (Approve), Hủy gửi (Cancel), Gửi lại (Resend), Thống kê tổng hợp.
 """
 
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from src.config.settings import settings
+from src.domain.enums import (
+    MessageStatus,
+    OrderType,
+    OutboundStatus,
+    ReviewStatus,
+    RoutingStatus,
+    TmsSyncStatus,
+    ValidationStatus,
+)
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
+    ActivityLog,
     ContainerJob,
     OutboundMessage,
     OutboundMessageItem,
     ReviewCase,
-    TransportPlan,
     TruckRecord,
+    User,
     ZaloGroup,
     ZaloMessage,
 )
-from src.infrastructure.throttler import outbound_throttler as throttler
-from src.infrastructure.zalo_dispatcher import ZaloDispatcher
+from src.infrastructure.security import get_optional_current_user
+from src.infrastructure.snowflake import snowflake
 
 outbound_router = APIRouter(prefix="/api/outbound", tags=["Outbound Messages & Results"])
 
@@ -94,11 +106,31 @@ def get_outbound_summary(db: Session = Depends(get_db)) -> OutboundSummaryRespon
         OutboundSummaryResponse: Thống kê số lượng `da_gui`, `cho_duyet`, `huy`, `that_bai`, `bo_qua_trung_lap`.
     """
     total = db.scalar(select(func.count(OutboundMessage.id))) or 0
-    da_gui = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.status == "da_gui")) or 0
-    cho_duyet = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.status == "cho_duyet")) or 0
-    huy = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.status == "huy")) or 0
-    that_bai = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.status == "that_bai")) or 0
-    bo_qua_trung_lap = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.status == "bo_qua_trung_lap")) or 0
+    da_gui = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_([OutboundStatus.SENT.value, "da_gui"])
+        )
+    ) or 0
+    cho_duyet = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_([OutboundStatus.PENDING_APPROVAL.value, "cho_duyet"])
+        )
+    ) or 0
+    huy = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_([OutboundStatus.CANCELLED.value, "huy"])
+        )
+    ) or 0
+    that_bai = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_([OutboundStatus.FAILED.value, "that_bai"])
+        )
+    ) or 0
+    bo_qua_trung_lap = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_([OutboundStatus.IGNORED_DUPLICATE.value, "bo_qua_trung_lap"])
+        )
+    ) or 0
 
     return OutboundSummaryResponse(
         ok=True,
@@ -111,28 +143,57 @@ def get_outbound_summary(db: Session = Depends(get_db)) -> OutboundSummaryRespon
     )
 
 
+_OUTBOUND_STATUS_FILTER_MAP: dict[str, list[str]] = {
+    "sent": [OutboundStatus.SENT.value, "da_gui", "SENT"],
+    "da_gui": [OutboundStatus.SENT.value, "da_gui", "SENT"],
+    "pending_approval": [OutboundStatus.PENDING_APPROVAL.value, "cho_duyet", "PENDING_APPROVAL"],
+    "cho_duyet": [OutboundStatus.PENDING_APPROVAL.value, "cho_duyet", "PENDING_APPROVAL"],
+    "pending_send": [OutboundStatus.PENDING_SEND.value, "PENDING_SEND"],
+    "sending": [OutboundStatus.SENDING.value, "SENDING"],
+    "cancelled": [OutboundStatus.CANCELLED.value, "huy", "CANCELLED"],
+    "huy": [OutboundStatus.CANCELLED.value, "huy", "CANCELLED"],
+    "failed": [OutboundStatus.FAILED.value, "that_bai", "FAILED"],
+    "that_bai": [OutboundStatus.FAILED.value, "that_bai", "FAILED"],
+    "ignored_duplicate": [OutboundStatus.IGNORED_DUPLICATE.value, "bo_qua_trung_lap", "IGNORED_DUPLICATE"],
+    "bo_qua_trung_lap": [OutboundStatus.IGNORED_DUPLICATE.value, "bo_qua_trung_lap", "IGNORED_DUPLICATE"],
+}
+
+_ORDER_TYPE_FILTER_MAP: dict[str, list[str]] = {
+    "load": [OrderType.LOAD.value, "dong", "load", "xuat"],
+    "dong": [OrderType.LOAD.value, "dong", "load", "xuat"],
+    "xuat": [OrderType.LOAD.value, "dong", "load", "xuat"],
+    "return": [OrderType.RETURN.value, "tra", "return", "nhap"],
+    "tra": [OrderType.RETURN.value, "tra", "return", "nhap"],
+    "nhap": [OrderType.RETURN.value, "tra", "return", "nhap"],
+}
+
+
+def _parse_filter_dt(raw: str, end_of_day: bool = False) -> Optional[datetime]:
+    """Chuyển đổi chuỗi ngày hoặc ISO-8601 từ query filter sang datetime."""
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    try:
+        dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        if end_of_day and len(cleaned) == 10:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return dt
+    except ValueError:
+        return None
+
+
 @outbound_router.get("/messages")
 def list_outbound_messages(
-    status: Optional[str] = Query(default=None, description="Trạng thái: all, cho_duyet, da_gui, huy, that_bai"),
-    order_type: Optional[str] = Query(default=None, description="Loại lệnh: dong, tra"),
-    search: Optional[str] = Query(default=None, description="Tìm kiếm theo nội dung, số cont, biển số"),
-    from_time: Optional[str] = Query(default=None, description="Từ thời điểm (ISO-8601)"),
-    to_time: Optional[str] = Query(default=None, description="Đến thời điểm (ISO-8601)"),
+    status: Optional[str] = Query(default=None, description="Trạng thái: all, PENDING_APPROVAL, SENT, CANCELLED, FAILED"),
+    order_type: Optional[str] = Query(default=None, description="Loại lệnh: LOAD/dong, RETURN/tra"),
+    search: Optional[str] = Query(default=None, description="Tìm kiếm theo nội dung, cont, biển số, tài xế, nhóm"),
+    from_time: Optional[str] = Query(default=None, description="Từ thời điểm (YYYY-MM-DD hoặc ISO-8601)"),
+    to_time: Optional[str] = Query(default=None, description="Đến thời điểm (YYYY-MM-DD hoặc ISO-8601)"),
     limit: int = Query(default=50, ge=1, le=200, description="Số lượng bản ghi mỗi trang"),
     offset: int = Query(default=0, ge=0, description="Vị trí bắt đầu"),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Lấy danh sách tin nhắn kết quả gửi đi có phân trang và bộ lọc chuyên sâu.
-
-    Args:
-        status: Trạng thái cần lọc (`cho_duyet`, `da_gui`, `huy`, `that_bai`).
-        order_type: Loại lệnh (`dong`, `tra`).
-        search: Từ khóa tìm kiếm nội dung hoặc số cont / biển số.
-        from_time: Lọc theo thời gian tạo từ.
-        to_time: Lọc theo thời gian tạo đến.
-        limit: Giới hạn số bản ghi.
-        offset: Phân trang.
-    """
+    """Lấy danh sách tin nhắn kết quả gửi đi có phân trang và bộ lọc chuyên sâu."""
     stmt = (
         select(OutboundMessage)
         .options(
@@ -141,33 +202,65 @@ def list_outbound_messages(
         )
     )
 
-    if status and status.lower() != "all":
-        stmt = stmt.where(OutboundMessage.status == status.lower())
-    if order_type:
-        stmt = stmt.where(OutboundMessage.order_type == order_type.lower())
+    if status and status.strip().lower() != "all":
+        key = status.strip().lower()
+        status_values = _OUTBOUND_STATUS_FILTER_MAP.get(key)
+        if not status_values:
+            raise HTTPException(status_code=400, detail=f"Trạng thái lọc không hợp lệ: {status}")
+        stmt = stmt.where(OutboundMessage.status.in_(status_values))
 
-    if search:
+    if order_type and order_type.strip().lower() != "all":
+        key = order_type.strip().lower()
+        order_values = _ORDER_TYPE_FILTER_MAP.get(key)
+        if not order_values:
+            raise HTTPException(status_code=400, detail=f"Loại lệnh lọc không hợp lệ: {order_type}")
+        stmt = stmt.where(OutboundMessage.order_type.in_(order_values))
+
+    if search and search.strip():
         search_kw = f"%{search.strip()}%"
+        group_match = exists(
+            select(ZaloGroup.id).where(
+                ZaloGroup.id == OutboundMessage.target_group_id,
+                or_(
+                    ZaloGroup.name.ilike(search_kw),
+                    ZaloGroup.zalo_group_id.ilike(search_kw),
+                ),
+            )
+        )
+        cont_match = exists(
+            select(OutboundMessageItem.outbound_message_id)
+            .join(ContainerJob, ContainerJob.id == OutboundMessageItem.container_job_id)
+            .outerjoin(TruckRecord, TruckRecord.id == ContainerJob.truck_record_id)
+            .where(
+                OutboundMessageItem.outbound_message_id == OutboundMessage.id,
+                or_(
+                    ContainerJob.container_no.ilike(search_kw),
+                    ContainerJob.seal_no.ilike(search_kw),
+                    TruckRecord.truck_plate.ilike(search_kw),
+                    TruckRecord.driver_name.ilike(search_kw),
+                    TruckRecord.driver_phone.ilike(search_kw),
+                ),
+            )
+        )
         stmt = stmt.where(
             or_(
                 OutboundMessage.content.ilike(search_kw),
                 OutboundMessage.idempotency_key.ilike(search_kw),
+                OutboundMessage.approved_by.ilike(search_kw),
+                group_match,
+                cont_match,
             )
         )
 
     if from_time:
-        try:
-            from_dt = datetime.fromisoformat(from_time.replace("Z", "+00:00"))
+        from_dt = _parse_filter_dt(from_time, end_of_day=False)
+        if from_dt:
             stmt = stmt.where(OutboundMessage.created_at >= from_dt)
-        except Exception:
-            pass
 
     if to_time:
-        try:
-            to_dt = datetime.fromisoformat(to_time.replace("Z", "+00:00"))
+        to_dt = _parse_filter_dt(to_time, end_of_day=True)
+        if to_dt:
             stmt = stmt.where(OutboundMessage.created_at <= to_dt)
-        except Exception:
-            pass
 
     # Tổng số bản ghi khớp
     count_stmt = select(func.count()).select_from(stmt.subquery())
@@ -207,8 +300,8 @@ def list_outbound_messages(
         zalo_gid = r.target_group.zalo_group_id if r.target_group else None
 
         serialized.append({
-            "id": r.id,
-            "target_group_id": r.target_group_id,
+            "id": str(r.id),
+            "target_group_id": str(r.target_group_id),
             "target_group_name": group_name or f"Nhóm Zalo #{r.target_group_id}",
             "target_zalo_group_id": zalo_gid,
             "order_type": r.order_type,
@@ -272,8 +365,8 @@ def get_outbound_message_detail(message_id: int, db: Session = Depends(get_db)) 
     return {
         "ok": True,
         "message": {
-            "id": msg.id,
-            "target_group_id": msg.target_group_id,
+            "id": str(msg.id),
+            "target_group_id": str(msg.target_group_id),
             "target_group_name": group_name or f"Nhóm Zalo #{msg.target_group_id}",
             "target_zalo_group_id": zalo_gid,
             "order_type": msg.order_type,
@@ -294,96 +387,51 @@ def get_outbound_message_detail(message_id: int, db: Session = Depends(get_db)) 
     }
 
 
+class OutboundApprovePayload(BaseModel):
+    """Schema tùy chọn khi ĐHVT chỉnh sửa nội dung trước khi duyệt gửi khách."""
+
+    content: Optional[str] = Field(default=None, description="Nội dung thông báo đã chỉnh sửa")
+    operator_name: Optional[str] = Field(default=None, description="Tên người duyệt")
+
+
 @outbound_router.post("/messages/{message_id}/approve")
 def approve_outbound_message(
     message_id: int,
     operator_name: str = Query(default="Điều độ viên", description="Tên người phê duyệt"),
+    payload: Optional[OutboundApprovePayload] = Body(default=None),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Phê duyệt tin nhắn đang ở trạng thái 'cho_duyet' và kích hoạt gửi ra Zalo OA.
-
-    - Kiểm soát tần suất thông qua Token Bucket Throttler (`ZaloOutboundThrottler`).
-    - Cập nhật trạng thái thành `da_gui`.
-    - Sinh mã `zalo_message_id` cho tin nhắn xuất bản.
-    """
+    """Phê duyệt tin nhắn đang ở trạng thái 'cho_duyet' (cho phép sửa nội dung) và kích hoạt phát hành."""
     msg = db.get(OutboundMessage, message_id)
     if not msg:
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")
 
-    if msg.status == "da_gui":
-        return {"ok": True, "status": "da_gui", "message": "Tin nhắn này đã được gửi trước đó."}
+    if msg.status in (OutboundStatus.SENT.value, "da_gui"):
+        return {"ok": True, "status": OutboundStatus.SENT.value, "message": "Tin nhắn này đã được gửi trước đó."}
 
-    # Kiểm tra xem tin nhắn gốc có phải là tin nhắn thật hay không
-    is_real_msg = False
-    parent_zalo_msg = None
-    for item in msg.items:
-        if item.container_job and item.container_job.message:
-            parent_zalo_msg = item.container_job.message
-            if not (
-                (parent_zalo_msg.group_id and ("test_" in parent_zalo_msg.group_id or "pytest_" in parent_zalo_msg.group_id))
-                or (parent_zalo_msg.zalo_message_id and (parent_zalo_msg.zalo_message_id.startswith("test_") or parent_zalo_msg.zalo_message_id.startswith("pytest_")))
-                or (parent_zalo_msg.sender_id and (parent_zalo_msg.sender_id.startswith("test_") or parent_zalo_msg.sender_id.startswith("pytest_")))
-            ):
-                is_real_msg = True
-                break
+    if msg.status not in ("PENDING_APPROVAL", "cho_duyet"):
+        raise HTTPException(409, "Tin nhắn không còn ở trạng thái chờ duyệt.")
 
-    # Thực hiện gửi thực tế ra Nhóm Zalo đích
-    target_grp = msg.target_group
-    target_gid = target_grp.zalo_group_id if target_grp else None
-
-    # Tự động chuyển hướng sang nhóm thật nếu là tin nhắn thực tế mà đích đang trỏ mock group
-    if is_real_msg and (not target_gid or target_gid.startswith("test_") or target_gid.startswith("grp_test_") or (target_grp and target_grp.is_test)):
-        real_dest_grp = db.scalars(
-            select(ZaloGroup)
-            .where(
-                ZaloGroup.is_active == True,
-                ZaloGroup.is_test == False,
-                ZaloGroup.zalo_group_id.isnot(None),
-                ~ZaloGroup.zalo_group_id.like("test_%"),
-                ~ZaloGroup.zalo_group_id.like("pytest_%"),
-                ~ZaloGroup.zalo_group_id.like("direct_%"),
-            )
-            .order_by(ZaloGroup.id.asc())
-        ).first()
-        if real_dest_grp:
-            msg.target_group_id = real_dest_grp.id
-            target_grp = real_dest_grp
-            target_gid = real_dest_grp.zalo_group_id
-
-    real_zalo_msg_id = None
-    if target_gid:
-        if target_grp and target_grp.is_test and not is_real_msg:
-            send_ok = True
-            real_zalo_msg_id = f"test_mock_zalo_{uuid4().hex[:12]}"
-            send_err = None
-        else:
-            send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
-                group_id=target_gid,
-                message=msg.content,
-            )
-        if not send_ok:
-            msg.status = "that_bai"
-            msg.last_error = f"Lỗi gửi Zalo: {send_err}"
-            db.commit()
-            return {"ok": False, "status": "that_bai", "message": f"Gửi tin tới Zalo thất bại: {send_err}"}
-
-    # Gửi phản hồi 1-1 cho người gửi nếu tin nhắn gốc gửi trực tiếp
-    if parent_zalo_msg and parent_zalo_msg.sender_id and is_real_msg:
-        if not parent_zalo_msg.group_id or parent_zalo_msg.group_id.startswith("direct_"):
-            direct_reply = (
-                f"✅ [VSICO ĐÃ PHÊ DUYỆT]\n"
-                f"Tin nhắn thông báo của bạn đã được {operator_name} phê duyệt thành công!\n\n"
-                f"Nội dung thông báo:\n{msg.content}"
-            )
-            ZaloDispatcher.send_to_user(parent_zalo_msg.sender_id, direct_reply)
+    actor = (
+        current_user.username
+        if current_user
+        else ((payload.operator_name.strip() if payload and payload.operator_name else None) or operator_name)
+    )
+    edited_content = False
+    if payload and payload.content is not None:
+        cleaned_content = payload.content.strip()
+        if not cleaned_content:
+            raise HTTPException(status_code=400, detail="Nội dung thông báo sau khi sửa không được để trống.")
+        if cleaned_content != msg.content:
+            msg.content = cleaned_content
+            edited_content = True
 
     now = _utc_now()
-    msg.status = "da_gui"
-    msg.approved_by = operator_name
+    msg.status = OutboundStatus.PENDING_SEND.value
+    msg.approved_by = actor
     msg.approved_at = now
-    msg.sent_at = now
-    msg.attempt_count += 1
-    msg.zalo_message_id = real_zalo_msg_id or msg.zalo_message_id or f"zalo_oa_{uuid4().hex[:16]}"
+    msg.sent_at = None
     msg.last_error = None
 
     # Đồng bộ trạng thái ContainerJob, ReviewCase và ZaloMessage
@@ -391,9 +439,9 @@ def approve_outbound_message(
     for item in msg.items:
         if item.container_job:
             cj = item.container_job
-            cj.validation_status = "valid"
-            cj.routing_status = "routed"
-            cj.tms_sync_status = "synced"
+            cj.validation_status = ValidationStatus.VALID.value
+            cj.routing_status = RoutingStatus.ROUTED.value
+            cj.tms_sync_status = TmsSyncStatus.PENDING.value
             if cj.message_id:
                 parent_msg_ids.add(cj.message_id)
 
@@ -401,34 +449,55 @@ def approve_outbound_message(
             for rc in db.scalars(
                 select(ReviewCase).where(
                     ReviewCase.container_job_id == cj.id,
-                    ReviewCase.status == "pending",
+                    ReviewCase.status.in_([ReviewStatus.PENDING.value, "pending"]),
                 )
             ).all():
-                rc.status = "approved"
+                rc.status = ReviewStatus.APPROVED.value
                 rc.resolved_at = now
-                rc.resolved_by = operator_name
+                rc.resolved_by = actor
 
     # Cập nhật trạng thái tin nhắn gốc (ZaloMessage) sang 'processed' nếu không còn ca pending
     for mid in parent_msg_ids:
         remaining_pending = db.scalar(
             select(func.count(ReviewCase.id)).where(
                 ReviewCase.message_id == mid,
-                ReviewCase.status == "pending",
+                ReviewCase.status.in_([ReviewStatus.PENDING.value, "pending"]),
             )
         ) or 0
         if remaining_pending == 0:
             z_msg = db.get(ZaloMessage, mid)
             if z_msg:
-                z_msg.processing_status = "processed"
+                z_msg.processing_status = MessageStatus.PROCESSED.value
 
+    db.add(
+        ActivityLog(
+            id=snowflake.generate(),
+            actor_id=str(current_user.id) if current_user else actor,
+            action="OUTBOUND_APPROVED_WITH_EDIT" if edited_content else "OUTBOUND_APPROVED",
+            entity_type="outbound_message",
+            entity_id=str(msg.id),
+            details={"edited_content": edited_content, "approved_by": actor},
+        )
+    )
     db.commit()
-    db.refresh(msg)
 
+    target_grp = msg.target_group
+    if target_grp and not target_grp.is_test and settings.AUTO_DISPATCH_OUTBOUND:
+        from src.infrastructure.outbox_worker import drain_outbox
+
+        drain_outbox(lambda: nullcontext(db), [msg.id])
+
+    db.refresh(msg)
     return {
         "ok": True,
-        "message": f"Đã phê duyệt và gửi tin nhắn #{message_id} ra Nhóm Zalo thành công.",
+        "message": (
+            f"Đã phê duyệt và gửi thành công tin nhắn #{message_id}."
+            if msg.status == OutboundStatus.SENT.value
+            else f"Đã phê duyệt tin nhắn #{message_id}, chờ worker cập nhật kế hoạch và gửi Zalo."
+        ),
         "status": msg.status,
-        "sent_at": msg.sent_at.isoformat(),
+        "content": msg.content,
+        "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
         "zalo_message_id": msg.zalo_message_id,
     }
 
@@ -447,7 +516,7 @@ def cancel_outbound_message(
     if not msg:
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")
 
-    msg.status = "huy"
+    msg.status = OutboundStatus.CANCELLED.value
     msg.last_error = f"Hủy bỏ: {req.reason}"
     db.commit()
     db.refresh(msg)
@@ -470,42 +539,71 @@ def resend_outbound_message(
     if not msg:
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")
 
-    # Thực hiện gửi thực tế ra Nhóm Zalo đích
-    target_grp = msg.target_group
-    target_gid = target_grp.zalo_group_id if target_grp else None
-    real_zalo_msg_id = None
-    if target_gid:
-        if target_grp and target_grp.is_test:
-            send_ok = True
-            real_zalo_msg_id = f"test_mock_zalo_{uuid4().hex[:12]}"
-            send_err = None
-        else:
-            send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
-                group_id=target_gid,
-                message=msg.content,
-            )
-        if not send_ok:
-            msg.status = "that_bai"
-            msg.last_error = f"Lỗi gửi Zalo: {send_err}"
-            db.commit()
-            return {"ok": False, "status": "that_bai", "message": f"Gửi lại tin nhắn thất bại: {send_err}"}
+    if msg.status != OutboundStatus.FAILED.value:
+        raise HTTPException(409, "Chỉ gửi lại tin FAILED sau khi đã đối soát kết quả Zalo.")
+    msg.status = OutboundStatus.PENDING_SEND.value
+    msg.last_error = None
+    db.commit()
+    return {"ok": True, "status": msg.status, "message": "Đã đưa vào hàng đợi gửi lại."}
+
+
+@outbound_router.post("/messages/{message_id}/mark-manual-sent")
+def mark_outbound_manual_sent(
+    message_id: int,
+    note: Optional[str] = Query(default=None, description="Ghi chú xác nhận gửi thủ công"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Đánh dấu tin nhắn outbound lỗi là Đã gửi thủ công bởi ĐHVT sau khi copy gửi tay qua Zalo."""
+    msg = db.get(OutboundMessage, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")
 
     now = _utc_now()
-    msg.status = "da_gui"
+    msg.status = OutboundStatus.SENT.value
+    msg.approved_by = msg.approved_by or "dhvt_manual_sent"
+    msg.approved_at = msg.approved_at or now
     msg.sent_at = now
-    msg.attempt_count += 1
-    msg.zalo_message_id = real_zalo_msg_id or f"zalo_oa_{uuid4().hex[:16]}"
-    msg.last_error = None
+    msg.last_error = f"SENT_MANUALLY: {note}" if note else "SENT_MANUALLY"
+    msg.zalo_message_id = msg.zalo_message_id or f"manual_sent_{uuid4().hex[:12]}"
+
+    parent_msg_ids: set[int] = set()
+    for item in msg.items:
+        if item.container_job:
+            cj = item.container_job
+            cj.validation_status = ValidationStatus.VALID.value
+            cj.routing_status = RoutingStatus.SENT.value
+            if cj.message_id:
+                parent_msg_ids.add(cj.message_id)
+            for rc in db.scalars(
+                select(ReviewCase).where(
+                    ReviewCase.container_job_id == cj.id,
+                    ReviewCase.status.in_([ReviewStatus.PENDING.value, "pending"]),
+                )
+            ).all():
+                rc.status = ReviewStatus.RESOLVED.value
+                rc.resolved_by = "dhvt_manual_sent"
+                rc.resolved_at = now
+
+    for p_mid in parent_msg_ids:
+        still_pending = db.scalar(
+            select(func.count(ReviewCase.id)).where(
+                ReviewCase.message_id == p_mid,
+                ReviewCase.status.in_([ReviewStatus.PENDING.value, "pending"]),
+            )
+        ) or 0
+        if still_pending == 0:
+            p_msg = db.get(ZaloMessage, p_mid)
+            if p_msg:
+                p_msg.processing_status = MessageStatus.PROCESSED.value
 
     db.commit()
     db.refresh(msg)
-
     return {
         "ok": True,
-        "message": f"Đã gửi lại tin nhắn #{message_id} ra Nhóm Zalo thành công.",
         "status": msg.status,
-        "sent_at": msg.sent_at.isoformat(),
-        "zalo_message_id": msg.zalo_message_id,
+        "message_id": msg.id,
+        "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
+        "message": f"Đã đánh dấu tin nhắn #{message_id} là đã gửi thủ công.",
     }
 
 

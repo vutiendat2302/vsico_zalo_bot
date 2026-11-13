@@ -20,9 +20,15 @@ Quản lý hạ tầng tập trung tại thư mục gốc của dự án (`vsico
    - **Nghiêm cấm** tạo các file `.env` rời rạc bên trong từng thư mục con (`backend/.env`, `ai-service/.env`...).
    - Khi thêm bất kỳ biến môi trường mới nào vào code, bắt buộc phải khai báo đồng thời vào cả `.env` và `.env.example` tại thư mục gốc (trong `.env.example` chỉ để giá trị mẫu, tuyệt đối không commit mật khẩu hay API key thật).
 2. **Một tệp `docker-compose.yml` duy nhất tại thư mục gốc**:
-   - Quản lý tập trung các dịch vụ hạ tầng tại `vsico_zalo_bot/docker-compose.yml`:
+   - Quản lý tập trung các dịch vụ hạ tầng & ứng dụng tại `vsico_zalo_bot/docker-compose.yml`:
      - **`mysql` (MySQL 8.4+)**: Cổng `3306`, bảng mã `utf8mb4_unicode_ci`, lưu trữ bền vững tại volume `vsico_mysql_data`.
      - **`minio` (MinIO S3-Compatible Object Storage)**: Cổng API `9000`, cổng Web Console `9001`, lưu trữ ảnh OCR và file Excel kế hoạch tại volume `vsico_minio_data`.
+     - **`minio-init`**: Tự động tạo bucket `vsico-zalo-files` khi MinIO sẵn sàng.
+     - **`qdrant` (Qdrant Vector Database)**: Cổng REST `6333`, gRPC `6334`, volume `vsico_qdrant_data`.
+     - **`paddleocr` (Local Self-Hosted PaddleOCR Server)**: Cổng `8866`, nhận diện chữ từ ảnh lệnh điều xe.
+     - **`backend` (FastAPI Webhook & REST API)**: Cổng `8000`.
+     - **`ai-service` (AI & OCR Microservice)**: Cổng `8001`.
+     - **`frontend` (Next.js 16 Management Dashboard)**: Cổng `3001`.
 
 ---
 
@@ -31,7 +37,7 @@ Quản lý hạ tầng tập trung tại thư mục gốc của dự án (`vsico
 | Dịch vụ / Module              | Thư mục              |  Cổng Mặc định  | Biến Môi trường | Vai trò                                                             |
 | :------------------------------ | :--------------------- | :-----------------: | :------------------ | :------------------------------------------------------------------- |
 | **ZCA Zalo Bridge**       | `zca-js/`            |      `3000`      | `BOT_API_PORT`    | Lắng nghe WebSocket Zalo & Outbound HTTP Server                     |
-| **Frontend Dashboard**    | `frontend/`          |      `3001`      | `FRONTEND_PORT`   | Giao diện quản trị Next.js 14 cho ĐHVT & Admin                   |
+| **Frontend Dashboard**    | `frontend/`          |      `3001`      | `FRONTEND_PORT`   | Giao diện quản trị Next.js 16 cho ĐHVT & Admin                   |
 | **Backend API & Webhook** | `backend/`           |      `8000`      | `PORT`            | Cổng Webhook `/webhook` & REST API `/api/...`                   |
 | **AI & OCR Microservice** | `ai-service/`        |      `8001`      | `AI_SERVICE_PORT` | Dịch vụ nội bộ bóc tách NLP, Vision OCR & Map kho              |
 | **PaddleOCR Server**      | `backend/scripts/`   |      `8866`      | `PADDLE_OCR_URL`  | Máy chủ nhận diện chữ tiếng Việt từ ảnh lệnh xe            |
@@ -56,16 +62,21 @@ Quản lý hạ tầng tập trung tại thư mục gốc của dự án (`vsico
 Khởi chạy từ thư mục gốc `vsico_zalo_bot/`:
 
 ```bash
-# 1. Khởi động toàn bộ hạ tầng Docker (MySQL 8.4 & MinIO)
+# 1. Khởi động các dịch vụ hạ tầng (MySQL, MinIO, Qdrant, PaddleOCR)
+docker compose up -d mysql minio minio-init qdrant paddleocr
+
+# 2. Khởi động toàn bộ hệ thống (cả hạ tầng và ứng dụng backend, frontend, ai-service)
 docker compose up -d
 
-# 2. Kiểm tra trạng thái các container
+# 3. Kiểm tra trạng thái các container
 docker compose ps
 
-# 3. Xem log thời gian thực của MySQL hoặc MinIO
-docker compose logs -f mysql
-docker compose logs -f minio
+# 4. Xem log thời gian thực của các dịch vụ
+docker compose logs -f backend
+docker compose logs -f ai-service
+docker compose logs -f frontend
+docker compose logs -f paddleocr
 
-# 4. Dừng hạ tầng Docker (giữ nguyên dữ liệu trong volume)
+# 5. Dừng các dịch vụ Docker (giữ nguyên dữ liệu trong volume)
 docker compose stop
 ```

@@ -18,7 +18,7 @@ from typing import Any, Optional, Union
 
 import openpyxl
 
-from src.domain.rules import clean_container, clean_plate
+from src.domain.rules import clean_container, clean_plate, split_truck_plate_and_driver
 from src.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -205,9 +205,10 @@ class PlanFileParser:
                 except Exception:
                     cargo_weight = None
 
-            # Biển số xe dự kiến
+            # Biển số xe dự kiến và tên tài xế (nếu có trong ô số xe)
             truck_raw = sheet.cell(r, col_map.get("col_truck", 18)).value if "col_truck" in col_map else None
             truck_str = str(truck_raw).strip() if truck_raw else None
+            parsed_driver, parsed_plate = split_truck_plate_and_driver(truck_str)
 
             # Group ID (mặc định map vào default_group_id nếu trống)
             grp_val = sheet.cell(r, col_map.get("col_group", 20)).value if "col_group" in col_map else None
@@ -238,7 +239,8 @@ class PlanFileParser:
                 "full_depot": str(sheet.cell(r, col_map.get("col_full_depot", 15)).value or "").strip() or None,
                 "estimated_drop_time": str(sheet.cell(r, col_map.get("col_drop_time", 16)).value or "").strip() or None,
                 "fleet_partner": str(sheet.cell(r, col_map.get("col_fleet", 17)).value or "").strip() or None,
-                "planned_truck_plate": truck_str,
+                "planned_truck_plate": parsed_plate or truck_str,
+                "driver_name": parsed_driver,
                 "delivery_address": str(sheet.cell(r, col_map.get("col_address", 19)).value or "").strip() or None,
                 "group_id": final_group_id,
                 "operator_staff": str(sheet.cell(r, col_map.get("col_staff", 21)).value or "").strip() or None,
@@ -380,6 +382,9 @@ class PlanFileParser:
                 if parsed_d:
                     rec_date = parsed_d
 
+            truck_val = _get("số xe", "so xe", "biển số", "plate")
+            parsed_driver, parsed_plate = split_truck_plate_and_driver(truck_val)
+
             record = {
                 "plan_date": rec_date,
                 "stt": stt_int,
@@ -398,7 +403,8 @@ class PlanFileParser:
                 "full_depot": _get("hạ hàng", "nâng hàng", "bãi hàng", "full"),
                 "estimated_drop_time": _get("hạ hàng", "giờ hạ", "drop_time"),
                 "fleet_partner": _get("đội xe", "doi xe", "carrier", "nhà xe"),
-                "planned_truck_plate": _get("số xe", "so xe", "biển số", "plate"),
+                "planned_truck_plate": parsed_plate or truck_val,
+                "driver_name": _get("tài xế", "tai xe", "lái xe", "lai xe") or parsed_driver,
                 "delivery_address": _get("địa chỉ", "dia chi", "kho", "address"),
                 "group_id": final_group_id,
                 "operator_staff": _get("giao nhận", "giao nhan", "staff"),

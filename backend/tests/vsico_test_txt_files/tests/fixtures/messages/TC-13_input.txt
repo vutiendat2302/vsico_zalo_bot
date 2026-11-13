@@ -1,7 +1,0 @@
-TEST_ID: TC-13
-FORMAT: F1
-
-INPUT:
-1 xe 15C17066/ Phạm Văn Huynh đt: 0986****** / VSIU2621051 chì 23333878
-2 xe 15H00642/ Đoàn Văn Biên 0984******/ VSIU2321938 chì 23333310
-3 xe 15H06722/ Đào Đức Thoại đt: 0364******/ VSIU2323000 chì 23333330

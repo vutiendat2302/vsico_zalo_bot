@@ -46,10 +46,8 @@ def upgrade() -> None:
     op.create_index(op.f('ix_users_username'), 'users', ['username'], unique=True)
     op.create_index(op.f('ix_users_zalo_info_id'), 'users', ['zalo_info_id'], unique=False)
     op.create_index(op.f('ix_users_zalo_user_id'), 'users', ['zalo_user_id'], unique=True)
-    op.alter_column('transport_plans', 'cargo_io_type',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=16),
-               comment="Phân loại hàng: 'I' (Nhập) hoặc 'X' (Xuất)",
-               existing_nullable=True)
+    op.add_column('transport_plans', sa.Column('stt', sa.Integer(), nullable=True))
+    op.add_column('transport_plans', sa.Column('cargo_io_type', sa.String(length=16), nullable=True, comment="Phân loại hàng: 'I' (Nhập) hoặc 'X' (Xuất)"))
     op.alter_column('transport_plans', 'order_type',
                existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=16),
                comment="'dong' (Đóng hàng/Xuất) hoặc 'tra' (Trả hàng/Nhập/Mở cont)",
@@ -58,65 +56,22 @@ def upgrade() -> None:
                existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=16),
                comment="'20' hoặc '40'",
                existing_nullable=True)
-    op.alter_column('transport_plans', 'cargo_weight',
-               existing_type=mysql.DECIMAL(precision=10, scale=2),
-               comment='Tải trọng cả vỏ (tấn)',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'required_time',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment="Yêu cầu thời gian có mặt: '7h', '9h'...",
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'cargo_type',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment='Loại hàng hóa: Mỳ, Bột ngọt...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'vessel_voyage',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=100),
-               comment='Chuyến tàu/Số: Prosper 2633N...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'empty_depot',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment='Bãi nâng/ hạ vỏ',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'full_depot',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment='Bãi nâng/hạ hàng: PTSC...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'estimated_drop_time',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment='Giờ dự kiến hạ hàng',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'fleet_partner',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment='Đội xe: Tuấn Hưng, Phương Anh HP...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'planned_truck_plate',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment='Số xe kế hoạch: 29C-445.41...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'delivery_address',
-               existing_type=mysql.TEXT(collation='utf8mb4_unicode_ci'),
-               comment='Địa chỉ đóng/ trả hàng',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'group_id',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment='Group ID Zalo nhận thông báo',
-               existing_nullable=True,
-               existing_server_default=sa.text("'6469608867469758994'"))
-    op.alter_column('transport_plans', 'operator_staff',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=100),
-               comment='Cán bộ giao nhận',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'notes',
-               existing_type=mysql.TEXT(collation='utf8mb4_unicode_ci'),
-               comment='Ghi chú / Chi chú',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'extra_fee_notes',
-               existing_type=mysql.TEXT(collation='utf8mb4_unicode_ci'),
-               comment='Phát sinh',
-               existing_nullable=True)
-    op.drop_index(op.f('idx_plans_customer_name'), table_name='transport_plans')
-    op.drop_index(op.f('idx_plans_group_id'), table_name='transport_plans')
+    op.add_column('transport_plans', sa.Column('cargo_weight', sa.Numeric(precision=10, scale=2), nullable=True, comment='Tải trọng cả vỏ (tấn)'))
+    op.add_column('transport_plans', sa.Column('required_time', sa.String(length=64), nullable=True, comment="Yêu cầu thời gian có mặt: '7h', '9h'..."))
+    op.add_column('transport_plans', sa.Column('customer_name', sa.String(length=255), nullable=True))
+    op.add_column('transport_plans', sa.Column('cargo_type', sa.String(length=255), nullable=True, comment='Loại hàng hóa: Mỳ, Bột ngọt...'))
+    op.add_column('transport_plans', sa.Column('vessel_voyage', sa.String(length=100), nullable=True, comment='Chuyến tàu/Số: Prosper 2633N...'))
+    op.add_column('transport_plans', sa.Column('empty_depot', sa.String(length=255), nullable=True, comment='Bãi nâng/ hạ vỏ'))
+    op.add_column('transport_plans', sa.Column('full_depot', sa.String(length=255), nullable=True, comment='Bãi nâng/hạ hàng: PTSC...'))
+    op.add_column('transport_plans', sa.Column('estimated_drop_time', sa.String(length=64), nullable=True, comment='Giờ dự kiến hạ hàng'))
+    op.add_column('transport_plans', sa.Column('fleet_partner', sa.String(length=255), nullable=True, comment='Đội xe: Tuấn Hưng, Phương Anh HP...'))
+    op.add_column('transport_plans', sa.Column('planned_truck_plate', sa.String(length=64), nullable=True, comment='Số xe kế hoạch: 29C-445.41...'))
+    op.add_column('transport_plans', sa.Column('delivery_address', sa.Text(), nullable=True, comment='Địa chỉ đóng/ trả hàng'))
+    op.add_column('transport_plans', sa.Column('group_id', sa.String(length=64), server_default='6469608867469758994', nullable=True, comment='Group ID Zalo nhận thông báo'))
+    op.add_column('transport_plans', sa.Column('operator_staff', sa.String(length=100), nullable=True, comment='Cán bộ giao nhận'))
+    op.add_column('transport_plans', sa.Column('notes', sa.Text(), nullable=True, comment='Ghi chú / Chi chú'))
+    op.add_column('transport_plans', sa.Column('extra_fee_notes', sa.Text(), nullable=True, comment='Phát sinh'))
+    op.add_column('transport_plans', sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True))
     op.create_index(op.f('ix_transport_plans_customer_name'), 'transport_plans', ['customer_name'], unique=False)
     op.create_index(op.f('ix_transport_plans_group_id'), 'transport_plans', ['group_id'], unique=False)
     op.create_index(op.f('ix_transport_plans_order_type'), 'transport_plans', ['order_type'], unique=False)
@@ -129,94 +84,32 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_transport_plans_order_type'), table_name='transport_plans')
     op.drop_index(op.f('ix_transport_plans_group_id'), table_name='transport_plans')
     op.drop_index(op.f('ix_transport_plans_customer_name'), table_name='transport_plans')
-    op.create_index(op.f('idx_plans_group_id'), 'transport_plans', ['group_id'], unique=False)
-    op.create_index(op.f('idx_plans_customer_name'), 'transport_plans', ['customer_name'], unique=False)
-    op.alter_column('transport_plans', 'extra_fee_notes',
-               existing_type=mysql.TEXT(collation='utf8mb4_unicode_ci'),
-               comment=None,
-               existing_comment='Phát sinh',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'notes',
-               existing_type=mysql.TEXT(collation='utf8mb4_unicode_ci'),
-               comment=None,
-               existing_comment='Ghi chú / Chi chú',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'operator_staff',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=100),
-               comment=None,
-               existing_comment='Cán bộ giao nhận',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'group_id',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment=None,
-               existing_comment='Group ID Zalo nhận thông báo',
-               existing_nullable=True,
-               existing_server_default=sa.text("'6469608867469758994'"))
-    op.alter_column('transport_plans', 'delivery_address',
-               existing_type=mysql.TEXT(collation='utf8mb4_unicode_ci'),
-               comment=None,
-               existing_comment='Địa chỉ đóng/ trả hàng',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'planned_truck_plate',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment=None,
-               existing_comment='Số xe kế hoạch: 29C-445.41...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'fleet_partner',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment=None,
-               existing_comment='Đội xe: Tuấn Hưng, Phương Anh HP...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'estimated_drop_time',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment=None,
-               existing_comment='Giờ dự kiến hạ hàng',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'full_depot',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment=None,
-               existing_comment='Bãi nâng/hạ hàng: PTSC...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'empty_depot',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment=None,
-               existing_comment='Bãi nâng/ hạ vỏ',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'vessel_voyage',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=100),
-               comment=None,
-               existing_comment='Chuyến tàu/Số: Prosper 2633N...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'cargo_type',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=255),
-               comment=None,
-               existing_comment='Loại hàng hóa: Mỳ, Bột ngọt...',
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'required_time',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=64),
-               comment=None,
-               existing_comment="Yêu cầu thời gian có mặt: '7h', '9h'...",
-               existing_nullable=True)
-    op.alter_column('transport_plans', 'cargo_weight',
-               existing_type=mysql.DECIMAL(precision=10, scale=2),
-               comment=None,
-               existing_comment='Tải trọng cả vỏ (tấn)',
-               existing_nullable=True)
+    op.drop_column('transport_plans', 'updated_at')
+    op.drop_column('transport_plans', 'extra_fee_notes')
+    op.drop_column('transport_plans', 'notes')
+    op.drop_column('transport_plans', 'operator_staff')
+    op.drop_column('transport_plans', 'group_id')
+    op.drop_column('transport_plans', 'delivery_address')
+    op.drop_column('transport_plans', 'planned_truck_plate')
+    op.drop_column('transport_plans', 'fleet_partner')
+    op.drop_column('transport_plans', 'estimated_drop_time')
+    op.drop_column('transport_plans', 'full_depot')
+    op.drop_column('transport_plans', 'empty_depot')
+    op.drop_column('transport_plans', 'vessel_voyage')
+    op.drop_column('transport_plans', 'cargo_type')
+    op.drop_column('transport_plans', 'customer_name')
+    op.drop_column('transport_plans', 'required_time')
+    op.drop_column('transport_plans', 'cargo_weight')
     op.alter_column('transport_plans', 'container_size',
                existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=16),
                comment=None,
-               existing_comment="'20' hoặc '40'",
                existing_nullable=True)
     op.alter_column('transport_plans', 'order_type',
                existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=16),
                comment=None,
-               existing_comment="'dong' (Đóng hàng/Xuất) hoặc 'tra' (Trả hàng/Nhập/Mở cont)",
                existing_nullable=False)
-    op.alter_column('transport_plans', 'cargo_io_type',
-               existing_type=mysql.VARCHAR(collation='utf8mb4_unicode_ci', length=16),
-               comment=None,
-               existing_comment="Phân loại hàng: 'I' (Nhập) hoặc 'X' (Xuất)",
-               existing_nullable=True)
+    op.drop_column('transport_plans', 'cargo_io_type')
+    op.drop_column('transport_plans', 'stt')
     op.drop_index(op.f('ix_users_zalo_user_id'), table_name='users')
     op.drop_index(op.f('ix_users_zalo_info_id'), table_name='users')
     op.drop_index(op.f('ix_users_username'), table_name='users')

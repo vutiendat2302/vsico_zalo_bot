@@ -71,6 +71,7 @@ from src.infrastructure.models import (
     TmsSyncLog,
     TransportPlan,
     TruckRecord,
+    User,
     Warehouse,
     WarehouseAlias,
     ZaloGroup,
@@ -79,6 +80,8 @@ from src.infrastructure.models import (
 
 # Phân nhóm bảng để dọn dẹp có định hướng rõ ràng
 OPERATIONAL_TABLES = [
+    "message_drafts",
+    "files",
     "outbound_message_items",
     "outbound_messages",
     "bot_replies",
@@ -96,6 +99,8 @@ PLAN_TABLES = [
 ]
 
 CATALOG_TABLES = [
+    "users",
+    "carriers",
     "route_maps",
     "warehouse_aliases",
     "customer_aliases",
@@ -118,9 +123,13 @@ TABLE_DESCRIPTIONS: Dict[str, str] = {
     "outbound_message_items": "Bảng trung gian gắn cont vào tin outbound",
     "tms_sync_logs": "Nhật ký đồng bộ dữ liệu sang be-tms",
     "activity_logs": "Nhật ký thao tác người dùng & hệ thống",
+    "files": "Lưu trữ thông tin metadata file tải lên MinIO S3",
+    "message_drafts": "Bản nháp gom các tin nhắn rời rạc từ nhà xe",
     # Kế hoạch vận chuyển
     "transport_plans": "Kế hoạch điều vận hằng ngày (Import Excel/CSV)",
     # Danh mục / Master data
+    "users": "Tài khoản nhân viên nội bộ (ĐHVT, Admin)",
+    "carriers": "Danh mục nhà xe / đội xe chuẩn từ TMS",
     "customers": "Danh mục khách hàng chuẩn từ TMS",
     "warehouses": "Danh mục kho đóng/trả hàng chuẩn",
     "customer_aliases": "Tên viết tắt/bí danh của khách hàng",
@@ -192,7 +201,7 @@ class DatabaseManager:
         total_records = 0
 
         print("\n" + "=" * 80)
-        print(" THỐNG KÊ SỐ LƯỢNG BẢN GHI TRONG CƠ SỞ DỮ LIỆU (17 BẢNG)")
+        print(" THỐNG KÊ SỐ LƯỢNG BẢN GHI TRONG CƠ SỞ DỮ LIỆU (TOÀN BỘ CÁC BẢNG)")
         print("=" * 80)
         print(f"{'NHÓM / TÊN BẢNG':<26} | {'SỐ DÒNG':>9} | {'MÔ TẢ NGHIỆP VỤ'}")
         print("-" * 80)
@@ -396,6 +405,14 @@ class DatabaseManager:
         else:
             print(f"[ERROR] Chạy Alembic thất bại: {result.stderr}")
 
+    @classmethod
+    def seed_data(cls) -> None:
+        """Tự động kiểm tra và khởi tạo tài khoản quản trị mặc định (admin) nếu chưa có."""
+        print("\n[BẮT ĐẦU] Đang kiểm tra và khởi tạo dữ liệu quản trị viên...")
+        from src.api.app import seed_initial_users
+        seed_initial_users()
+        print("[HOÀN TẤT] Quá trình kiểm tra và khởi tạo tài khoản admin hoàn tất!\n")
+
 
 def confirm_prompt(prompt_message: str) -> bool:
     """Yêu cầu xác nhận từ người dùng qua dòng lệnh trước các tác vụ nhạy cảm.
@@ -467,6 +484,9 @@ def main() -> None:
         help="Tự động đồng ý xác nhận không cần hỏi lại",
     )
 
+    # 5. Lệnh seed
+    subparsers.add_parser("seed", help="Tự động kiểm tra và khởi tạo tài khoản admin nếu chưa có")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -503,6 +523,9 @@ def main() -> None:
     elif args.command == "reset":
         if args.yes or confirm_prompt("CẢNH BÁO NGUY HIỂM: Bạn có chắc chắn muốn RESET TOÀN BỘ CƠ SỞ DỮ LIỆU VÀ CHẠY LẠI MIGRATIONS?"):
             DatabaseManager.reset_database()
+
+    elif args.command == "seed":
+        DatabaseManager.seed_data()
 
 
 if __name__ == "__main__":

@@ -40,11 +40,12 @@ class Settings(BaseSettings):
     # 2. Cấu hình MySQL 8.4
     DB_HOST: str = "127.0.0.1"
     DB_PORT: int = 3306
-    DB_USER: str = "root"
+    DB_ROOT_PASSWORD: str = ""
+    DB_USER: str = "vsico_user"
     DB_PASSWORD: str = ""
     DB_NAME: str = "vsico_zalo_bot"
     DATABASE_URL: str = (
-        "mysql+pymysql://root@127.0.0.1:3306/vsico_zalo_bot?charset=utf8mb4"
+        "mysql+pymysql://vsico_user@127.0.0.1:3306/vsico_zalo_bot?charset=utf8mb4"
     )
 
     # 3. Cấu hình Zalo Webhook
@@ -53,6 +54,7 @@ class Settings(BaseSettings):
 
     # 4. Cấu hình AI Fallback Chung (Dễ dàng thay đổi Provider/Model qua .env)
     AI_ENABLED: bool = True
+    AI_DIRECT_GEMINI_FALLBACK: bool = False  # Mặc định False: Backend chỉ gọi ai-service, không tự ý gọi thẳng Cloud LLM
     AI_PROVIDER: str = "gemini"  # Hỗ trợ: gemini, openai_compatible, anthropic, ollama
     AI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
     AI_API_KEY: str = ""
@@ -99,6 +101,9 @@ class Settings(BaseSettings):
     # 11. Cấu hình AI Microservice Nội bộ (ai-service)
     AI_SERVICE_URL: str = "http://127.0.0.1:8001"
     INTERNAL_SECRET: str = ""
+
+    # 12. Đường dẫn Web Dashboard điều hành (gắn vào thông báo nhóm Zalo ĐHVT)
+    FRONTEND_BASE_URL: str = "http://localhost:3001"
 
 
 settings = Settings()

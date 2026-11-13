@@ -4,7 +4,7 @@ Tuân thủ nghiêm ngặt nguyên tắc Template Isolation (Mục 1.6 - AGENTS.
 - Tuyệt đối không hardcode chuỗi thông báo tiếng Việt gửi khách hàng trong mã nguồn xử lý.
 - Mọi nội dung gửi đi được nạp và render thông qua `TemplateEngine` từ thư mục `outbound/templates/`.
 - Hỗ trợ ghi đè mẫu tin theo từng mã khách hàng cụ thể (`templates/customers/<khach_hang_id>_<loai>.txt`).
-- Che 6 số cuối SĐT tài xế (VD: 0986******) theo chuẩn bảo vệ thông tin riêng tư.
+- Hiển thị đầy đủ SĐT tài xế trong thông báo kết quả gửi đi (không che/ẩn thành `***` hoặc `xxxx`).
 - Kiểm tra tính đầy đủ của 8 trường thông tin cốt lõi trước khi gửi:
   (1) Khách hàng, (2) Lệnh, (3) Xe, (4) Tài xế, (5) SĐT, (6) Cont, (7) Size, (8) Chì.
   Giờ dự kiến và Ghi chú là tùy chọn (có thể null).
@@ -37,15 +37,10 @@ def format_license_plate_display(clean_plate: Optional[str]) -> str:
 
 
 def format_masked_phone(phone: Optional[str]) -> str:
-    """Che 6 số giữa/cuối của SĐT tài xế (VD: '0986713346' -> '0986******')."""
+    """Giữ nguyên đầy đủ SĐT tài xế khi hiển thị trên kết quả gửi (không ẩn/che số)."""
     if not phone:
         return ""
-    p = str(phone).strip()
-    if "*" in p:
-        return p
-    if len(p) == 10 and p.startswith("0"):
-        return f"{p[:4]}******"
-    return p
+    return str(phone).strip()
 
 
 def format_arrival_time_display(eta_val: Any) -> str:
@@ -70,6 +65,20 @@ class TemplateEngine:
             templates_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
         self.templates_dir = templates_dir
 
+    @staticmethod
+    def _normalize_template_kind(loai: Optional[str]) -> str:
+        """Chuẩn hóa mã loại lệnh (LOAD/RETURN/dong/tra/capnhat/huy) sang tên file template."""
+        val = (loai or "").strip().lower()
+        if val in ("load", "dong", "xuat"):
+            return "dong"
+        if val in ("capnhat", "update", "update_request"):
+            return "capnhat"
+        if val in ("huy", "cancel", "cancel_request"):
+            return "huy"
+        if val in ("return", "tra", "nhap"):
+            return "tra"
+        return ""
+
     def get_template(self, loai: str, customer_id: Optional[str] = None) -> str:
         """Nạp tệp mẫu tương ứng.
 
@@ -78,7 +87,7 @@ class TemplateEngine:
         2. Mẫu mặc định chung: `templates/default_<loai>.txt`
         3. Fallback nội bộ nếu thiếu tệp trên đĩa.
         """
-        loai_clean = loai if loai in ("tra", "dong", "capnhat") else "tra"
+        loai_clean = self._normalize_template_kind(loai) or "tra"
 
         if customer_id:
             safe_cid = str(customer_id).strip().replace("/", "_").replace("\\", "_")
@@ -124,6 +133,16 @@ class TemplateEngine:
                 "- Điểm đến: {diem_den}\n"
                 "- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}\n"
             )
+        elif loai_clean == "huy":
+            return (
+                "VSICO - THÔNG BÁO HỦY CHUYẾN\n"
+                "Khách hàng: {ten_khach_hang}\n\n"
+                "Chuyến xe đã được xác nhận hủy:\n"
+                "- Số cont: {so_cont} ({kich_thuoc})\n"
+                "- Biển số xe: {bien_so}\n"
+                "- Điểm đến: {diem_den}\n"
+                "- Lý do: {ly_do}{dong_ghi_chu}\n"
+            )
         else:
             return (
                 "VSICO - THÔNG BÁO XE ĐÓNG HÀNG\n"
@@ -165,6 +184,7 @@ class TemplateEngine:
             "kich_thuoc": context.get("kich_thuoc") or context.get("container_size") or "40DC",
             "dong_ghi_chu": dong_ghi_chu,
             "thay_doi": context.get("thay_doi") or "- Cập nhật thông tin xe",
+            "ly_do": context.get("ly_do") or "Theo yêu cầu điều vận",
         }
 
         res = tpl
@@ -193,14 +213,16 @@ class OutboundTemplateBuilder:
             tuple[bool, list[str]]: (is_complete, danh_sach_truong_thieu_hoac_sai)
         """
         missing: list[str] = []
+        has_warehouse = bool(line.warehouse_hint or line.warehouse_code_or_id)
 
-        # 1. Khách hàng
-        if not line.customer_hint and not line.customer_code_or_id:
+        # 1. Khách hàng (nếu đã đủ điểm đóng/trả + xe + cont + chì thì không chặn gửi khi thiếu tên khách)
+        if not has_warehouse and not line.customer_hint and not line.customer_code_or_id:
             missing.append("Khách hàng")
 
-        # 2. Lệnh (đóng/trả)
-        if not line.order_type or line.order_type not in ("tra", "dong"):
-            missing.append("Loại lệnh (đóng/trả)")
+        # 2. Lệnh (đóng/trả) - hỗ trợ cả LOAD/RETURN và dong/tra; không chặn nếu đã có điểm đóng/trả
+        norm_order = TemplateEngine._normalize_template_kind(line.order_type)
+        if not has_warehouse and norm_order not in ("tra", "dong"):
+            missing.append("Loại lệnh (LOAD/RETURN)")
 
         # 3. Xe (biển số)
         if not line.truck_plate and not line.plate_compact:
@@ -222,9 +244,8 @@ class OutboundTemplateBuilder:
         elif line.check_digit_valid is False or any(w.startswith("ISO6346_CHECK_DIGIT_MISMATCH") for w in line.warnings):
             missing.append("Số container (sai số kiểm tra ISO 6346)")
 
-        # 7. Kích thước container (size)
-        if not line.canonical_cont_size and not line.container_size:
-            missing.append("Kích thước container (size)")
+        # 7. Kích thước container (size): tùy chọn — nhiều nhà xe không ghi hoặc lấy từ TransportPlan
+        # (nếu có thì chuẩn hóa ở canonical_cont_size; không chặn gửi nếu thiếu size).
 
         # 8. Số chì (seal)
         if not line.seal_no or len(str(line.seal_no).strip()) < 2:
@@ -243,7 +264,7 @@ class OutboundTemplateBuilder:
     ) -> str:
         """Tạo nội dung thông báo gửi nhóm khách hàng theo mẫu chuẩn."""
         engine = TemplateEngine()
-        loai = line.order_type if line.order_type in ("tra", "dong") else "tra"
+        loai = TemplateEngine._normalize_template_kind(line.order_type) or "tra"
 
         ctx = {
             "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
@@ -290,6 +311,28 @@ class OutboundTemplateBuilder:
         return engine.render_notification("capnhat", ctx, customer_id=customer_id)
 
     @classmethod
+    def build_cancel_notification(
+        cls,
+        line: ExtractedContainerLine,
+        reason: str = "Theo yêu cầu điều vận",
+        customer_name: Optional[str] = None,
+        warehouse_name: Optional[str] = None,
+        customer_id: Optional[str] = None,
+    ) -> str:
+        """Tạo nội dung thông báo HỦY CHUYẾN gửi khách hàng sau khi ĐHVT xác nhận."""
+        engine = TemplateEngine()
+        ctx = {
+            "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
+            "so_cont": line.container_no,
+            "kich_thuoc": line.canonical_cont_size or line.container_size or "40DC",
+            "bien_so": line.truck_plate or line.plate_compact,
+            "diem_den": warehouse_name or line.warehouse_hint or "Kho khách hàng",
+            "ly_do": reason,
+            "ghi_chu": line.note,
+        }
+        return engine.render_notification("huy", ctx, customer_id=customer_id)
+
+    @classmethod
     def evaluate_timing_deadline(
         cls,
         order_type: Optional[str],
@@ -301,7 +344,7 @@ class OutboundTemplateBuilder:
         1. Lệnh Đóng (vỏ kết hợp): Hạn trước 10:00 của ngày đóng xe.
         2. Lệnh Trả: So sánh thời điểm nhận tin với giờ xe đến kho (ETA).
         """
-        loai = (order_type or "tra").lower()
+        loai = TemplateEngine._normalize_template_kind(order_type) or "tra"
         if not message_time:
             return "not_evaluated", "Không áp dụng (không xác định được thời gian gửi tin)"
 
@@ -398,6 +441,8 @@ class OutboundTemplateBuilder:
                     if r not in unique_reasons:
                         unique_reasons.append(r)
                 prefix = f"Xe {line.truck_plate or f'dòng #{line.line_no}'}"
+                if line.container_no:
+                    prefix += f" (cont {line.container_no})"
                 issue_messages.append(f"- {prefix}: {', '.join(unique_reasons)}.")
 
         if not issue_messages:
@@ -405,3 +450,24 @@ class OutboundTemplateBuilder:
 
         header = "[VSICO Bot] Anh/chị vui lòng kiểm tra và bổ sung lại các thông tin còn thiếu/sai sau:\n"
         return header + "\n".join(issue_messages)
+
+    @classmethod
+    def build_clarify_container_reply(cls) -> str:
+        """Tạo câu hỏi phản hồi nhà xe khi tin yêu cầu sửa/đổi xe bị thiếu số container."""
+        return (
+            "[VSICO Bot] Anh/chị vui lòng cho biết Số Container cần cập nhật thông tin "
+            "(ví dụ: MSCU1234567) để hệ thống đối chiếu và cập nhật chính xác."
+        )
+
+    @classmethod
+    def build_update_confirm_reply(
+        cls,
+        container_no: str,
+        changes_list: list[str],
+    ) -> str:
+        """Tạo tin xác nhận gửi lại nhà xe sau khi đã cập nhật thông tin điều xe mới."""
+        changes_str = "; ".join(ch.lstrip("- ").strip() for ch in changes_list) if changes_list else "thông tin điều xe"
+        return (
+            f"[VSICO Bot] Đã ghi nhận cập nhật cho cont {container_no} ({changes_str}) "
+            f"và chuyển thông báo tới khách hàng/ĐHVT."
+        )

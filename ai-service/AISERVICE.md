@@ -80,6 +80,19 @@ Khi dòng kế hoạch vận chuyển đã có sẵn `container_no` (như lệnh
 
 `ai-service` đọc biến môi trường trực tiếp từ tệp `.env` duy nhất tại thư mục gốc (`vsico_zalo_bot/.env`):
 
+### Khởi chạy nhanh bằng Makefile (Khuyên dùng):
+```bash
+cd ai-service
+make run
+```
+
+Các lệnh tiện ích khác trong Makefile:
+- `make run` / `make dev`: Khởi chạy FastAPI Uvicorn tại `0.0.0.0:8001` với cờ `--reload`.
+- `make test`: Chạy kiểm thử tự động với Pytest (`pytest tests -v`).
+- `make check`: Kiểm tra cú pháp và khả năng import ứng dụng FastAPI.
+- `make clean`: Dọn dẹp cache `__pycache__`, `.pytest_cache`, `.ruff_cache`.
+
+### Khởi chạy thủ công:
 ```bash
 cd ai-service
 python3 -m venv .venv

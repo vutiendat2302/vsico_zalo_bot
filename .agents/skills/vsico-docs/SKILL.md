@@ -23,7 +23,7 @@ Dự án áp dụng quy chuẩn đặt tên file tài liệu rõ ràng theo đú
 | **`README.md`** *(Tại thư mục gốc)* | Tổng quan toàn dự án Monorepo, sơ đồ kiến trúc tổng thể, bảng dẫn link tới từng phân hệ và hướng dẫn Quickstart. |
 | **`AGENTS.md`** *(Tại thư mục gốc)* | Quy tắc kiến trúc, quy chuẩn phát triển bắt buộc và danh mục `.agents/skills/` cho AI Agent & Developer. |
 | **`backend/BACKEND.md`** | Tài liệu kỹ thuật chi tiết của Backend FastAPI, cấu trúc Clean Architecture, Makefile, CLI và quản trị DB. |
-| **`frontend/FRONTEND.md`** | Tài liệu kỹ thuật của Frontend Dashboard (Next.js 14 App Router, TypeScript, Zero Mock Data, UI/UX). |
+| **`frontend/FRONTEND.md`** | Tài liệu kỹ thuật của Frontend Dashboard (Next.js 16 App Router, React 19, Tailwind CSS v4, TypeScript, Zero Mock Data, UI/UX). |
 | **`ai-service/AISERVICE.md`** | Tài liệu kỹ thuật của AI & OCR Microservice (Provider, OCR Vision, NLP Extraction, GP1-GP4 Warehouse Matching). |
 | **`database/DATABASE.md`** | Đặc tả chi tiết 19 bảng CSDL MySQL 8.4, Snowflake ID 64-bit, ERD Mermaid và quy tắc đồng bộ TMS. |
 | **`zca-js/ZCA_BRIDGE.md`** | Tài liệu kỹ thuật mô-đun cầu nối Zalo WebSocket Listener & Outbound REST Server. |

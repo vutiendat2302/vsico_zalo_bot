@@ -143,7 +143,7 @@ erDiagram
         string password_hash
         string full_name
         string role "admin | dhvt"
-        string zalo_user_id UK "khớp sender_id Zalo"
+        string zalo_user_id "khớp sender_id Zalo"
         bigint zalo_info_id FK "nhóm ĐHVT chung"
         bigint tms_user_id UK
         bigint forwarder_id
@@ -380,7 +380,7 @@ Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân c
 | `message_type`      | `String(32)`    | Not Null                                                   | `'text'`     | Loại tin nhắn: `'text'` (văn bản), `'image'` (hình ảnh lệnh điều xe), `'file'` (tệp đính kèm)       |
 | `message_text`      | `Text`          | Nullable                                                   | `NULL`       | Nội dung văn bản nguyên bản của tin nhắn (giữ nguyên ký tự `\n`, icon)                                    |
 | `raw_payload`       | `JSON`          | Not Null                                                   |                | Toàn bộ cấu trúc JSON thô máy chủ Zalo đẩy về (để debug / audit)                                           |
-| `processing_status` | `String(32)`    | Not Null, **Index**                                  | `'received'` | Trạng thái: `received`, `processing`, `processed`, `needs_review`, `ignored`, `duplicate`, `cancelled` |
+| `processing_status` | `String(32)`    | Not Null, **Index**                                  | `'RECEIVED'` | Trạng thái chuẩn hóa Enum: `RECEIVED`, `QUEUED`, `PROCESSING`, `PROCESSED`, `NEEDS_REVIEW`, `IGNORED_NON_TEXT`, `IGNORED_CHAT`, `FAILED`, `CANCELLED` |
 | `received_at`       | `DateTime(UTC)` | Not Null                                                   | `utc_now`    | Thời điểm máy chủ Bot tiếp nhận tin nhắn từ mạng                                                             |
 | `zalo_sent_at`      | `DateTime(UTC)` | Nullable                                                   | `NULL`       | Thời điểm người dùng ấn nút gửi tin trên ứng dụng Zalo (timestamp Zalo)                                    |
 | `last_error`        | `Text`          | Nullable                                                   | `NULL`       | Chi tiết lỗi xử lý cuối cùng (nếu gặp lỗi)                                                                    |
@@ -423,7 +423,7 @@ Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân c
 | `password_hash` | `String(255)`   | Not Null                                                   |             | Mật khẩu đã mã hóa một chiều (Bcrypt / Argon2)                                                                                          |
 | `full_name`     | `String(255)`   | Not Null                                                   |             | Họ và tên đầy đủ của nhân viên ĐHVT / Admin                                                                                          |
 | `role`          | `String(32)`    | Not Null, **Index**                                  | `'dhvt'`  | Phân quyền hệ thống: `'admin'` (Quản trị toàn quyền), `'dhvt'` (Nhân viên Điều hành vận tải)                                 |
-| `zalo_user_id`  | `String(128)`   | **Unique**, Nullable, **Index**                | `NULL`    | ID tài khoản Zalo cá nhân của nhân viên (khớp `zalo_messages.sender_id` để Bot nhận diện ĐHVT khi hỏi tra cứu trên Zalo) |
+| `zalo_user_id`  | `String(128)`   | Nullable, **Index**                                        | `NULL`    | ID tài khoản Zalo cá nhân của nhân viên (khớp `zalo_messages.sender_id` để Bot nhận diện ĐHVT khi hỏi tra cứu trên Zalo) |
 | `zalo_info_id`  | `BigInteger`    | **FK** (`zalo_info.id`), Nullable, **Index** | `NULL`    | Nhóm Zalo ĐHVT chung mà nhân viên này tham gia (Quan hệ Nhiều `users` thuộc Một nhóm `zalo_info` có `role = 'dhvt'`)          |
 | `tms_user_id`   | `BigInteger`    | **Unique**, Nullable, **Index**                | `NULL`    | ID tài khoản người dùng tương ứng trên phần mềm TMS (kiểu số nguyên `BigInteger` từ TMS)                                       |
 | `forwarder_id`  | `BigInteger`    | Nullable, **Index**                                  | `NULL`    | ID đơn vị Forwarder trên phần mềm TMS mà tài khoản này phụ trách                                                                    |
@@ -545,13 +545,13 @@ Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân c
 | `zalo_msg_id`         | `String(128)`   | **Unique**, Nullable                                     | `NULL`      | ID tin trên Zalo sau khi gửi thành công. Dùng để quote khi đổi xe/hủy chuyến và để khớp khi người dùng quote tin Bot |
 | `approved_by_user_id` | `BigInteger`    | **FK** (`users.id`), Nullable, **Index**                 | `NULL`      | Nhân viên ĐHVT / Admin duyệt trên Web (`NULL` nếu gửi tự động)                                                       |
 | `approved_at`         | `DateTime(UTC)` | Nullable                                                 | `NULL`      | Thời điểm duyệt trên Web                                                                                             |
-| `status`              | `String(32)`    | Not Null, **Index**                                      | `'cho_gui'` | `'cho_duyet'` (chờ ĐHVT duyệt trên Web), `'cho_gui'` (sẵn sàng, chờ worker gửi), `'da_gui'`, `'that_bai'`, `'huy'`   |
+| `status`              | `String(32)`    | Not Null, **Index**                                      | `'PENDING_APPROVAL'` | Trạng thái chuẩn hóa Enum: `'PENDING_APPROVAL'` (chờ ĐHVT duyệt trên Web), `'PENDING_SEND'` (sẵn sàng gửi), `'SENT'`, `'FAILED'`, `'CANCELLED'`, `'IGNORED_DUPLICATE'`   |
 | `attempt_count`       | `Integer`       | Not Null                                                 | `0`         | Số lần đã thử gửi qua cổng Zalo                                                                                      |
 | `last_error`          | `Text`          | Nullable                                                 | `NULL`      | Chi tiết lỗi gửi tin nếu thất bại                                                                                    |
 | `created_at`          | `DateTime(UTC)` | Not Null                                                 | `utc_now`   | Thời điểm tạo bản tin                                                                                                |
 | `sent_at`             | `DateTime(UTC)` | Nullable                                                 | `NULL`      | Thời điểm gửi thành công                                                                                             |
 
-> Duyệt tin chờ gửi khách (`status = 'cho_duyet'`) chỉ thực hiện trên Web. Nhóm Zalo ĐHVT nhận thông báo (`message_kind = 'dhvt_notify'`) và Bot không nhận lệnh duyệt từ nhóm này.
+> Duyệt tin chờ gửi khách (`status = 'PENDING_APPROVAL'`) chỉ thực hiện trên Web. Nhóm Zalo ĐHVT nhận thông báo (`message_kind = 'dhvt_notify'`) và Bot không nhận lệnh duyệt từ nhóm này.
 ---
 
 #### BẢNG 9: `truck_records`
@@ -593,8 +593,8 @@ Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân c
 | `estimated_at`           | `DateTime(UTC)` | Nullable                                                         | `NULL`          | Giờ hẹn có mặt tại kho (bóc tách từ tin nhắn hoặc kế hoạch)                                                   |
 | `note`                   | `Text`          | Nullable                                                         | `NULL`          | Ghi chú phát sinh của container                                                                                        |
 | `version`                | `Integer`       | Not Null                                                         | `1`             | Phiên bản nghiệp vụ của chuyến. Tăng `+1` khi đổi biển số, tài xế, SĐT, seal, kho, số cont, giờ hẹn hoặc khi hủy; **không** tăng khi chỉ đổi `tms_sync_status`, `updated_at`, `extraction_run_id` |
-| `status`                 | `String(32)`    | Not Null, **Index**                                        | `'pending'`     | Trạng thái thẩm định: `'pending'`, `'valid'`, `'needs_review'`, `'rejected'`, `'cancelled'`                |
-| `tms_sync_status`        | `String(32)`    | Not Null                                                         | `'not_started'` | Trạng thái đồng bộ sang TMS: `'not_started'`, `'synced'`, `'failed'`                                           |
+| `status`                 | `String(32)`    | Not Null, **Index**                                        | `'PENDING'`     | Trạng thái thẩm định: `'PENDING'`, `'VALID'`, `'NEEDS_REVIEW'`, `'REJECTED'`, `'CANCELLED'`                |
+| `tms_sync_status`        | `String(32)`    | Not Null                                                         | `'NOT_STARTED'` | Trạng thái đồng bộ sang TMS: `'NOT_STARTED'`, `'PENDING'`, `'SYNCED'`, `'FAILED'`, `'NEEDS_REVIEW'`       |
 | `created_at`             | `DateTime(UTC)` | Not Null                                                         | `utc_now`       | Thời gian tạo bản ghi                                                                                                  |
 | `updated_at`             | `DateTime(UTC)` | Not Null                                                         | `utc_now`       | Thời gian cập nhật bản ghi gần nhất                                                                                 |
 
@@ -820,3 +820,7 @@ Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân c
 > Tra "khách quote tin này là các chuyến nào": `zalo_messages.quote_msg_id` ➔ `outbound_messages.zalo_msg_id` ➔ các dòng của bảng này.
 
 ---
+
+### Bổ sung kế hoạch nội bộ khi chưa kết nối TMS
+
+`transport_plans` bổ sung `carrier_id` (BIGINT FK carriers, index), `driver_name` (VARCHAR 128), `driver_phone` (VARCHAR 16), `version` (INT, mặc định 1), `tms_sync_status` (VARCHAR 32, mặc định NOT_STARTED). Cập nhật nội bộ đặt PENDING, không đồng nghĩa TMS đã nhận. API cập nhật sử dụng version để chống ghi đè.

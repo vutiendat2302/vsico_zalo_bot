@@ -47,9 +47,6 @@ class PaddleOCRClient:
         if payload_dict.get("image_url") or payload_dict.get("image_base64") or payload_dict.get("image_path"):
             return True
 
-        if payload_dict.get("mock_ocr_text") is not None:
-            return True
-
         if str(payload_dict.get("msgType", "")).lower() in ("chat.photo", "photo") or str(payload_dict.get("msg_type", "")).lower() in ("image", "photo", "chat.photo"):
             return True
 
@@ -112,13 +109,7 @@ class PaddleOCRClient:
             logger.info("Chức năng OCR đang bị tắt (OCR_ENABLED=False).")
             return "", 0.0, []
 
-        # 1. Hỗ trợ dữ liệu giả lập kiểm thử nhanh (Mock test)
-        mock_text = payload_dict.get("mock_ocr_text")
-        if mock_text is not None:
-            text_str = str(mock_text).strip()
-            return text_str, 0.99, [{"text": text_str, "confidence": 0.99, "box": []}] if text_str else ("", 0.0, [])
-
-        # 2. Thu thập nguồn ảnh (URL, Base64, Đường dẫn tệp)
+        # Thu thập nguồn ảnh thật (URL, Base64, Đường dẫn tệp) để gửi sang OCR
         image_input = cls._find_image_input(payload_dict)
         if not image_input:
             logger.debug("Không tìm thấy thông tin hình ảnh hợp lệ trong payload.")
@@ -145,6 +136,18 @@ class PaddleOCRClient:
             logger.warning("Không thể đọc hoặc chuẩn hóa dữ liệu ảnh đầu vào sang Base64.")
             return "", 0.0, []
 
+        # 1b. Ưu tiên gọi AI & OCR Microservice (`ai-service` /api/v1/ocr)
+        from src.infrastructure.ai_service_client import AIServiceClient
+
+        service_res = AIServiceClient.perform_ocr(
+            image_base64=base64_str,
+            lang=settings.OCR_LANG or "vi",
+        )
+        if service_res is not None:
+            if service_res.has_text and service_res.text.strip():
+                return service_res.text, service_res.confidence, service_res.lines
+            return "", 0.0, []
+
         # 2. Gọi HTTP Service PaddleOCR tự host (PaddleHub Serving / Microservice)
         result = cls._call_remote_paddleocr(base64_str)
         if result is not None:
@@ -155,10 +158,11 @@ class PaddleOCRClient:
         if local_result is not None:
             return local_result
 
-        # 4. Fallback Multimodal AI: Sử dụng Gemini Vision khi PaddleOCR cục bộ không khả dụng
-        ai_result = cls._call_ai_vision(base64_str)
-        if ai_result is not None:
-            return ai_result
+        # 4. Fallback Multimodal AI: Chỉ gọi trực tiếp Vision từ Backend nếu bật AI_DIRECT_GEMINI_FALLBACK
+        if settings.AI_DIRECT_GEMINI_FALLBACK:
+            ai_result = cls._call_ai_vision(base64_str)
+            if ai_result is not None:
+                return ai_result
 
         logger.warning(
             "Dịch vụ OCR tại '%s' hiện không phản hồi và không có fallback khả dụng. Trả về kết quả rỗng.",

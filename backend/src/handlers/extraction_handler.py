@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import re
 import time
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select, update
@@ -24,16 +24,25 @@ from sqlalchemy.orm import Session
 
 from src.config.settings import settings
 from src.domain.enums import (
+    CorrectionStatus,
     Intent,
     MessageStatus,
+    OrderType,
+    OutboundStatus,
+    ReviewStatus,
     RoutingStatus,
+    SendMode,
     TmsSyncStatus,
     ValidationStatus,
 )
+from contextlib import nullcontext
 from src.domain.models import ExtractedContainerLine
 from src.domain.rules import compact_plate
+from src.handlers.carrier_flow_service import CarrierFlowService
+from src.handlers.dhvt_service import DhvtNotificationService
 from src.infrastructure.models import (
     BotReply,
+    Carrier,
     ContainerJob,
     Customer,
     CustomerAlias,
@@ -49,6 +58,7 @@ from src.infrastructure.models import (
     ZaloGroup,
     ZaloMessage,
 )
+from src.infrastructure.snowflake import snowflake
 from src.infrastructure.zalo_dispatcher import ZaloDispatcher
 from src.messaging.classifier import IntentClassifier
 from src.observability.logging import get_logger
@@ -91,19 +101,34 @@ class ExtractionHandler:
 
         # 1. Tra cứu Kế hoạch vận chuyển (TransportPlan) theo số container (cont_no)
         if line.container_no:
-            plan_query = (
-                select(TransportPlan)
-                .where(TransportPlan.container_no == line.container_no.strip().upper())
-                .order_by(
-                    TransportPlan.plan_date.desc(),
-                    TransportPlan.stt.asc(),
-                    TransportPlan.id.asc(),
+            plan_query = select(TransportPlan).where(
+                TransportPlan.container_no == line.container_no.strip().upper()
+            )
+            if line.carrier_id:
+                plan_query = plan_query.where(
+                    or_(
+                        TransportPlan.carrier_id == line.carrier_id,
+                        TransportPlan.carrier_id.is_(None),
+                    )
                 )
+            plan_query = plan_query.order_by(
+                TransportPlan.plan_date.desc(),
+                TransportPlan.stt.asc(),
+                TransportPlan.id.asc(),
             )
             candidate_plans = list(db.scalars(plan_query).all())
             plan: Optional[TransportPlan] = None
 
             if candidate_plans:
+                def _norm_otype(val: Optional[str]) -> Optional[str]:
+                    v = (val or "").strip().lower()
+                    if v in ("load", "dong", "xuat"):
+                        return OrderType.LOAD.value
+                    if v in ("return", "tra", "nhap"):
+                        return OrderType.RETURN.value
+                    return None
+
+                line_otype_norm = _norm_otype(line.order_type)
                 if line.customer_hint:
                     clean_msg_cust = line.customer_hint.strip().lower()
                     cust_matches = [
@@ -114,10 +139,10 @@ class ExtractionHandler:
                         )
                     ]
                     if cust_matches:
-                        if line.order_type:
+                        if line_otype_norm:
                             order_cust_matches = [
                                 p for p in cust_matches
-                                if p.order_type and p.order_type.strip().lower() == line.order_type.strip().lower()
+                                if _norm_otype(p.order_type) == line_otype_norm
                             ]
                             plan = order_cust_matches[0] if order_cust_matches else cust_matches[0]
                         else:
@@ -127,19 +152,26 @@ class ExtractionHandler:
                         plan = None
                 else:
                     # Tin nhắn không ghi khách hàng, lấy kế hoạch để bổ sung
-                    if line.order_type:
+                    if line_otype_norm:
                         order_matches = [
                             p for p in candidate_plans
-                            if p.order_type and p.order_type.strip().lower() == line.order_type.strip().lower()
+                            if _norm_otype(p.order_type) == line_otype_norm
                         ]
                         plan = order_matches[0] if order_matches else candidate_plans[0]
                     else:
                         plan = candidate_plans[0]
 
             if plan is not None:
+                line.transport_plan_id = plan.id
                 # Ưu tiên lấy thông tin chuẩn từ bảng kế hoạch đã ghép với khách hàng
                 if plan.order_type and (not line.order_type or line.inferred_order_type):
-                    line.order_type = plan.order_type
+                    mapped_otype = (plan.order_type or "").strip().lower()
+                    if mapped_otype in ("load", "dong", "xuat"):
+                        line.order_type = OrderType.LOAD.value
+                    elif mapped_otype in ("return", "tra", "nhap"):
+                        line.order_type = OrderType.RETURN.value
+                    else:
+                        line.order_type = plan.order_type
                 if plan.customer_name:
                     if not line.customer_hint:
                         line.customer_hint = plan.customer_name
@@ -147,9 +179,9 @@ class ExtractionHandler:
                 if plan.customer_id:
                     cust_id = plan.customer_id
                 if plan.delivery_address or plan.address:
-                    if not line.warehouse_hint:
-                        line.warehouse_hint = (plan.delivery_address or plan.address)[:255]
-                    line.warehouse_code_or_id = line.warehouse_code_or_id or (plan.delivery_address or plan.address)[:255]
+                    plan_addr = (plan.delivery_address or plan.address)[:255]
+                    line.warehouse_hint = plan_addr
+                    line.warehouse_code_or_id = line.warehouse_code_or_id or plan_addr
                 if plan.warehouse_id:
                     wh_id = plan.warehouse_id
                 if plan.seal_no and not line.seal_no:
@@ -278,8 +310,8 @@ class ExtractionHandler:
                 new_plan_zg = ZaloGroup(
                     zalo_group_id=clean_plan_grp,
                     name=f"Nhóm Khách Hàng {clean_plan_grp}",
-                    group_role="destination",
-                    send_mode="tu_dong",
+                    group_role="DESTINATION",
+                    send_mode=SendMode.AUTO.value,
                     is_active=True,
                     is_test=is_test_mode,
                 )
@@ -350,8 +382,8 @@ class ExtractionHandler:
             default_grp = ZaloGroup(
                 zalo_group_id=default_gid,
                 name="Nhóm Khách Hàng Test" if is_test_mode else "Nhóm Khách Hàng VSICO",
-                group_role="destination",
-                send_mode="tu_dong",
+                group_role="DESTINATION",
+                send_mode=SendMode.AUTO.value,
                 is_active=True,
                 is_test=is_test_mode,
             )
@@ -395,6 +427,10 @@ class ExtractionHandler:
             db.refresh(message)
             return message
 
+        from src.handlers.conversation_service import route_conversation
+        if route_conversation(db, message):
+            return message
+
         # Chống xử lý trùng lặp tuyệt đối (Idempotency): Nếu đã có lần chạy bóc tách thì bỏ qua
         existing_run = db.scalar(
             select(ExtractionRun.id).where(ExtractionRun.message_id == message.id)
@@ -431,7 +467,15 @@ class ExtractionHandler:
             has_shipping_info = has_plate or has_cont
 
         if is_image_msg and (not raw_text or is_placeholder or not has_shipping_info):
+            img_source = PaddleOCRClient._find_image_input(message.raw_payload or {})
             ocr_text, ocr_conf, ocr_boxes = PaddleOCRClient.extract_text_from_payload(message.raw_payload or {})
+            CarrierFlowService.record_image_file_metadata(
+                db=db,
+                message=message,
+                payload_dict=message.raw_payload or {},
+                image_input=img_source,
+                ocr_meta={"provider": settings.OCR_PROVIDER, "confidence": ocr_conf, "boxes_count": len(ocr_boxes)},
+            )
             if ocr_text and ocr_text.strip():
                 if not raw_text or is_placeholder:
                     raw_text = ocr_text.strip()
@@ -467,6 +511,32 @@ class ExtractionHandler:
         if not raw_text:
             message.processing_status = MessageStatus.IGNORED_NON_TEXT.value
             db.commit()
+            return message
+
+        # 1b. Xác định ngữ cảnh Nhà xe / Nhóm gửi và kiểm tra nhóm có bị khóa không
+        carrier_ctx = CarrierFlowService.resolve_carrier_context(db, message)
+        if carrier_ctx.is_blocked_inactive:
+            db.add(
+                ReviewCase(
+                    id=snowflake.generate(),
+                    message_id=message.id,
+                    case_type="INACTIVE_CARRIER_GROUP",
+                    reason=f"Nhóm gửi '{message.group_id}' đang bị tạm khóa hoặc ngưng hoạt động.",
+                    details={"group_id": message.group_id, "sender_id": message.sender_id},
+                    status=ReviewStatus.PENDING.value,
+                )
+            )
+            CarrierFlowService.alert_dhvt(
+                db=db,
+                title="NHOM NHA XE BI KHOA GUI TIN",
+                body=f"Nhóm {message.group_id} (người gửi {message.sender_id}) gửi tin khi nhóm đang bị vô hiệu hóa.",
+                entity_type="zalo_message",
+                entity_id=str(message.id),
+                is_test_msg=carrier_ctx.is_test_msg,
+            )
+            message.processing_status = MessageStatus.NEEDS_REVIEW.value
+            db.commit()
+            db.refresh(message)
             return message
 
         prev_dup_id = db.scalar(
@@ -514,16 +584,122 @@ class ExtractionHandler:
         extracted_lines = TripParser.parse_message(raw_text, reference_time=ref_time)
         validated_lines = ContainerValidator.validate_all(extracted_lines)
         used_model_name = "vsico-hybrid-rule-v2"
+        used_prompt_version = "v2.0"
+        masked_input_for_log: Optional[str] = None
 
-        # 4. Cơ chế AI Fallback (chỉ kích hoạt khi Rule-based không bắt được cấu trúc và AI_ENABLED=True)
-        # Lưu ý: SĐT sẽ tự động được che thành xxxx khi gửi cho AI và khôi phục lại số thật khi lưu DB
-        if AIFallbackExtractor.should_trigger_ai(validated_lines):
-            ai_lines = AIFallbackExtractor.extract_with_ai(raw_text, reference_time=ref_time)
-            if ai_lines:
-                validated_lines = ContainerValidator.validate_all(ai_lines)
-                used_model_name = f"ai-fallback:{settings.AI_PROVIDER}:{settings.AI_MODEL_NAME}"
+        # Lấy nội dung tin nhắn được trích dẫn (nếu có) để hỗ trợ ngữ cảnh AI và gộp bổ sung
+        quoted_text: Optional[str] = None
+        if message.quote_msg_id:
+            q_reply = db.scalar(select(BotReply).where(BotReply.zalo_msg_id == message.quote_msg_id))
+            if q_reply:
+                quoted_text = q_reply.reply_text
+            else:
+                q_msg = db.scalar(select(ZaloMessage).where(ZaloMessage.zalo_message_id == message.quote_msg_id))
+                if q_msg:
+                    quoted_text = q_msg.message_text
 
-        # 5. Tra cứu danh mục (Customer / Alias / Warehouse / TransportPlan theo cont_no)
+        # 4. Cơ chế AI / LLM Extraction qua `ai-service` (Rule-first: chỉ gọi AI khi Rule-based thiếu/mơ hồ)
+        has_any_rule_entity = any(
+            ln.container_no
+            or ln.truck_plate
+            or ln.seal_no
+            or ln.driver_phone
+            or ln.driver_name
+            or ln.eta_time
+            for ln in validated_lines
+        )
+        should_ai = AIFallbackExtractor.should_trigger_ai(validated_lines, intent=intent)
+        need_ai_context = should_ai or (bool(quoted_text) and not has_any_rule_entity)
+        if need_ai_context:
+            active_plans = CarrierFlowService.load_active_plans_for_ai(db, raw_text, carrier_ctx.numeric_carrier_id)
+            ai_lines, ai_res = AIFallbackExtractor.extract_with_ai_context(
+                raw_text=raw_text,
+                reference_time=ref_time,
+                sender_id=message.sender_id,
+                group_id=message.group_id,
+                carrier_id=carrier_ctx.numeric_carrier_id,
+                quote_message=quoted_text,
+                active_plans=active_plans,
+                message_type=message.message_type or "text",
+            )
+            if ai_res is not None:
+                used_prompt_version = ai_res.prompt_version
+                masked_input_for_log = ai_res.raw_masked_text
+                # Tinh chỉnh intent theo phân tích ngữ cảnh từ `ai-service` nếu phù hợp
+                if intent == Intent.PARSE_TRUCK_INFO and ai_res.intent in ("UPDATE_REQUEST", "SUPPLEMENT", "CANCEL_REQUEST"):
+                    intent = Intent(ai_res.intent)
+            if ai_lines and (should_ai or not has_any_rule_entity):
+                if len(validated_lines) == 1 and len(ai_lines) == 1:
+                    base_ln = validated_lines[0]
+                    ai_ln = ai_lines[0]
+                    for attr in (
+                        "truck_plate",
+                        "trailer_plate",
+                        "driver_name",
+                        "driver_phone",
+                        "container_no",
+                        "container_size",
+                        "seal_no",
+                        "order_type",
+                        "customer_hint",
+                        "warehouse_hint",
+                        "eta_text",
+                        "eta_time",
+                        "estimated_at",
+                    ):
+                        if not getattr(base_ln, attr, None) and getattr(ai_ln, attr, None):
+                            setattr(base_ln, attr, getattr(ai_ln, attr))
+                    validated_lines = ContainerValidator.validate_all([base_ln])
+                else:
+                    validated_lines = ContainerValidator.validate_all(ai_lines)
+                used_model_name = ai_res.model_name if ai_res else f"ai-fallback:{settings.AI_PROVIDER}:{settings.AI_MODEL_NAME}"
+
+        for line in validated_lines:
+            line.carrier_id = carrier_ctx.numeric_carrier_id
+
+        # 4b. Xử lý nhanh các nhánh đặc biệt theo luồng Bot - Nhà xe (Hủy / Bổ sung / Sửa đổi xe)
+        if intent == Intent.CANCEL_REQUEST:
+            return CarrierFlowService.handle_cancel_request(db, message, validated_lines, carrier_ctx)
+
+        if intent == Intent.SUPPLEMENT or message.quote_msg_id or any(
+            not (ln.truck_plate and ln.container_no and ln.driver_name and ln.seal_no) for ln in validated_lines
+        ):
+            supp_job, supp_reply = CarrierFlowService.find_pending_supplement_target(db, message, validated_lines)
+            if supp_job is not None and intent != Intent.UPDATE_REQUEST:
+                incoming_line = validated_lines[0] if validated_lines else ExtractedContainerLine(line_text=raw_text)
+                return CarrierFlowService.process_supplement_into_job(
+                    db=db,
+                    message=message,
+                    target_job=supp_job,
+                    matched_reply=supp_reply,
+                    incoming_line=incoming_line,
+                    carrier_ctx=carrier_ctx,
+                    enrich_fn=cls._enrich_from_catalog_and_plans,
+                )
+
+        if intent == Intent.SUPPLEMENT:
+            db.add(BotReply(message_id=message.id, sender_id=message.sender_id,
+                            reply_text="Chưa xác định duy nhất chuyến cần bổ sung. Vui lòng quote đúng tin và ghi số container hoặc biển số xe.",
+                            status=CorrectionStatus.PENDING.value,
+                            fix_deadline=datetime.now(timezone.utc) + timedelta(minutes=30)))
+            db.add(ReviewCase(message_id=message.id, case_type="AMBIGUOUS_SUPPLEMENT",
+                              reason="Tin bổ sung chưa xác định được duy nhất chuyến trong nhóm.", status="PENDING"))
+            message.processing_status = MessageStatus.NEEDS_REVIEW.value
+            db.commit()
+            return message
+
+        if intent == Intent.UPDATE_REQUEST:
+            upd_res = CarrierFlowService.handle_update_request(
+                db=db,
+                message=message,
+                lines=validated_lines,
+                carrier_ctx=carrier_ctx,
+                enrich_fn=cls._enrich_from_catalog_and_plans,
+            )
+            if upd_res is not None:
+                return upd_res
+
+        # 5. Tra cứu danh mục (Customer / Alias / Warehouse / TransportPlan / AI Warehouse Matching)
         any_unmatched_wh = False
         any_unmatched_cust = False
         any_ambiguous = False
@@ -531,6 +707,11 @@ class ExtractionHandler:
 
         for idx, line in enumerate(validated_lines):
             wh_id, cust_id, u_wh, u_cust, amb = cls._enrich_from_catalog_and_plans(db, line)
+            if not wh_id and line.warehouse_hint:
+                ai_wh_id = CarrierFlowService.match_warehouse_via_ai_if_needed(db, line, carrier_ctx, cust_id)
+                if ai_wh_id:
+                    wh_id = ai_wh_id
+                    u_wh = False
             line_catalog_map[idx] = (wh_id, cust_id)
             if u_wh:
                 any_unmatched_wh = True
@@ -562,9 +743,9 @@ class ExtractionHandler:
         extraction_run = ExtractionRun(
             message_id=message.id,
             model_name=used_model_name,
-            prompt_version="v2.0",
+            prompt_version=used_prompt_version,
             input_data={
-                "raw_text": raw_text,
+                "raw_text": masked_input_for_log or raw_text,
                 "group_id": message.group_id,
                 "sender_id": message.sender_id,
                 **({"ocr": ocr_metadata} if ocr_metadata else {}),
@@ -588,6 +769,8 @@ class ExtractionHandler:
         # 8. Lưu từng xe (`truck_records`) và từng container (`container_jobs`)
         truck_cache: dict[tuple[Optional[str], Optional[str], Optional[str], Optional[str]], TruckRecord] = {}
         has_review_or_error = False
+        is_auto_group = False
+        is_test_msg = carrier_ctx.is_test_msg
 
         for idx, line in enumerate(validated_lines):
             truck_key = (
@@ -668,6 +851,7 @@ class ExtractionHandler:
                 routing_status=RoutingStatus.PENDING.value,
                 tms_sync_status=TmsSyncStatus.NOT_STARTED.value,
                 raw_fields={
+                    "transport_plan_id": line.transport_plan_id,
                     "source_format": line.source_format,
                     "plan_date": line.plan_date,
                     "eta": line.eta_time,
@@ -695,7 +879,7 @@ class ExtractionHandler:
                     .join(OutboundMessage, OutboundMessage.id == OutboundMessageItem.outbound_message_id)
                     .filter(
                         ContainerJob.container_no == line.container_no,
-                        OutboundMessage.status == "da_gui",
+                        OutboundMessage.status.in_([OutboundStatus.SENT.value, "da_gui"]),
                         ContainerJob.id != container_job.id,
                     )
                     .order_by(ContainerJob.id.desc())
@@ -766,47 +950,146 @@ class ExtractionHandler:
                 )
 
             wh_id, cust_id = line_catalog_map.get(idx, (None, None))
-            target_grp_id, target_zalo_grp_id = cls._find_target_zalo_group(
-                db=db,
-                customer_id=cust_id,
-                warehouse_id=wh_id,
-                order_type=line.order_type,
-                source_group_id_str=message.group_id,
-                plan_group_id_str=line.target_group_id,
-                customer_hint=line.customer_hint,
-            )
+            plan_check = CarrierFlowService.verify_plan_and_carrier(db, line, carrier_ctx, cust_id)
+            if plan_check.matched_plan is not None:
+                mp = plan_check.matched_plan
+                enrichment_updated = False
+                if cust_id is None and mp.customer_id:
+                    cust_id = mp.customer_id
+                    container_job.customer_id = cust_id
+                    cust_obj = db.get(Customer, cust_id)
+                    enrichment_updated = True
+                if not line.customer_hint and mp.customer_name:
+                    line.customer_hint = mp.customer_name
+                    container_job.customer_hint = mp.customer_name
+                    enrichment_updated = True
+                if wh_id is None and mp.warehouse_id:
+                    wh_id = mp.warehouse_id
+                    container_job.warehouse_id = wh_id
+                    wh_obj = db.get(Warehouse, wh_id)
+                    enrichment_updated = True
+                if not line.warehouse_hint and mp.delivery_address:
+                    line.warehouse_hint = mp.delivery_address
+                    container_job.warehouse_hint = mp.delivery_address
+                    enrichment_updated = True
+                if not line.target_group_id and mp.group_id:
+                    line.target_group_id = mp.group_id
+                if not line.transport_plan_id:
+                    line.transport_plan_id = mp.id
+                    cur_raw = dict(container_job.raw_fields or {}) if isinstance(container_job.raw_fields, dict) else {}
+                    cur_raw["transport_plan_id"] = mp.id
+                    container_job.raw_fields = cur_raw
+                if enrichment_updated:
+                    line.warnings = [w for w in (line.warnings or []) if w != "Thiếu/sai: Khách hàng"]
+                    is_complete, missing_fields = OutboundTemplateBuilder.check_core_fields_completeness(line)
+                    if is_complete and line.check_digit_valid is not False:
+                        line.validation_status = ValidationStatus.VALID.value
+                        container_job.validation_status = ValidationStatus.VALID.value
+                    cust_name = cust_obj.name if cust_obj else (line.customer_hint or "Quý khách hàng")
+                    wh_name = wh_obj.name if wh_obj else (line.warehouse_hint or "Kho khách hàng")
+                    cust_tms_code = cust_obj.tms_customer_id if cust_obj else None
+                    if is_update and changes_list:
+                        notification_text = OutboundTemplateBuilder.build_update_notification(
+                            line=line,
+                            changes_list=changes_list,
+                            customer_name=cust_name,
+                            warehouse_name=wh_name,
+                            customer_id=cust_tms_code,
+                        )
+                    else:
+                        notification_text = OutboundTemplateBuilder.build_customer_notification(
+                            line=line,
+                            customer_name=cust_name,
+                            warehouse_name=wh_name,
+                            customer_id=cust_tms_code,
+                        )
 
-            # Xác định chế độ gửi của nhóm (send_mode): 'tu_dong' (Tự động) hoặc 'cho_duyet' (Chờ duyệt)
+            routing_blocked_reason: Optional[str] = None
+            routing_blocked_type: Optional[str] = None
+            if carrier_ctx.is_unregistered_group:
+                routing_blocked_type = "UNREGISTERED_CARRIER_GROUP"
+                routing_blocked_reason = f"Nhóm gửi '{message.group_id}' chưa được đăng ký trong danh mục nhóm nhà xe VSICO."
+            elif plan_check.is_carrier_mismatch:
+                routing_blocked_type = "CARRIER_MISMATCH"
+                routing_blocked_reason = plan_check.reason
+            elif plan_check.is_shipping_missing:
+                routing_blocked_type = (
+                    "PLAN_SYNC_REQUIRED"
+                    if "nhiều dòng kế hoạch" in (plan_check.reason or "")
+                    else "SHIPPING_NOT_FOUND"
+                )
+                routing_blocked_reason = plan_check.reason
+
+            target_grp_id, target_zalo_grp_id = (None, None)
+            if not routing_blocked_type:
+                target_grp_id, target_zalo_grp_id = CarrierFlowService.find_target_zalo_group_safe(
+                    db=db,
+                    customer_id=cust_id,
+                    warehouse_id=wh_id,
+                    order_type=line.order_type,
+                    source_group_id_str=message.group_id,
+                    plan_group_id_str=line.target_group_id,
+                    customer_hint=line.customer_hint,
+                )
+                if target_grp_id is None:
+                    routing_blocked_type = "ROUTING_NOT_FOUND"
+                    routing_blocked_reason = f"Không tìm thấy nhóm Zalo khách hàng cho cont {line.container_no or 'N/A'}."
+
+            if routing_blocked_type:
+                has_review_or_error = True
+                container_job.validation_status = ValidationStatus.NEEDS_REVIEW.value
+                container_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
+                carrier_obj = (
+                    db.get(Carrier, carrier_ctx.source_group.carrier_id)
+                    if (carrier_ctx.source_group and carrier_ctx.source_group.carrier_id)
+                    else None
+                )
+                DhvtNotificationService.create_or_merge_review_case(
+                    db=db,
+                    message_id=message.id,
+                    case_type=routing_blocked_type,
+                    reason=routing_blocked_reason or "Chặn gửi do sai lệch nhà xe hoặc thiếu tuyến đích.",
+                    container_job_id=container_job.id,
+                    container_no=container_job.container_no,
+                    carrier_name=carrier_obj.name if carrier_obj else None,
+                    details=line.to_dict(),
+                    suggestion="ĐHVT kiểm tra nhà xe/kế hoạch/RouteMap và duyệt trên Web.",
+                    priority="HIGH" if routing_blocked_type in ("CARRIER_MISMATCH", "UNREGISTERED_CARRIER_GROUP") else "NORMAL",
+                    is_test_msg=carrier_ctx.is_test_msg,
+                    notify_zalo=True,
+                )
+                continue
+
+            # Đồng bộ dữ liệu hợp lệ lên bảng TransportPlan cục bộ (kể cả khi outbound bị đánh dấu trùng nhưng plan vẫn trống)
+            if (
+                is_complete
+                and line.validation_status == ValidationStatus.VALID.value
+            ):
+                if not CarrierFlowService.sync_job_with_local_plan_or_review(
+                    db=db,
+                    job=container_job,
+                    source_group=carrier_ctx.source_group,
+                    is_test_msg=carrier_ctx.is_test_msg,
+                ):
+                    has_review_or_error = True
+                    container_job.validation_status = ValidationStatus.NEEDS_REVIEW.value
+                    container_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
+                    continue
+
+            # Xác định chế độ gửi của nhóm (send_mode): 'AUTO' hoặc 'MANUAL'
             target_grp = db.get(ZaloGroup, target_grp_id) if target_grp_id else None
-            source_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == message.group_id))
+            source_grp = carrier_ctx.source_group
 
-            target_mode = (target_grp.send_mode or "tu_dong").strip().lower() if target_grp else "tu_dong"
-            source_mode = (source_grp.send_mode or "tu_dong").strip().lower() if source_grp else "tu_dong"
-            is_auto_group = (target_mode in ("tu_dong", "auto")) and (source_mode in ("tu_dong", "auto"))
+            target_mode = (SendMode(target_grp.send_mode).value if target_grp and target_grp.send_mode else SendMode.AUTO.value)
+            source_mode = (SendMode(source_grp.send_mode).value if source_grp and source_grp.send_mode else SendMode.AUTO.value)
+            is_auto_group = (target_mode == SendMode.AUTO.value) and (source_mode == SendMode.AUTO.value)
 
-            raw_p = message.raw_payload or {}
             target_carrier_group = message.group_id
-            is_test_msg = (
-                bool(raw_p.get("is_test"))
-                or bool(raw_p.get("is_simulation"))
-                or bool(raw_p.get("is_test_runner"))
-                or (source_grp and source_grp.is_test)
-                or (target_carrier_group and (
-                    target_carrier_group.startswith("test_")
-                    or target_carrier_group.startswith("grp_test_")
-                    or target_carrier_group.startswith("pytest_")
-                ))
-                or (message.zalo_message_id and (
-                    message.zalo_message_id.startswith("test_")
-                    or "TC-" in message.zalo_message_id
-                    or "_m1" in message.zalo_message_id
-                ))
-                or (message.sender_id and message.sender_id.startswith("test_"))
-            )
+            is_test_msg = carrier_ctx.is_test_msg
 
             paused_grp_name = (
                 source_grp.name
-                if (source_grp and (source_grp.send_mode or "").strip().lower() in ("cho_duyet", "manual"))
+                if (source_grp and SendMode(source_grp.send_mode).value == SendMode.MANUAL.value)
                 else (target_grp.name if target_grp else (target_zalo_grp_id or "khách hàng"))
             )
 
@@ -814,55 +1097,37 @@ class ExtractionHandler:
             out_last_err: Optional[str] = None
 
             if is_duplicate:
-                out_status = "bo_qua_trung_lap"
+                out_status = OutboundStatus.IGNORED_DUPLICATE.value
                 out_last_err = "Đã gửi thông báo cho cont này trước đó, thông tin không đổi (bỏ qua tránh spam)"
             elif not is_auto_group:
-                # Group ở trạng thái 'cho_duyet':
+                # Group ở trạng thái 'MANUAL':
                 # Kể cả tin nhắn có thỏa mãn thì VẪN CHO VÀO DANH SÁCH ĐỂ DVDH DUYỆT HẾT!
-                out_status = "cho_duyet"
+                out_status = OutboundStatus.PENDING_APPROVAL.value
                 out_zalo_id = None
                 if is_complete:
                     out_last_err = f"Nhóm '{paused_grp_name}' ở chế độ Chờ duyệt (Chờ ĐHVT duyệt trước khi gửi khách)"
                 else:
                     out_last_err = f"Chờ ĐHVT duyệt do thiếu/sai: {', '.join(missing_fields)}"
-            elif is_complete and settings.AUTO_DISPATCH_OUTBOUND and target_zalo_grp_id and not is_test_msg and (
-                (target_zalo_grp_id.isdigit() and target_zalo_grp_id != "2001000000000000001")
-                or (not (target_grp and target_grp.is_test) and not target_zalo_grp_id.startswith("grp_test_") and not target_zalo_grp_id.startswith("test_") and not target_zalo_grp_id.startswith("pytest_"))
-            ):
-                # Gửi thực tế ra Nhóm Zalo đích qua cầu nối ZCA (có cơ chế retry 3 lần)
-                send_ok, real_zalo_msg_id, send_err = ZaloDispatcher.send_to_group(
-                    group_id=target_zalo_grp_id,
-                    message=notification_text,
-                )
-                if send_ok:
-                    out_status = "da_gui"
-                    out_zalo_id = real_zalo_msg_id or f"zalo_oa_{uuid4().hex[:16]}"
-                    out_last_err = None
-                else:
-                    out_status = "that_bai"
-                    out_zalo_id = None
-                    out_last_err = f"Lỗi gửi Zalo sau 3 lần thử: {send_err}"
             elif is_complete:
-                out_status = "da_gui"
-                out_zalo_id = f"zalo_oa_{uuid4().hex[:16]}"
+                out_status = OutboundStatus.PENDING_SEND.value
                 out_last_err = None
             else:
-                out_status = "cho_duyet"
+                out_status = OutboundStatus.PENDING_APPROVAL.value
                 out_zalo_id = None
                 out_last_err = f"Chờ ĐHVT duyệt do thiếu/sai: {', '.join(missing_fields)}"
 
             outbound_msg = OutboundMessage(
                 target_group_id=target_grp_id,
-                order_type=line.order_type or "tra",
+                order_type=line.order_type or OrderType.LOAD.value,
                 message_kind=message_kind,
                 content=notification_text,
-                idempotency_key=f"outbound_{message.id}_{idx}_{uuid4().hex[:8]}",
+                idempotency_key=f"outbound:{message.id}:{idx}:{message_kind}",
                 status=out_status,
-                attempt_count=1 if (out_status == "da_gui" and not is_duplicate) else 0,
+                attempt_count=1 if (out_status == OutboundStatus.SENT.value and not is_duplicate) else 0,
                 zalo_message_id=out_zalo_id,
-                approved_by="auto_system" if (out_status == "da_gui" and not is_duplicate) else None,
-                approved_at=datetime.now(timezone.utc) if (out_status == "da_gui" and not is_duplicate) else None,
-                sent_at=datetime.now(timezone.utc) if out_status == "da_gui" else None,
+                approved_by="auto_system" if (out_status == OutboundStatus.SENT.value and not is_duplicate) else None,
+                approved_at=datetime.now(timezone.utc) if (out_status == OutboundStatus.SENT.value and not is_duplicate) else None,
+                sent_at=datetime.now(timezone.utc) if out_status == OutboundStatus.SENT.value else None,
                 last_error=out_last_err,
             )
             db.add(outbound_msg)
@@ -873,6 +1138,33 @@ class ExtractionHandler:
                 container_job_id=container_job.id,
             )
             db.add(out_item)
+            if not is_duplicate and is_complete:
+                CarrierFlowService.supersede_pending_outbounds_for_container(
+                    db, container_job.container_no, keep_outbound_id=outbound_msg.id
+                )
+
+            if out_status == OutboundStatus.PENDING_APPROVAL.value and is_complete and not is_auto_group:
+                DhvtNotificationService.notify_pending_outbound(
+                    db=db,
+                    outbound=outbound_msg,
+                    target_group_name=target_grp.name if target_grp else str(target_zalo_grp_id),
+                    containers=[container_job.container_no] if container_job.container_no else [],
+                    reason=out_last_err or "Tin nhắn nhóm MANUAL cần ĐHVT duyệt gửi khách.",
+                    is_test_msg=is_test_msg,
+                )
+
+            if out_status == OutboundStatus.FAILED.value:
+                has_review_or_error = True
+                container_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
+                CarrierFlowService.create_send_failed_alert(
+                    db=db,
+                    message=message,
+                    container_job=container_job,
+                    outbound_msg=outbound_msg,
+                    target_group_name=target_grp.name if target_grp else str(target_zalo_grp_id),
+                    error_text=out_last_err or "Gửi Zalo thất bại sau 3 lần thử",
+                    is_test_msg=is_test_msg,
+                )
 
             if not is_complete or line.validation_status in (
                 ValidationStatus.INVALID.value,
@@ -885,28 +1177,34 @@ class ExtractionHandler:
                     else "missing_fields"
                 )
                 reason_text = ", ".join(line.warnings) if line.warnings else f"Thiếu hoặc sai trường: {', '.join(missing_fields)}"
-                review_case = ReviewCase(
+                DhvtNotificationService.create_or_merge_review_case(
+                    db=db,
                     message_id=message.id,
-                    container_job_id=container_job.id,
                     case_type=case_type,
                     reason=reason_text,
+                    container_job_id=container_job.id,
+                    container_no=container_job.container_no,
                     details=line.to_dict(),
-                    status="pending",
+                    suggestion="ĐHVT kiểm tra tin nhắn gốc / đợi nhà xe bổ sung rồi duyệt trên Web.",
+                    is_test_msg=is_test_msg,
+                    notify_zalo=True,
                 )
-                db.add(review_case)
             elif not is_auto_group:
-                # Tin nhắn thỏa mãn đầy đủ nhưng nhóm ở chế độ 'cho_duyet' -> tạo ReviewCase để DVDH duyệt phát hành
+                # Tin nhắn thỏa mãn đầy đủ nhưng nhóm ở chế độ 'MANUAL' -> tạo ReviewCase để ĐHVT duyệt phát hành
                 has_review_or_error = True
                 line.validation_status = ValidationStatus.NEEDS_REVIEW.value
-                review_case = ReviewCase(
+                DhvtNotificationService.create_or_merge_review_case(
+                    db=db,
                     message_id=message.id,
-                    container_job_id=container_job.id,
                     case_type="group_manual_review",
                     reason=f"Nhóm '{paused_grp_name}' ở chế độ Chờ duyệt (Cần ĐHVT duyệt trước khi gửi khách)",
+                    container_job_id=container_job.id,
+                    container_no=container_job.container_no,
                     details=line.to_dict(),
-                    status="pending",
+                    suggestion="Mở mục Kết quả / Duyệt để kiểm tra và phát hành tới khách hàng.",
+                    is_test_msg=is_test_msg,
+                    notify_zalo=False,
                 )
-                db.add(review_case)
 
         if has_review_or_error:
             # Chỉ gửi bot_reply nhắc nhà xe nếu tin nhắn thực sự THIẾU HOẶC SAI dữ liệu
@@ -924,7 +1222,7 @@ class ExtractionHandler:
                         sender_id=message.sender_id,
                         reply_text=warning_reply_text,
                         fix_deadline=datetime.now(timezone.utc) + timedelta(minutes=30),
-                        status="cho_sua",
+                        status=CorrectionStatus.PENDING.value,
                     )
                     db.add(bot_reply)
                     db.flush()
@@ -942,15 +1240,19 @@ class ExtractionHandler:
                                 message=warning_reply_text,
                                 quote_msg_id=message.zalo_message_id,
                             )
+                            if not reply_ok and message.zalo_message_id:
+                                reply_ok, reply_msg_id, _ = ZaloDispatcher.send_to_group(
+                                    group_id=target_carrier_group,
+                                    message=warning_reply_text,
+                                )
                         elif message.sender_id and not message.sender_id.startswith("test_"):
                             reply_ok, reply_msg_id, _ = ZaloDispatcher.send_to_user(
                                 user_id=message.sender_id,
                                 message=warning_reply_text,
                             )
                         if reply_ok and reply_msg_id:
-                            bot_reply.status = "da_gui"
-                        bot_reply.zalo_msg_id = reply_msg_id
-                        bot_reply.sent_at = datetime.now(timezone.utc)
+                            bot_reply.zalo_msg_id = reply_msg_id
+                            bot_reply.sent_at = datetime.now(timezone.utc)
 
         message.processing_status = (
             MessageStatus.NEEDS_REVIEW.value
@@ -958,5 +1260,33 @@ class ExtractionHandler:
             else MessageStatus.PROCESSED.value
         )
         db.commit()
+
+        # Phát hành ngay các thông báo thật đủ điều kiện qua drain_outbox
+        if settings.AUTO_DISPATCH_OUTBOUND and not CarrierFlowService.is_test_message(message):
+            pending_real_ids = list(
+                db.scalars(
+                    select(OutboundMessage.id)
+                    .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
+                    .join(ContainerJob, OutboundMessageItem.container_job_id == ContainerJob.id)
+                    .join(ZaloGroup, OutboundMessage.target_group_id == ZaloGroup.id)
+                    .where(
+                        ContainerJob.message_id == message.id,
+                        OutboundMessage.status == OutboundStatus.PENDING_SEND.value,
+                        ZaloGroup.is_test == False,
+                    )
+                    .distinct()
+                ).all()
+            )
+            if pending_real_ids:
+                from src.infrastructure.outbox_worker import drain_outbox
+
+                drain_outbox(lambda: nullcontext(db), pending_real_ids)
+                for oid in pending_real_ids:
+                    om = db.get(OutboundMessage, oid)
+                    if om and om.status in (OutboundStatus.FAILED.value, OutboundStatus.PENDING_APPROVAL.value):
+                        message.processing_status = MessageStatus.NEEDS_REVIEW.value
+                        db.commit()
+                        break
+
         db.refresh(message)
         return message

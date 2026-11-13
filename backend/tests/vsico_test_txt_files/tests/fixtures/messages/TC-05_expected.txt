@@ -1,4 +1,0 @@
-TEST_ID: TC-05
-
-EXPECTED:
-Đọc theo nhãn F3, không gọi AI nếu parser theo nhãn xử lý được. order_type=tra; customer_raw=Nhựa Á Đông; plate=50H04915; driver_name=Nguyễn Thanh Phong; phone đã che; cont_no=VSIU2620327; seal_no=null; location_raw=Kho Nhựa Á Đông – Long An; eta=08:00.

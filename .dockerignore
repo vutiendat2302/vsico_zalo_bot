@@ -1,0 +1,61 @@
+# =============================================================================
+# .dockerignore — TẬP TRUNG DUY NHẤT TẠI THƯ MỤC GỐC DỰ ÁN VSICO ZALO BOT
+# Loại bỏ các file tạm, thư viện phụ thuộc, môi trường ảo và bí mật cho toàn bộ
+# các dịch vụ: Backend, Frontend, AI Service, PaddleOCR.
+# =============================================================================
+
+# 1. Quản lý phiên bản Git
+.git
+.gitignore
+.gitattributes
+
+# 2. Tệp môi trường & bí mật
+.env
+.env.*
+!.env.example
+credentials.json
+cookies.json
+qr.png
+
+# 3. Môi trường ảo & Cache Python (Backend, AI Service, Scripts)
+.venv/
+*/.venv/
+*/**/.venv/
+__pycache__/
+*/__pycache__/
+*/**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*/.pytest_cache/
+*/**/.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# 4. Gói phụ thuộc & Build Artifacts Node.js / Next.js (Frontend, zca-js)
+node_modules/
+*/node_modules/
+*/**/node_modules/
+.next/
+*/.next/
+*/**/.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.turbo/
+
+# 5. Cấu hình IDE, Editor & Công cụ AI
+.idea/
+.vscode/
+.continue/
+*.swp
+*.swo
+
+# 6. Tệp tạm thời & Thư mục kết xuất
+output/
+*/output/
+*.log

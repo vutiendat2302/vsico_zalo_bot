@@ -89,7 +89,9 @@ class IntentClassifier:
 
         # 5. Kiểm tra yêu cầu đổi xe / đổi tài xế / đính chính / sửa cont / đổi giờ (T27, T28, T29)
         if re.search(
-            r"\b(?:đổi\s*xe|doi\s*xe|đổi\s*tài|doi\s*tai|đổi\s*lái\s*xe|doi\s*lai\s*xe|thay\s*xe|"
+            r"\b(?:đổi\s+(?:sang|qua)\s+(?:xe|tài|lái|đầu\s*kéo|cont)|doi\s+(?:sang|qua)\s+(?:xe|tai|lai|dau\s*keo|cont)|"
+            r"thay\s+(?:bằng|sang)\s+xe|chuyển\s+sang\s+xe|"
+            r"đổi\s*xe|doi\s*xe|đổi\s*tài|doi\s*tai|đổi\s*lái\s*xe|doi\s*lai\s*xe|thay\s*xe|"
             r"đổi\s*số\s*xe|đính\s*chính|dinh\s*chinh|sửa\s*cont|sua\s*cont|sửa\s*chì|sua\s*chi|"
             r"cập\s*nhật\s*lại|cap\s*nhat\s*lai|lùi\s*giờ|lui\s*gio|đổi\s*lịch|doi\s*lich|xe\s*đến\s*muộn)\b",
             lower,

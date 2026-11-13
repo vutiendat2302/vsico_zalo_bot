@@ -1,68 +1,54 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import {
-  Users,
-  RefreshCw,
-  Search,
-  Plus,
-  Clock,
-  CheckCircle2,
-  AlertTriangle,
-  X,
-  Copy,
-  Check,
-  SlidersHorizontal,
-  Trash2,
-  Edit,
-  Power,
-  ShieldAlert,
-} from "lucide-react";
+import { X, RefreshCw } from "lucide-react";
+import { toast } from "@/components/shared/Toast";
 import {
   ZaloGroupItem,
   getGroups,
   updateGroupSendMode,
   updateRealGroupStatus,
   createGroup,
-  deleteAllTestGroups,
   deleteGroup,
+  getGroupDetail,
 } from "@/lib/api";
 
 export default function GroupsManagementPage() {
   const [groups, setGroups] = useState<ZaloGroupItem[]>([]);
-  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState("");
   const [sendModeFilter, setSendModeFilter] = useState<string>("");
   const [roleFilter, setRoleFilter] = useState<string>("");
-  const [testFilter, setTestFilter] = useState<string>("real_only"); // 'all', 'real_only', 'test_only'
 
   // Action states
-  const [togglingId, setTogglingId] = useState<number | null>(null);
-  const [togglingActiveId, setTogglingActiveId] = useState<number | null>(null);
-  const [deletingTestGroups, setDeletingTestGroups] = useState(false);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
 
-  // New Group Modal
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // Modals
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newZaloId, setNewZaloId] = useState("");
   const [newName, setNewName] = useState("");
-  const [newRole, setNewRole] = useState("destination");
-  const [newSendMode, setNewSendMode] = useState<"tu_dong" | "cho_duyet">("tu_dong");
-  const [submittingNew, setSubmittingNew] = useState(false);
+  const [newRole, setNewRole] = useState("DESTINATION");
+  const [newSendMode, setNewSendMode] = useState<"AUTO" | "MANUAL">("AUTO");
+  const [submittingCreate, setSubmittingCreate] = useState(false);
 
-  // Edit Group Modal
+  // Edit Modal
   const [editingGroup, setEditingGroup] = useState<ZaloGroupItem | null>(null);
   const [editName, setEditName] = useState("");
-  const [editRole, setEditRole] = useState("destination");
-  const [editSendMode, setEditSendMode] = useState<"tu_dong" | "cho_duyet">("tu_dong");
+  const [editRole, setEditRole] = useState("DESTINATION");
+  const [editSendMode, setEditSendMode] = useState<"AUTO" | "MANUAL">("AUTO");
   const [editIsActive, setEditIsActive] = useState(true);
-  const [editIsTest, setEditIsTest] = useState(false);
   const [submittingEdit, setSubmittingEdit] = useState(false);
+
+  // Delete Confirm Modal
+  const [deletingGroup, setDeletingGroup] = useState<ZaloGroupItem | null>(null);
+  const [submittingDelete, setSubmittingDelete] = useState(false);
+
+  // Detail Modal
+  const [detailGroup, setDetailGroup] = useState<(ZaloGroupItem & { zalo_live_info?: any }) | null>(null);
 
   const loadGroupsList = async () => {
     try {
@@ -75,18 +61,14 @@ export default function GroupsManagementPage() {
         limit: 100,
       });
 
-      let list = res.groups || [];
-      if (testFilter === "real_only") {
-        list = list.filter((g) => !g.is_test);
-      } else if (testFilter === "test_only") {
-        list = list.filter((g) => g.is_test);
-      }
-
+      // Chỉ hiển thị nhóm thật
+      const list = (res.groups || []).filter((g) => !g.is_test);
       setGroups(list);
-      setTotal(res.total || 0);
     } catch (err: unknown) {
       const e = err as Error;
-      setError(e.message || "Lỗi khi tải danh sách nhóm Zalo");
+      const msg = e.message || "Lỗi khi tải danh sách nhóm Zalo";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -94,146 +76,107 @@ export default function GroupsManagementPage() {
 
   useEffect(() => {
     loadGroupsList();
-  }, [sendModeFilter, roleFilter, testFilter]);
+  }, [sendModeFilter, roleFilter]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     loadGroupsList();
   };
 
-  // Toggle nhanh Chế độ gửi (Tự động <-> Chờ duyệt)
   const handleToggleSendMode = async (group: ZaloGroupItem) => {
-    const nextMode = group.send_mode === "tu_dong" ? "cho_duyet" : "tu_dong";
+    const isAuto = (group.send_mode || "").toUpperCase() === "AUTO";
+    const newMode = isAuto ? "MANUAL" : "AUTO";
     try {
       setTogglingId(group.id);
-      setError(null);
-      const res = await updateGroupSendMode(group.id, nextMode);
-      setSuccessMsg(res.message);
+      const res = await updateGroupSendMode(group.id, newMode);
       setGroups((prev) =>
         prev.map((g) =>
           g.id === group.id
             ? {
                 ...g,
-                send_mode: res.send_mode,
-                send_mode_label: res.send_mode_label,
+                send_mode: newMode,
+                send_mode_label: newMode === "AUTO" ? "Tự động" : "Chờ duyệt",
               }
             : g
         )
       );
-      setTimeout(() => setSuccessMsg(null), 3500);
+      toast.success(res.message || `Đã chuyển sang ${newMode === "AUTO" ? "Tự động gửi" : "Chờ duyệt"}`);
     } catch (err: unknown) {
       const e = err as Error;
-      setError(e.message || `Lỗi khi chuyển trạng thái nhóm #${group.id}`);
+      toast.error(e.message || "Lỗi khi đổi chế độ gửi");
     } finally {
       setTogglingId(null);
     }
   };
 
-  // Toggle nhanh Trạng thái hoạt động (Active <-> Inactive)
-  const handleToggleActive = async (group: ZaloGroupItem) => {
-    const nextActive = !group.is_active;
+  const handleOpenDetail = async (groupId: string) => {
     try {
-      setTogglingActiveId(group.id);
-      setError(null);
-      const res = await updateRealGroupStatus(group.id, { is_active: nextActive });
-      setSuccessMsg(`Đã ${nextActive ? "kích hoạt" : "tạm dừng"} nhóm '${group.name || group.zalo_group_id}'`);
-      setGroups((prev) =>
-        prev.map((g) => (g.id === group.id ? { ...g, is_active: nextActive } : g))
-      );
-      setTimeout(() => setSuccessMsg(null), 3500);
+      setLoadingDetailId(groupId);
+      const res = await getGroupDetail(groupId);
+      setDetailGroup(res.group);
     } catch (err: unknown) {
       const e = err as Error;
-      setError(e.message || `Lỗi khi đổi trạng thái kích hoạt nhóm #${group.id}`);
+      toast.error(e.message || "Lỗi khi tải chi tiết nhóm");
     } finally {
-      setTogglingActiveId(null);
+      setLoadingDetailId(null);
     }
   };
 
-  // Mở modal chỉnh sửa chi tiết nhóm thật
-  const handleOpenEditModal = (group: ZaloGroupItem) => {
+  const handleOpenEdit = (group: ZaloGroupItem) => {
     setEditingGroup(group);
     setEditName(group.name || "");
-    setEditRole(group.group_role || "destination");
-    setEditSendMode(group.send_mode === "tu_dong" ? "tu_dong" : "cho_duyet");
+    setEditRole((group.group_role || "DESTINATION").toUpperCase());
+    setEditSendMode((group.send_mode || "").toUpperCase() === "AUTO" ? "AUTO" : "MANUAL");
     setEditIsActive(group.is_active);
-    setEditIsTest(group.is_test);
   };
 
-  // Lưu chỉnh sửa nhóm thật
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingGroup) return;
 
     try {
       setSubmittingEdit(true);
-      setError(null);
       const res = await updateRealGroupStatus(editingGroup.id, {
         name: editName.trim(),
         group_role: editRole,
         send_mode: editSendMode,
         is_active: editIsActive,
-        is_test: editIsTest,
       });
-
-      setSuccessMsg(res.message);
       setEditingGroup(null);
+      toast.success(res.message || "Cập nhật thông tin nhóm thành công");
       loadGroupsList();
-      setTimeout(() => setSuccessMsg(null), 3500);
     } catch (err: unknown) {
       const e = err as Error;
-      alert(e.message || "Lỗi khi lưu trạng thái nhóm");
+      toast.error(e.message || "Lỗi khi lưu thông tin nhóm");
     } finally {
       setSubmittingEdit(false);
     }
   };
 
-  // Xóa toàn bộ nhóm test
-  const handleDeleteAllTests = async () => {
-    if (!confirm("Bạn có chắc chắn muốn XÓA TẤT CẢ CÁC NHÓM THỬ NGHIỆM (Test Groups)? Thao tác này sẽ chỉ giữ lại nhóm thật.")) {
-      return;
-    }
+  const handleConfirmDelete = async () => {
+    if (!deletingGroup) return;
     try {
-      setDeletingTestGroups(true);
-      setError(null);
-      const res = await deleteAllTestGroups();
-      setSuccessMsg(res.message);
+      setSubmittingDelete(true);
+      const res = await deleteGroup(deletingGroup.id);
+      setDeletingGroup(null);
+      toast.success(res.message || "Đã xóa nhóm Zalo thành công");
       loadGroupsList();
-      setTimeout(() => setSuccessMsg(null), 4000);
     } catch (err: unknown) {
       const e = err as Error;
-      setError(e.message || "Lỗi khi xóa danh sách nhóm test");
+      toast.error(e.message || "Lỗi khi xóa nhóm");
     } finally {
-      setDeletingTestGroups(false);
+      setSubmittingDelete(false);
     }
   };
 
-  // Xóa nhóm riêng lẻ
-  const handleDeleteSingleGroup = async (group: ZaloGroupItem) => {
-    if (!confirm(`Bạn có chắc muốn xóa nhóm '${group.name || group.zalo_group_id}' (ID: ${group.id})?`)) {
-      return;
-    }
-    try {
-      setError(null);
-      const res = await deleteGroup(group.id);
-      setSuccessMsg(res.message);
-      loadGroupsList();
-      setTimeout(() => setSuccessMsg(null), 3500);
-    } catch (err: unknown) {
-      const e = err as Error;
-      alert(e.message || `Lỗi khi xóa nhóm #${group.id}`);
-    }
-  };
-
-  // Tạo nhóm mới
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newZaloId.trim()) {
-      alert("Vui lòng nhập Zalo Group ID");
+      toast.error("Vui lòng nhập Zalo Group ID");
       return;
     }
     try {
-      setSubmittingNew(true);
-      setError(null);
+      setSubmittingCreate(true);
       const res = await createGroup({
         zalo_group_id: newZaloId.trim(),
         name: newName.trim() || undefined,
@@ -242,397 +185,235 @@ export default function GroupsManagementPage() {
         is_active: true,
         is_test: false,
       });
-      setSuccessMsg(res.message);
-      setIsModalOpen(false);
+      setIsCreateModalOpen(false);
       setNewZaloId("");
       setNewName("");
+      toast.success(res.message || "Đã thêm nhóm Zalo mới thành công");
       loadGroupsList();
-      setTimeout(() => setSuccessMsg(null), 3500);
     } catch (err: unknown) {
       const e = err as Error;
-      alert(e.message || "Lỗi khi tạo nhóm mới");
+      toast.error(e.message || "Lỗi khi tạo nhóm mới");
     } finally {
-      setSubmittingNew(false);
+      setSubmittingCreate(false);
     }
   };
 
-  const handleCopy = (text: string) => {
-    if (navigator?.clipboard) {
-      navigator.clipboard.writeText(text);
-      setCopiedId(text);
-      setTimeout(() => setCopiedId(null), 2000);
+  const getRoleBadge = (role: string) => {
+    const r = (role || "").toUpperCase();
+    if (r === "DESTINATION" || r === "CUSTOMER" || r === "KHÁCH HÀNG") {
+      return <span className="text-slate-800 font-medium">Khách hàng</span>;
     }
+    if (r === "SOURCE" || r === "CARRIER" || r === "NHÀ XE") {
+      return <span className="text-slate-800 font-medium">Nhà xe</span>;
+    }
+    if (r === "DHVT" || r === "INTERNAL" || r === "NỘI BỘ") {
+      return <span className="text-slate-800 font-medium">Nội bộ ĐHVT</span>;
+    }
+    return <span className="text-slate-700">{role}</span>;
   };
-
-  // KPIs
-  const realCount = groups.filter((g) => !g.is_test).length;
-  const autoCount = groups.filter((g) => g.send_mode === "tu_dong").length;
-  const reviewCount = groups.filter((g) => g.send_mode === "cho_duyet").length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            <Users className="w-6 h-6 text-blue-400" />
-            <span>Quản Lý Nhóm Zalo & Cập Nhật Trạng Thái Nhóm Thật</span>
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Cấu hình chế độ phát hành tin (Tự động gửi / Chờ ĐHVT duyệt) và trạng thái hoạt động của các Nhóm Khách Hàng thực tế
+          <h1 className="text-base font-bold text-slate-900 uppercase">Quản Lý Nhóm Zalo</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Cấu hình chế độ phát hành tin và trạng thái hoạt động của các nhóm
           </p>
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Nút Xóa tất cả nhóm test */}
+        <div className="flex items-center space-x-2">
           <button
             type="button"
-            disabled={deletingTestGroups}
-            onClick={handleDeleteAllTests}
-            className="flex items-center space-x-1.5 px-3 py-2 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 rounded-lg text-xs font-semibold shadow-sm transition disabled:opacity-50"
-            title="Dọn sạch toàn bộ nhóm thử nghiệm test/pytest/direct để chỉ giữ lại nhóm thật"
+            onClick={() => setIsCreateModalOpen(true)}
+            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-sm text-xs font-medium transition"
           >
-            <Trash2 className={`w-4 h-4 ${deletingTestGroups ? "animate-spin" : ""}`} />
-            <span>{deletingTestGroups ? "Đang xóa..." : "Xóa tất cả nhóm test"}</span>
+            Thêm nhóm Zalo
           </button>
-
-          {/* Thêm nhóm mới */}
-          <button
-            type="button"
-            onClick={() => setIsModalOpen(true)}
-            className="flex items-center space-x-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm transition"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Thêm nhóm Zalo</span>
-          </button>
-
-          {/* Làm mới */}
           <button
             type="button"
             onClick={loadGroupsList}
             disabled={loading}
-            className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition"
+            className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-sm text-xs font-medium transition"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-            <span>Làm mới</span>
+            {loading ? "Đang tải..." : "Làm mới"}
           </button>
         </div>
       </div>
 
-      {/* Notifications */}
-      {successMsg && (
-        <div className="p-3 bg-emerald-950/50 border border-emerald-600 rounded-lg text-emerald-200 text-xs flex items-center justify-between shadow-lg">
-          <div className="flex items-center space-x-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>{successMsg}</span>
-          </div>
-          <button onClick={() => setSuccessMsg(null)}>
-            <X className="w-3.5 h-3.5 text-emerald-400 hover:text-white" />
-          </button>
-        </div>
-      )}
-
+      {/* Error alert */}
       {error && (
-        <div className="p-3 bg-rose-950/50 border border-rose-700 rounded-lg text-rose-200 text-xs flex items-center justify-between shadow-lg">
-          <div className="flex items-center space-x-2">
-            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{error}</span>
-          </div>
-          <button onClick={() => setError(null)}>
-            <X className="w-3.5 h-3.5 text-rose-400 hover:text-white" />
+        <div className="bg-slate-50 border border-slate-300 text-slate-800 p-3 rounded-sm text-xs flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="text-slate-500 hover:text-slate-900">
+            <X className="w-4 h-4" />
           </button>
         </div>
       )}
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-          <div>
-            <div className="text-xs text-slate-400 font-medium">Nhóm Thật Đang Vận Hành</div>
-            <div className="text-2xl font-bold text-white mt-1">{realCount}</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Nhóm Zalo kết nối khách hàng & nhà xe</div>
-          </div>
-          <div className="p-3 bg-blue-500/10 rounded-xl border border-blue-500/20 text-blue-400">
-            <Users className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900 border border-emerald-900/40 rounded-xl p-4 flex items-center justify-between">
-          <div>
-            <div className="text-xs text-emerald-400 font-medium flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>Chế Độ: Tự Động Gửi (tu_dong)</span>
-            </div>
-            <div className="text-2xl font-bold text-emerald-300 mt-1">{autoCount}</div>
-            <div className="text-[11px] text-emerald-500/80 mt-0.5">Gửi thẳng tới Zalo khi dữ liệu hợp lệ</div>
-          </div>
-          <div className="p-3 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400">
-            <CheckCircle2 className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900 border border-amber-900/40 rounded-xl p-4 flex items-center justify-between">
-          <div>
-            <div className="text-xs text-amber-400 font-medium flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-              <span>Chế Độ: Chờ Duyệt (cho_duyet)</span>
-            </div>
-            <div className="text-2xl font-bold text-amber-300 mt-1">{reviewCount}</div>
-            <div className="text-[11px] text-amber-500/80 mt-0.5">Bắt buộc ĐHVT duyệt trước khi gửi khách</div>
-          </div>
-          <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 text-amber-400">
-            <Clock className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
 
       {/* Toolbar Filter */}
       <form
         onSubmit={handleSearch}
-        className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs"
+        className="bg-white border border-slate-200 p-3 rounded-sm flex flex-col sm:flex-row items-center justify-between gap-3 text-xs"
       >
-        <div className="relative flex-1 w-full sm:w-auto">
-          <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+        <div className="w-full sm:w-80">
           <input
             type="text"
             placeholder="Tìm theo tên nhóm hoặc Zalo Group ID..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-3 py-2 text-white focus:outline-none focus:border-blue-500 text-xs"
+            className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"
           />
         </div>
 
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           <select
-            value={testFilter}
-            onChange={(e) => setTestFilter(e.target.value)}
-            className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs font-medium"
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-800 focus:outline-none focus:border-slate-500 text-xs"
           >
-            <option value="real_only">⭐ Chỉ hiển thị Nhóm Thật</option>
-            <option value="all">Tất cả nhóm</option>
-            <option value="test_only">🧪 Chỉ nhóm test/nội bộ</option>
+            <option value="">Tất cả vai trò</option>
+            <option value="DESTINATION">Khách hàng</option>
+            <option value="SOURCE">Nhà xe</option>
+            <option value="DHVT">Nội bộ ĐHVT</option>
           </select>
 
           <select
             value={sendModeFilter}
             onChange={(e) => setSendModeFilter(e.target.value)}
-            className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs"
+            className="bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-800 focus:outline-none focus:border-slate-500 text-xs"
           >
             <option value="">Tất cả chế độ gửi</option>
-            <option value="tu_dong">🟢 Tự động gửi (tu_dong)</option>
-            <option value="cho_duyet">⏳ Chờ duyệt (cho_duyet)</option>
-          </select>
-
-          <select
-            value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value)}
-            className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs"
-          >
-            <option value="">Tất cả vai trò</option>
-            <option value="destination">Khách hàng (Đích)</option>
-            <option value="source">Nhà xe (Nguồn)</option>
-            <option value="internal">Nội bộ điều vận (ĐHVT)</option>
+            <option value="AUTO">Tự động gửi</option>
+            <option value="MANUAL">Chờ duyệt</option>
           </select>
 
           <button
             type="submit"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium text-xs transition"
+            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-sm font-medium text-xs transition"
           >
             Lọc
           </button>
         </div>
       </form>
 
-      {/* Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-        <div className="p-3 border-b border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+      {/* Data Table */}
+      <div className="bg-white border border-slate-200 rounded-sm overflow-hidden">
+        <div className="p-2.5 border-b border-slate-200 text-xs text-slate-500 flex items-center justify-between">
           <span>
-            Đang hiển thị <strong className="text-white">{groups.length}</strong> nhóm
-          </span>
-          <span className="text-slate-500">
-            💡 Nhấn &quot;Cập nhật&quot; để đổi tên hoặc thiết lập chi tiết nhóm thật • Nhấn nút gạt để đổi trạng thái nhanh
+            Hiển thị <strong className="text-slate-900">{groups.length}</strong> nhóm
           </span>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
-            <thead className="bg-slate-950/80 sticky top-0 text-slate-300 font-semibold border-b border-slate-800 whitespace-nowrap">
+            <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200 whitespace-nowrap">
               <tr>
-                <th className="py-3 px-3">ID</th>
-                <th className="py-3 px-4">Tên nhóm & Định danh</th>
-                <th className="py-3 px-3">Zalo Group ID</th>
-                <th className="py-3 px-3">Vai trò</th>
-                <th className="py-3 px-3 text-center">Hoạt động</th>
-                <th className="py-3 px-3 text-center">Chế độ gửi tin</th>
-                <th className="py-3 px-3 text-center min-w-[200px]">Hành động</th>
+                <th className="py-2.5 px-3">Tên nhóm</th>
+                <th className="py-2.5 px-3">Vai trò</th>
+                <th className="py-2.5 px-3 text-center">Trạng thái</th>
+                <th className="py-2.5 px-3 text-center">Chế độ gửi</th>
+                <th className="py-2.5 px-3 text-right">Hành động</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60 font-normal">
+            <tbody className="divide-y divide-slate-200 font-normal">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
-                    <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-blue-500" />
+                  <td colSpan={5} className="py-8 text-center text-slate-500">
+                    <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-slate-400" />
                     <span>Đang tải danh sách nhóm Zalo...</span>
                   </td>
                 </tr>
               ) : groups.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-500">
-                    Không tìm thấy nhóm Zalo nào phù hợp với bộ lọc.
+                  <td colSpan={5} className="py-8 text-center text-slate-500">
+                    Không tìm thấy nhóm Zalo nào phù hợp.
                   </td>
                 </tr>
               ) : (
                 groups.map((g) => {
-                  const isAuto = g.send_mode === "tu_dong";
+                  const isAuto = (g.send_mode || "").toUpperCase() === "AUTO";
                   const isToggling = togglingId === g.id;
-                  const isTogglingActive = togglingActiveId === g.id;
+                  const isLoadingDetail = loadingDetailId === g.id;
 
                   return (
-                    <tr key={g.id} className="hover:bg-slate-800/40 transition">
-                      <td className="py-3 px-3 font-mono text-slate-400">#{g.id}</td>
-
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-white text-sm flex items-center gap-2">
-                          <span>{g.name || "Chưa đặt tên nhóm"}</span>
-                          {!g.is_test ? (
-                            <span className="text-[10px] text-emerald-300 bg-emerald-950/80 px-2 py-0.5 rounded font-semibold border border-emerald-700/60 flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                              NHÓM THẬT
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-amber-300 bg-amber-950/80 px-2 py-0.5 rounded font-semibold border border-amber-700/60">
-                              TEST
-                            </span>
-                          )}
+                    <tr key={g.id} className="hover:bg-slate-50 transition">
+                      {/* Tên nhóm */}
+                      <td className="py-2.5 px-3">
+                        <div className="font-semibold text-slate-900">
+                          {g.name || "Chưa đặt tên nhóm"}
                         </div>
-                        <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-3">
-                          {g.carrier_name && <span>Nhà xe: <strong className="text-slate-200">{g.carrier_name}</strong></span>}
-                          {g.created_at && (
-                            <span className="text-slate-500">Tạo: {new Date(g.created_at).toLocaleDateString("vi-VN")}</span>
-                          )}
+                        <div className="font-mono text-[11px] text-slate-500 mt-0.5">
+                          ID: {g.zalo_group_id}
                         </div>
                       </td>
 
-                      <td className="py-3 px-3 font-mono whitespace-nowrap">
-                        <div className="flex items-center space-x-1.5">
-                          <span className="bg-slate-950 px-2.5 py-1 rounded text-emerald-400 font-bold border border-slate-800">
-                            {g.zalo_group_id}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleCopy(g.zalo_group_id)}
-                            className="p-1 text-slate-400 hover:text-white transition"
-                            title="Sao chép Zalo Group ID"
-                          >
-                            {copiedId === g.zalo_group_id ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-400" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
+                      {/* Vai trò */}
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        {getRoleBadge(g.group_role)}
                       </td>
 
-                      <td className="py-3 px-3 whitespace-nowrap">
+                      {/* Trạng thái hoạt động */}
+                      <td className="py-2.5 px-3 text-center whitespace-nowrap">
                         <span
-                          className={`px-2.5 py-1 rounded text-[11px] font-semibold ${
-                            g.group_role === "destination"
-                              ? "bg-purple-950/60 text-purple-300 border border-purple-800/60"
-                              : g.group_role === "source"
-                              ? "bg-blue-950/60 text-blue-300 border border-blue-800/60"
-                              : "bg-slate-800 text-slate-300 border border-slate-700"
+                          className={`inline-block px-2 py-0.5 rounded-sm text-[11px] font-medium ${
+                            g.is_active
+                              ? "bg-slate-100 text-slate-800 border border-slate-300"
+                              : "bg-slate-50 text-slate-400 border border-slate-200"
                           }`}
                         >
-                          {g.group_role === "destination"
-                            ? "Khách hàng (Đích)"
-                            : g.group_role === "source"
-                            ? "Nhà xe (Nguồn)"
-                            : g.group_role === "internal"
-                            ? "Nội bộ ĐHVT"
-                            : g.group_role}
+                          {g.is_active ? "Hoạt động" : "Tạm dừng"}
                         </span>
                       </td>
 
-                      {/* Trạng thái Hoạt Động (is_active) */}
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleActive(g)}
-                          disabled={isTogglingActive}
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition ${
-                            g.is_active
-                              ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
-                              : "bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700"
-                          }`}
-                          title="Nhấn để Bật/Tắt trạng thái hoạt động"
-                        >
-                          <Power className={`w-3 h-3 ${g.is_active ? "text-emerald-400" : "text-slate-500"}`} />
-                          <span>{g.is_active ? "Hoạt động" : "Tạm dừng"}</span>
-                        </button>
-                      </td>
-
-                      {/* Trạng thái Chế độ gửi (send_mode) */}
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
+                      {/* Chế độ gửi tin */}
+                      <td className="py-2.5 px-3 text-center whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
+                          className={`inline-block px-2 py-0.5 rounded-sm text-[11px] font-medium ${
                             isAuto
-                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                              : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                              ? "bg-slate-900 text-white"
+                              : "bg-white text-slate-700 border border-slate-300"
                           }`}
                         >
-                          <span
-                            className={`w-2 h-2 rounded-full ${
-                              isAuto ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
-                            }`}
-                          ></span>
-                          <span>{isAuto ? "Tự động gửi" : "Chờ duyệt"}</span>
+                          {isAuto ? "Tự động gửi" : "Chờ duyệt"}
                         </span>
                       </td>
 
                       {/* Hành động */}
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        <div className="inline-flex items-center space-x-1.5">
-                          {/* Nút Chuyển đổi nhanh chế độ gửi */}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleSendMode(g)}
-                            disabled={isToggling}
-                            className={`inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
-                              isAuto
-                                ? "bg-amber-950/60 hover:bg-amber-900 text-amber-300 border border-amber-800/60"
-                                : "bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/60"
-                            } disabled:opacity-50`}
-                            title={`Chuyển sang ${isAuto ? "Chờ duyệt" : "Tự động gửi"}`}
-                          >
-                            {isToggling ? (
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <SlidersHorizontal className="w-3.5 h-3.5" />
-                            )}
-                            <span>{isAuto ? "Chuyển Chờ duyệt" : "Bật Tự động"}</span>
-                          </button>
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenDetail(g.id)}
+                          disabled={isLoadingDetail}
+                          className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-sm text-[11px] font-medium transition disabled:opacity-50"
+                        >
+                          {isLoadingDetail ? "Đang mở..." : "Xem chi tiết"}
+                        </button>
 
-                          {/* Nút Cập nhật chi tiết */}
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEditModal(g)}
-                            className="inline-flex items-center space-x-1 px-2.5 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 rounded-lg text-xs font-medium transition"
-                            title="Cập nhật tên nhóm, vai trò, chế độ gửi"
-                          >
-                            <Edit className="w-3.5 h-3.5" />
-                            <span>Cập nhật</span>
-                          </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSendMode(g)}
+                          disabled={isToggling}
+                          className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-sm text-[11px] font-medium transition disabled:opacity-50"
+                        >
+                          {isAuto ? "Chuyển Chờ duyệt" : "Bật Tự động"}
+                        </button>
 
-                          {/* Nút Xóa nhóm */}
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteSingleGroup(g)}
-                            className="p-1 text-slate-500 hover:text-rose-400 transition rounded"
-                            title="Xóa nhóm này"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEdit(g)}
+                          className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-sm text-[11px] font-medium transition"
+                        >
+                          Sửa
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setDeletingGroup(g)}
+                          className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-500 hover:text-slate-900 rounded-sm text-[11px] font-medium transition"
+                        >
+                          Xóa
+                        </button>
                       </td>
                     </tr>
                   );
@@ -643,117 +424,170 @@ export default function GroupsManagementPage() {
         </div>
       </div>
 
-      {/* Modal Cập Nhật Trạng Thái Nhóm Thật */}
-      {editingGroup && (
-        <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-lg w-full p-6 text-xs text-slate-300 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Edit className="w-5 h-5 text-blue-400" />
-                <span>Cập Nhật Trạng Thái Nhóm #{editingGroup.id}</span>
+      {/* Modal Xem Chi Tiết Thông Tin Nhóm */}
+      {detailGroup && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => setDetailGroup(null)}
+        >
+          <div
+            className="bg-white border border-slate-300 rounded-sm max-w-lg w-full p-5 text-xs text-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h3 className="text-sm font-bold text-slate-900">
+                Thông Tin Nhóm: {detailGroup.name || detailGroup.zalo_group_id}
               </h3>
-              <button onClick={() => setEditingGroup(null)}>
-                <X className="w-5 h-5 text-slate-400 hover:text-white" />
+              <button
+                type="button"
+                onClick={() => setDetailGroup(null)}
+                className="text-slate-400 hover:text-slate-900"
+              >
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveEdit} className="space-y-4 mt-4">
+            <div className="grid grid-cols-2 gap-3 py-3 border-b border-slate-200">
               <div>
-                <label className="block text-slate-400 mb-1 font-semibold">
-                  Zalo Group ID (bất biến):
-                </label>
+                <span className="text-slate-500 block">Zalo Group ID:</span>
+                <span className="font-mono font-semibold text-slate-900">{detailGroup.zalo_group_id}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Vai trò:</span>
+                <span className="font-medium text-slate-900">{getRoleBadge(detailGroup.group_role)}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Chế độ gửi:</span>
+                <span className="font-medium text-slate-900">{detailGroup.send_mode_label}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Trạng thái:</span>
+                <span className="font-medium text-slate-900">{detailGroup.is_active ? "Hoạt động" : "Tạm dừng"}</span>
+              </div>
+            </div>
+
+            {/* Thông tin trực tiếp từ Zalo API (thành viên) */}
+            <div className="mt-3">
+              <div className="text-slate-500 font-semibold mb-2">
+                Thành viên trong nhóm ({detailGroup.zalo_live_info?.total_members || 0} thành viên):
+              </div>
+              {detailGroup.zalo_live_info?.members?.length > 0 ? (
+                <div className="max-h-48 overflow-y-auto space-y-1.5 border border-slate-200 p-2 rounded-sm bg-slate-50">
+                  {detailGroup.zalo_live_info.members.map((m: any) => (
+                    <div key={m.id} className="flex items-center justify-between text-xs py-1 border-b border-slate-200 last:border-none">
+                      <span className="font-medium text-slate-800">{m.display_name}</span>
+                      <span className="font-mono text-slate-500 text-[11px]">UID: {m.id}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-slate-500 text-xs italic">
+                  Không có thông tin thành viên realtime (bot chưa kết nối WebSocket hoặc nhóm riêng tư).
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setDetailGroup(null)}
+                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-sm text-xs font-medium"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Chỉnh Sửa Nhóm */}
+      {editingGroup && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white border border-slate-300 rounded-sm max-w-md w-full p-5 text-xs text-slate-800">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h3 className="text-sm font-bold text-slate-900">
+                Sửa Nhóm
+              </h3>
+              <button onClick={() => setEditingGroup(null)}>
+                <X className="w-4 h-4 text-slate-400 hover:text-slate-900" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="space-y-3 mt-3">
+              <div>
+                <label className="block text-slate-600 mb-1 font-medium">Zalo Group ID:</label>
                 <input
                   type="text"
                   disabled
                   value={editingGroup.zalo_group_id}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-emerald-400 font-mono opacity-80 cursor-not-allowed"
+                  className="w-full bg-slate-100 border border-slate-200 rounded-sm px-3 py-1.5 text-slate-600 font-mono cursor-not-allowed"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1 font-semibold">
-                  Tên gợi nhớ nhóm khách hàng / nhà xe:
-                </label>
+                <label className="block text-slate-600 mb-1 font-medium">Tên nhóm:</label>
                 <input
                   type="text"
                   required
-                  placeholder="Ví dụ: Nhóm Khách Hàng Logitem - Tân Quang"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
+                  className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 mb-1 font-semibold">Vai trò nhóm:</label>
+                  <label className="block text-slate-600 mb-1 font-medium">Vai trò:</label>
                   <select
                     value={editRole}
                     onChange={(e) => setEditRole(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                    className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"
                   >
-                    <option value="destination">Khách hàng (Đích nhận tin)</option>
-                    <option value="source">Nhà xe (Nguồn gửi tin)</option>
-                    <option value="internal">Nội bộ điều vận (ĐHVT)</option>
+                    <option value="DESTINATION">Khách hàng</option>
+                    <option value="SOURCE">Nhà xe</option>
+                    <option value="DHVT">Nội bộ ĐHVT</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 mb-1 font-semibold">Chế độ gửi tin (send_mode):</label>
+                  <label className="block text-slate-600 mb-1 font-medium">Chế độ gửi:</label>
                   <select
                     value={editSendMode}
-                    onChange={(e) => setEditSendMode(e.target.value as "tu_dong" | "cho_duyet")}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 font-semibold"
+                    onChange={(e) => setEditSendMode(e.target.value as "AUTO" | "MANUAL")}
+                    className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500 font-medium"
                   >
-                    <option value="tu_dong">🟢 Tự động gửi (tu_dong)</option>
-                    <option value="cho_duyet">⏳ Chờ ĐHVT duyệt (cho_duyet)</option>
+                    <option value="AUTO">Tự động gửi</option>
+                    <option value="MANUAL">Chờ duyệt</option>
                   </select>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 pt-2">
-                <label className="flex items-center space-x-2 p-2 bg-slate-950 border border-slate-800 rounded-lg cursor-pointer hover:border-slate-700">
+              <div className="pt-1">
+                <label className="flex items-center space-x-2 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={editIsActive}
                     onChange={(e) => setEditIsActive(e.target.checked)}
-                    className="w-4 h-4 rounded text-blue-600 focus:ring-0"
+                    className="w-4 h-4 rounded text-slate-900 focus:ring-0"
                   />
-                  <div>
-                    <span className="font-semibold text-white block">Kích hoạt nhóm</span>
-                    <span className="text-[10px] text-slate-500">Cho phép bot tương tác</span>
-                  </div>
-                </label>
-
-                <label className="flex items-center space-x-2 p-2 bg-slate-950 border border-slate-800 rounded-lg cursor-pointer hover:border-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={!editIsTest}
-                    onChange={(e) => setEditIsTest(!e.target.checked)}
-                    className="w-4 h-4 rounded text-emerald-600 focus:ring-0"
-                  />
-                  <div>
-                    <span className="font-semibold text-emerald-300 block">⭐ Nhóm Thật</span>
-                    <span className="text-[10px] text-slate-500">Vận hành khách hàng thực</span>
-                  </div>
+                  <span className="text-slate-700">Kích hoạt nhóm</span>
                 </label>
               </div>
 
-              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-200">
                 <button
                   type="button"
                   onClick={() => setEditingGroup(null)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-sm transition"
                 >
                   Hủy
                 </button>
                 <button
                   type="submit"
                   disabled={submittingEdit}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition disabled:opacity-50 flex items-center gap-1.5"
+                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-sm font-medium transition"
                 >
-                  <Check className="w-4 h-4" />
-                  <span>{submittingEdit ? "Đang lưu..." : "Lưu Thay Đổi"}</span>
+                  {submittingEdit ? "Đang lưu..." : "Lưu thay đổi"}
                 </button>
               </div>
             </form>
@@ -761,90 +595,111 @@ export default function GroupsManagementPage() {
         </div>
       )}
 
-      {/* Modal Thêm Nhóm Mới */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-lg w-full p-6 text-xs text-slate-300 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Users className="w-5 h-5 text-blue-400" />
-                <span>Thêm Nhóm Zalo Mới</span>
-              </h3>
-              <button onClick={() => setIsModalOpen(false)}>
-                <X className="w-5 h-5 text-slate-400 hover:text-white" />
+      {/* Modal Xác Nhận Xóa */}
+      {deletingGroup && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white border border-slate-300 rounded-sm max-w-sm w-full p-5 text-xs text-slate-800">
+            <h3 className="text-sm font-bold text-slate-900">Xác nhận xóa nhóm</h3>
+            <p className="text-slate-600 mt-2">
+              Bạn có chắc chắn muốn xóa nhóm <strong>{deletingGroup.name || deletingGroup.zalo_group_id}</strong>?
+            </p>
+            <div className="flex items-center justify-end space-x-2 mt-4 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setDeletingGroup(null)}
+                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-sm transition"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={submittingDelete}
+                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-sm font-medium transition"
+              >
+                {submittingDelete ? "Đang xóa..." : "Xóa nhóm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Thêm Nhóm Zalo */}
+      {isCreateModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white border border-slate-300 rounded-sm max-w-md w-full p-5 text-xs text-slate-800">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h3 className="text-sm font-bold text-slate-900">Thêm Nhóm Zalo</h3>
+              <button onClick={() => setIsCreateModalOpen(false)}>
+                <X className="w-4 h-4 text-slate-400 hover:text-slate-900" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateGroup} className="space-y-4 mt-4">
+            <form onSubmit={handleCreateGroup} className="space-y-3 mt-3">
               <div>
-                <label className="block text-slate-400 mb-1 font-semibold">
-                  Zalo Group ID (threadId) <span className="text-rose-400">*</span>:
-                </label>
+                <label className="block text-slate-600 mb-1 font-medium">Zalo Group ID:</label>
                 <input
                   type="text"
                   required
-                  placeholder="Ví dụ: 6469608867469758994"
+                  placeholder="VD: 6469608867469758994"
                   value={newZaloId}
                   onChange={(e) => setNewZaloId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-blue-500"
+                  className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 font-mono focus:outline-none focus:border-slate-500"
                 />
-                <span className="text-[11px] text-slate-500 mt-1 block">
-                  ID định danh duy nhất của nhóm Zalo trong hệ thống ZCA
-                </span>
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1 font-semibold">Tên gợi nhớ nhóm:</label>
+                <label className="block text-slate-600 mb-1 font-medium">Tên nhóm:</label>
                 <input
                   type="text"
-                  placeholder="Ví dụ: Nhóm Khách Hàng Logitem Tân Quang"
+                  placeholder="VD: Khách 1"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 mb-1 font-semibold">Vai trò nhóm:</label>
+                  <label className="block text-slate-600 mb-1 font-medium">Vai trò:</label>
                   <select
                     value={newRole}
                     onChange={(e) => setNewRole(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                    className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"
                   >
-                    <option value="destination">Khách hàng (Đích nhận tin)</option>
-                    <option value="source">Nhà xe (Nguồn gửi tin)</option>
-                    <option value="internal">Nội bộ điều vận (ĐHVT)</option>
+                    <option value="DESTINATION">Khách hàng</option>
+                    <option value="SOURCE">Nhà xe</option>
+                    <option value="DHVT">Nội bộ ĐHVT</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 mb-1 font-semibold">Chế độ phát hành:</label>
+                  <label className="block text-slate-600 mb-1 font-medium">Chế độ gửi:</label>
                   <select
                     value={newSendMode}
-                    onChange={(e) => setNewSendMode(e.target.value as "tu_dong" | "cho_duyet")}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                    onChange={(e) => setNewSendMode(e.target.value as "AUTO" | "MANUAL")}
+                    className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500 font-medium"
                   >
-                    <option value="tu_dong">🟢 Tự động gửi</option>
-                    <option value="cho_duyet">⏳ Chờ duyệt trước</option>
+                    <option value="AUTO">Tự động gửi</option>
+                    <option value="MANUAL">Chờ duyệt</option>
                   </select>
                 </div>
               </div>
 
-              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-200">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                  onClick={() => setIsCreateModalOpen(false)}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-sm transition"
                 >
                   Hủy
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingNew}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition disabled:opacity-50"
+                  disabled={submittingCreate}
+                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-sm font-medium transition"
                 >
-                  {submittingNew ? "Đang tạo..." : "Thêm nhóm"}
+                  {submittingCreate ? "Đang thêm..." : "Thêm nhóm"}
                 </button>
               </div>
             </form>

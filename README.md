@@ -3,7 +3,7 @@
 ### HỆ THỐNG TỰ ĐỘNG HÓA ĐIỀU VẬN CONTAINER ĐA KÊNH (BACKEND • FRONTEND • AI SERVICE • DATABASE • ZALO BRIDGE)
 
 [![Python](https://img.shields.io/badge/Backend-FastAPI_%7C_SQLAlchemy_2.0-009688.svg)](./backend/BACKEND.md)
-[![Next.js](https://img.shields.io/badge/Frontend-Next.js_14_%7C_TypeScript-000000.svg)](./frontend/FRONTEND.md)
+[![Next.js](https://img.shields.io/badge/Frontend-Next.js_16_%7C_React_19_%7C_Tailwind_v4-000000.svg)](./frontend/FRONTEND.md)
 [![AI Service](https://img.shields.io/badge/AI_Service-Gemini_3.5_%7C_PaddleOCR_%7C_Qdrant-4285F4.svg)](./ai-service/AISERVICE.md)
 [![Database](https://img.shields.io/badge/Database-MySQL_8.4_%7C_Snowflake_ID-4479A1.svg)](./database/DATABASE.md)
 [![Zalo Bridge](https://img.shields.io/badge/Zalo_Bridge-zca--js_WebSocket-0068FF.svg)](./zca-js/ZCA_BRIDGE.md)
@@ -43,7 +43,7 @@ Mỗi phân hệ trong Monorepo đều có tài liệu kỹ thuật định danh
 | Phân hệ | Thư mục | Tài liệu Kỹ thuật | AI Agent Skill | Mô tả Vai trò |
 | :--- | :--- | :--- | :--- | :--- |
 | **Backend Core** | [`backend/`](./backend) | [**`BACKEND.md`**](./backend/BACKEND.md) | [`vsico-backend`](./.agents/skills/vsico-backend/SKILL.md) | FastAPI Webhook Gateway, Parser F1/F2/F3, Queue Worker, Outbound Throttler, JWT Auth & TMS Sync |
-| **Frontend Web** | [`frontend/`](./frontend) | [**`FRONTEND.md`**](./frontend/FRONTEND.md) | [`vsico-frontend`](./.agents/skills/vsico-frontend/SKILL.md) | Giao diện quản trị Next.js 14 App Router cho ĐHVT & Admin (100% Realtime API, Zero Mock Data) |
+| **Frontend Web** | [`frontend/`](./frontend) | [**`FRONTEND.md`**](./frontend/FRONTEND.md) | [`vsico-frontend`](./.agents/skills/vsico-frontend/SKILL.md) | Giao diện quản trị Next.js 16 App Router (React 19, Tailwind v4, ESLint 9) cho ĐHVT & Admin (100% Realtime API, Zero Mock Data) |
 | **AI & OCR Service** | [`ai-service/`](./ai-service) | [**`AISERVICE.md`**](./ai-service/AISERVICE.md) | [`vsico-ai-service`](./.agents/skills/vsico-ai-service/SKILL.md) | Dịch vụ đọc hiểu ngữ cảnh hội thoại, bóc tách NER, PaddleOCR/Vision & Map kho GP1–GP4 |
 | **Cơ sở Dữ liệu** | [`database/`](./database) | [**`DATABASE.md`**](./database/DATABASE.md) | [`vsico-database`](./.agents/skills/vsico-database/SKILL.md) | Đặc tả 17 bảng MySQL 8.4, khóa chính Snowflake ID 64-bit, khóa TMS `BigInteger` & Alembic |
 | **Cầu nối Zalo** | [`zca-js/`](./zca-js) | [**`ZCA_BRIDGE.md`**](./zca-js/ZCA_BRIDGE.md) | [`vsico-infra`](./.agents/skills/vsico-infra/SKILL.md) | Bộ lắng nghe sự kiện Zalo WebSocket và máy chủ REST phát hành tin nhắn |
@@ -58,7 +58,7 @@ Mỗi phân hệ trong Monorepo đều có tài liệu kỹ thuật định danh
 vsico_zalo_bot/
 ├── .agents/skills/              # 6 bộ kỹ năng chuyên sâu cho AI Agent (Backend, Frontend, AI, DB, Infra, Docs)
 ├── backend/                     # Backend FastAPI + SQLAlchemy 2.0 + Alembic (tài liệu: BACKEND.md)
-├── frontend/                    # Frontend Next.js 14 App Router + TypeScript (tài liệu: FRONTEND.md)
+├── frontend/                    # Frontend Next.js 16 App Router (Turbopack, React 19, Tailwind v4, ESLint 9, tài liệu: FRONTEND.md)
 ├── ai-service/                  # AI & OCR Microservice (tài liệu: AISERVICE.md)
 ├── database/                    # Đặc tả Schema 17 bảng & ERD (tài liệu: DATABASE.md)
 ├── zca-js/                      # Cầu nối Zalo Node.js ESM (tài liệu: ZCA_BRIDGE.md)

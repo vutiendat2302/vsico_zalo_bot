@@ -145,7 +145,7 @@ class TripParser:
         customer_hint = cls._extract_customer_hint(block_text)
         eta_text, eta_time, estimated_at, is_time_vague = cls._extract_eta(block_text, effective_ref_time)
         is_container_pending = cls._check_container_pending(block_text)
-        driver_name = cls._extract_driver_name(
+        driver_name, driver_name_certain = cls._extract_driver_name_with_certainty(
             block_text,
             raw_truck_plate=raw_truck_plate,
             driver_phone=driver_phone,
@@ -153,6 +153,12 @@ class TripParser:
             seal_no=seal_no,
         )
 
+        # Tin tự do không có nhãn/dấu phân cách chuẩn và thiếu/không chắc tên tài xế -> hạ confidence để kích hoạt AI
+        line_confidence = (
+            0.55
+            if (source_format == "tu_do" and (not driver_name or not driver_name_certain))
+            else 0.95
+        )
         has_conflict = len(multiple_tractors) >= 2 and len(containers) >= 2
 
         if containers:
@@ -184,6 +190,7 @@ class TripParser:
                         is_container_pending=is_container_pending,
                         is_seal_pending=is_seal_pending,
                         has_conflicting_mapping=has_conflict,
+                        confidence=line_confidence,
                     )
                 )
             return lines
@@ -214,6 +221,7 @@ class TripParser:
                 is_container_pending=is_container_pending,
                 is_seal_pending=is_seal_pending,
                 has_conflicting_mapping=has_conflict,
+                confidence=line_confidence,
             )
         ]
 
@@ -365,7 +373,26 @@ class TripParser:
         containers: list[str],
         seal_no: Optional[str],
     ) -> Optional[str]:
-        """Trích xuất họ tên tài xế trên cả F1 (kể cả khi SĐT dính liền trong cùng dấu `/`), F2, F3 và Tự do."""
+        """Trích xuất họ tên tài xế trên cả F1, F2, F3 và Tự do."""
+        name, _ = cls._extract_driver_name_with_certainty(
+            text=text,
+            raw_truck_plate=raw_truck_plate,
+            driver_phone=driver_phone,
+            containers=containers,
+            seal_no=seal_no,
+        )
+        return name
+
+    @classmethod
+    def _extract_driver_name_with_certainty(
+        cls,
+        text: str,
+        raw_truck_plate: Optional[str],
+        driver_phone: Optional[str],
+        containers: list[str],
+        seal_no: Optional[str],
+    ) -> tuple[Optional[str], bool]:
+        """Trích xuất họ tên tài xế kèm mức độ chắc chắn (`certain=True` với nhãn/F1, `False` với đoán từ văn xuôi tự do)."""
         stop_words_regex = re.compile(
             r"\b(?:đóng|dong|trả|tra|hạ|ha|kho|nhà\s*máy|nha\s*may|khách|khach|cont|container|cntr|"
             r"seal|chì|chi|booking|lệnh|lenh|hàng|hang|xuất|xuat|nhập|nhap|cảng|cang|kcn|bãi|bai|"
@@ -377,14 +404,14 @@ class TripParser:
         # Kiểu 1: Có nhãn rõ ràng hoặc emoji đại diện trên dòng (F2, F3: "- Tên lái xe: Nguyên Thanh Phong", "TX: ...", "👤 Trần Hữu Dũng")
         labeled = re.search(
             r"(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
-            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b)(?:\s*[:\-]\s*|\s*)([^\n/|;\t,\d*📞📱☎️]+)",
+            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b)(?:\s*[:\-]\s*|\s+)([^\n/|;\t,\d*📞📱☎️]+)",
             text,
             flags=re.IGNORECASE,
         )
         if labeled:
             candidate = clean_driver_name(labeled.group(1))
             if candidate and len(candidate) >= 2 and not stop_words_regex.search(candidate):
-                return candidate
+                return candidate, True
 
         stop_prefix = re.compile(
             r"^(?:kh|khách\s*hàng|khach\s*hang|khách|khach|kho|cảng|cang|điểm\s*đóng|diem\s*dong|đóng\s*tại|lệnh|lenh|trả\s*về|tra\s*ve)\s*[:\-]",
@@ -392,8 +419,6 @@ class TripParser:
         )
 
         # Kiểu 2: Định dạng F1 phân cách bởi dấu '/', '|', '\t', '-'
-        # Hỗ trợ trường hợp SĐT dính liền cùng phần với tên tài xế: "Phạm Văn Huynh đt: 0986713346" hoặc "Đoàn Văn Biên 0984457785"
-        # Ưu tiên các dòng chứa biển số xe trước
         all_lines = text.split("\n")
         ordered_lines = sorted(all_lines, key=lambda ln: 0 if (raw_truck_plate and raw_truck_plate.lower() in ln.lower()) else 1)
 
@@ -407,7 +432,6 @@ class TripParser:
                 for part in parts:
                     if stop_prefix.search(part):
                         continue
-                    # Bỏ qua phần chứa biển số xe hoặc số container
                     if raw_truck_plate and raw_truck_plate.lower() in part.lower():
                         continue
                     if any(c.lower() in part.lower() for c in containers):
@@ -415,7 +439,6 @@ class TripParser:
                     if cls._PLATE_REGEX.search(part) or cls._CONTAINER_STD_REGEX.search(part):
                         continue
 
-                    # Nếu phần này chứa SĐT dính kèm tên tài xế ("Phạm Văn Huynh đt: 0986713346" hoặc 9 số "098457785"), cắt bỏ SĐT và nhãn "đt:"
                     part_without_phone = re.sub(
                         r"(?:sđt|sdt|đt|dt|điện\s*thoại|lh|tel)?\s*[:\-]?\s*(?:\+?84|0)\d[\d\s.\-*xX]{5,11}[\d*xX]",
                         "",
@@ -429,9 +452,9 @@ class TripParser:
                         continue
                     cleaned = clean_driver_name(part_without_phone)
                     if cleaned and 1 <= len(cleaned.split()) <= 5 and len(cleaned) >= 2:
-                        return cleaned
+                        return cleaned, True
 
-        # Kiểu 3: Tin một dòng không có dấu phân cách / không có nhãn trường (T37)
+        # Kiểu 3: Tin một dòng tự do không có dấu phân cách / nhãn (heuristic, không chắc chắn -> để AI tinh chỉnh nếu cần)
         for line in text.split("\n"):
             if not (raw_truck_plate and raw_truck_plate in line):
                 continue
@@ -455,9 +478,9 @@ class TripParser:
                     continue
                 candidate = clean_driver_name(chunk_clean)
                 if candidate and 2 <= len(candidate.split()) <= 5:
-                    return candidate
+                    return candidate, False
 
-        # Kiểu 4: Tìm dòng độc lập chỉ chứa tên lái xe trong tin nhiều dòng
+        # Kiểu 4: Dòng độc lập không có nhãn/dấu phân cách (heuristic, không chắc chắn)
         for line in text.splitlines():
             line_clean = line.strip()
             if not line_clean or re.search(r"\d|\*", line_clean):
@@ -466,9 +489,9 @@ class TripParser:
                 continue
             candidate = clean_driver_name(line_clean)
             if candidate and 2 <= len(candidate.split()) <= 5 and len(candidate) >= 3:
-                return candidate
+                return candidate, False
 
-        return None
+        return None, False
 
     @classmethod
     def _extract_container_size(cls, text: str) -> Optional[str]:
@@ -497,6 +520,15 @@ class TripParser:
             raw_sz = match.group(0).upper().replace("'", "")
             raw_sz = re.sub(r"^(?:\d+\s*X\s*|CONT|LOẠI|LOAI|SIZE|CỠ|CO)\s*", "", raw_sz).replace(" ", "")
             return raw_sz
+
+        # 4. Mẫu số kích thước đứng độc lập (20, 40, 45) cạnh mã cont hoặc từ khóa chì/seal/xe
+        bare_sz = re.search(
+            r"(?:\b[A-Za-z]{4}[\s.\-]*\d{7}\s+(20|40|45)\b|\b(20|40|45)\b(?=\s*(?:chì|chi|seal|xe|cont|dc|hc|gp|rf)\b))",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if bare_sz:
+            return bare_sz.group(1) or bare_sz.group(2)
         return None
 
     @classmethod
@@ -563,8 +595,8 @@ class TripParser:
         if line_prefix_match:
             prefix_choice = line_prefix_match.group(1).lower()
             if prefix_choice in ("đóng", "dong"):
-                return OrderType.DONG.value, False
-            return OrderType.TRA.value, False
+                return OrderType.LOAD.value, False
+            return OrderType.RETURN.value, False
 
         # 1. Xử lý ưu tiên nhãn lựa chọn của F2 ("Đóng , Trả hàng: Tra 1x20...") và F3 ("Lệnh: Trả")
         explicit_choice = re.search(
@@ -575,8 +607,8 @@ class TripParser:
         if explicit_choice:
             choice = explicit_choice.group(1).lower()
             if choice in ("đóng", "dong"):
-                return OrderType.DONG.value, False
-            return OrderType.TRA.value, False
+                return OrderType.LOAD.value, False
+            return OrderType.RETURN.value, False
 
         # Loại bỏ cụm nhãn "Đóng , Trả hàng:" hoặc "Điểm đóng/trả:" trước khi quét từ khóa tự do để không bị nhiễu
         cleaned_for_order = re.sub(
@@ -590,18 +622,18 @@ class TripParser:
         # 2. Từ khóa nhận diện trực tiếp Lệnh Đóng (T01)
         if re.search(
             r"\b(?:đóng\s*hàng|dong\s*hang|lệnh\s*đóng|lenh\s*dong|đóng\s*cont|dong\s*cont|"
-            r"lấy\s*cont\s*rỗng|lay\s*cont\s*rong|lấy\s*rỗng|lay\s*rong|kéo\s*rỗng|keo\s*rong|đóng)\b",
+            r"lấy\s*cont\s*rỗng|lay\s*cont\s*rong|lấy\s*rỗng|lay\s*rong|kéo\s*rỗng|keo\s*rong|đóng|dong)\b",
             lower,
         ):
-            return OrderType.DONG.value, False
+            return OrderType.LOAD.value, False
 
         # 3. Từ khóa nhận diện trực tiếp Lệnh Trả (T02)
         if re.search(
             r"\b(?:trả\s*hàng|tra\s*hang|lệnh\s*trả|lenh\s*tra|trả\s*cont|tra\s*cont|"
-            r"hạ\s*cont|ha\s*cont|hạ\s*bãi|ha\s*bai|trả\s*rỗng|tra\s*rong|trả)\b",
+            r"hạ\s*cont|ha\s*cont|hạ\s*bãi|ha\s*bai|trả\s*rỗng|tra\s*rong|trả|tra(?!\s*(?:cuu|cứu)))\b",
             lower,
         ):
-            return OrderType.TRA.value, False
+            return OrderType.RETURN.value, False
 
         # 4. Suy luận Lệnh Đóng từ ngữ cảnh xuất hàng / điểm đóng (T03)
         if re.search(
@@ -609,7 +641,7 @@ class TripParser:
             r"nơi\s*đóng|noi\s*dong|kho\s*đóng|kho\s*dong|booking\s*xuất)\b",
             lower,
         ):
-            return OrderType.DONG.value, True
+            return OrderType.LOAD.value, True
 
         # 5. Suy luận Lệnh Trả từ ngữ cảnh nhập hàng / dỡ hàng / nơi hạ (T04)
         if re.search(
@@ -617,7 +649,7 @@ class TripParser:
             r"giao\s*hàng|giao\s*hang|điểm\s*trả|diem\s*tra|kho\s*trả|kho\s*tra|nơi\s*hạ|noi\s*ha|điểm\s*hạ|diem\s*ha)\b",
             lower,
         ):
-            return OrderType.TRA.value, True
+            return OrderType.RETURN.value, True
 
         return None, False
 
@@ -762,9 +794,9 @@ class TripParser:
             except ValueError:
                 return eta_raw, eta_hhmm, None, True
 
-        # 3b. Mẫu giờ rút gọn có tiền tố liên kết: "- 8h", "đến 8h", "vào 8h30", "lúc 14h"
+        # 3b. Mẫu giờ rút gọn có tiền tố liên kết: "- 8h", "đến 8h", "vào 8h30", "lúc 14h", "tam 8h30", "tầm 8h30 tối nay"
         short_eta = re.search(
-            r"(?:(?:đến|vào|lúc|tầm|khoảng)\s*|[-–—]\s*)(\d{1,2})(?:[:hH](\d{2})?|\s*giờ(?:\s*(\d{1,2}))?)\b",
+            r"(?:(?:đến|den|vào|vao|lúc|luc|tầm|tam|khoảng|khoang|hẹn|hen)\s*|[-–—]\s*)(\d{1,2})(?:[:hH](\d{2})?|\s*giờ(?:\s*(\d{1,2}))?)\s*(sáng|sang|chiều|chieu|tối(?:\s*nay)?|toi\s*nay|đêm|dem)?\b",
             text,
             flags=re.IGNORECASE,
         )
@@ -772,6 +804,9 @@ class TripParser:
             eta_raw = short_eta.group(0).strip()
             hour = int(short_eta.group(1))
             minute = int(short_eta.group(2) or short_eta.group(3) or 0)
+            period = (short_eta.group(4) or "").lower()
+            if period and any(p in period for p in ("chiều", "chieu", "tối", "toi", "đêm", "dem")) and hour < 12:
+                hour += 12
             if 0 <= hour <= 23 and 0 <= minute <= 59:
                 eta_hhmm = f"{hour:02d}:{minute:02d}"
                 try:

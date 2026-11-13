@@ -2,20 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  MessageSquare,
-  RefreshCw,
-  Eye,
-  X,
-  AlertTriangle,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  Send,
-  Truck,
-  Box,
-  ExternalLink,
-} from "lucide-react";
+import { X } from "lucide-react";
 import {
   ZaloMessageItem,
   getMessages,
@@ -24,6 +11,7 @@ import {
   rejectMessageByDHVT,
   approveOutboundMessage,
 } from "@/lib/api";
+import { toast } from "@/components/shared/Toast";
 
 export default function MessagesPage() {
   const [messages, setMessages] = useState<ZaloMessageItem[]>([]);
@@ -35,7 +23,8 @@ export default function MessagesPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
 
-  // Filters
+  // Filters & Search
+  const [search, setSearch] = useState<string>("");
   const [status, setStatus] = useState<string>("");
   const [groupId, setGroupId] = useState<string>("");
   const [userId, setUserId] = useState<string>("");
@@ -43,37 +32,56 @@ export default function MessagesPage() {
   const [toTime, setToTime] = useState<string>("");
 
   // Detail Modal State
-  const [selectedMsgId, setSelectedMsgId] = useState<number | null>(null);
+  const [selectedMsgId, setSelectedMsgId] = useState<string | null>(null);
   const [detailData, setDetailData] = useState<any | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [approvingMsg, setApprovingMsg] = useState(false);
   const [rejectingMsg, setRejectingMsg] = useState(false);
 
-  const handleApproveMessage = async (msgId: number) => {
+  // Reject Dialog State
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectTargetId, setRejectTargetId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState<string>(
+    "Dữ liệu không chính xác hoặc lệnh điều xe bị hủy."
+  );
+
+  const handleApproveMessage = async (msgId: string) => {
     try {
       setApprovingMsg(true);
-      const res = await approveMessageByDHVT(msgId);
-      alert(res.message || "ĐHVT đã duyệt tin nhắn và gửi tới Zalo thành công!");
+      const res = await approveMessageByDHVT(msgId as any);
+      toast.success(res.message || "ĐHVT đã duyệt tin nhắn và gửi tới Zalo thành công.");
       await handleOpenDetail(msgId);
       loadMessages(currentPage, pageSize);
     } catch (err: any) {
-      alert(err.message || "Lỗi khi duyệt tin nhắn");
+      toast.error(err.message || "Lỗi khi duyệt tin nhắn");
     } finally {
       setApprovingMsg(false);
     }
   };
 
-  const handleRejectMessage = async (msgId: number) => {
-    const reason = prompt("Nhập lý do ĐHVT từ chối tin nhắn này:", "Dữ liệu không chính xác hoặc lệnh điều xe bị hủy.");
-    if (reason === null) return;
+  const handleOpenRejectModal = (msgId: string) => {
+    setRejectTargetId(msgId);
+    setRejectReason("Dữ liệu không chính xác hoặc lệnh điều xe bị hủy.");
+    setRejectModalOpen(true);
+  };
+
+  const handleConfirmReject = async () => {
+    if (!rejectTargetId) return;
+    if (!rejectReason.trim()) {
+      toast.error("Vui lòng nhập lý do từ chối tin nhắn.");
+      return;
+    }
     try {
       setRejectingMsg(true);
-      const res = await rejectMessageByDHVT(msgId, reason);
-      alert(res.message || "ĐHVT đã từ chối tin nhắn thành công!");
-      await handleOpenDetail(msgId);
+      const res = await rejectMessageByDHVT(rejectTargetId as any, rejectReason.trim());
+      toast.success(res.message || "ĐHVT đã từ chối tin nhắn thành công.");
+      setRejectModalOpen(false);
+      if (selectedMsgId) {
+        await handleOpenDetail(selectedMsgId);
+      }
       loadMessages(currentPage, pageSize);
     } catch (err: any) {
-      alert(err.message || "Lỗi khi từ chối tin nhắn");
+      toast.error(err.message || "Lỗi khi từ chối tin nhắn");
     } finally {
       setRejectingMsg(false);
     }
@@ -83,13 +91,13 @@ export default function MessagesPage() {
     try {
       setApprovingMsg(true);
       const res = await approveOutboundMessage(outboundId, "Điều độ viên ĐHVT");
-      alert(res.message || "Đã phê duyệt và gửi tin nhắn ra Nhóm Zalo!");
+      toast.success(res.message || "Đã phê duyệt và gửi tin nhắn ra Nhóm Zalo.");
       if (selectedMsgId) {
         await handleOpenDetail(selectedMsgId);
       }
       loadMessages(currentPage, pageSize);
     } catch (err: any) {
-      alert(err.message || "Lỗi khi duyệt tin gửi đi");
+      toast.error(err.message || "Lỗi khi duyệt tin gửi đi");
     } finally {
       setApprovingMsg(false);
     }
@@ -100,9 +108,10 @@ export default function MessagesPage() {
       setLoading(true);
       setError(null);
       const res = await getMessages({
+        search: search.trim() || undefined,
         status: status || undefined,
-        group_id: groupId || undefined,
-        user_id: userId || undefined,
+        group_id: groupId.trim() || undefined,
+        user_id: userId.trim() || undefined,
         from_time: fromTime || undefined,
         to_time: toTime || undefined,
         limit: size,
@@ -112,6 +121,7 @@ export default function MessagesPage() {
       setTotal(res.total);
     } catch (err: any) {
       setError(err.message || "Lỗi khi lấy danh sách tin nhắn.");
+      toast.error(err.message || "Lỗi khi lấy danh sách tin nhắn.");
     } finally {
       setLoading(false);
     }
@@ -138,30 +148,91 @@ export default function MessagesPage() {
     loadMessages(1, pageSize);
   };
 
-  const handleOpenDetail = async (id: number) => {
+  const handleResetFilter = () => {
+    setSearch("");
+    setStatus("");
+    setGroupId("");
+    setUserId("");
+    setFromTime("");
+    setToTime("");
+    setCurrentPage(1);
+  };
+
+  const handleOpenDetail = async (id: string | number, fallbackZaloId?: string) => {
+    const safeId = String(id);
     try {
-      setSelectedMsgId(id);
+      setSelectedMsgId(safeId);
       setLoadingDetail(true);
-      const res = await getMessageDetail(id);
+      let res;
+      try {
+        res = await getMessageDetail(safeId);
+      } catch (firstErr: any) {
+        if (fallbackZaloId) {
+          res = await getMessageDetail(fallbackZaloId);
+        } else {
+          throw firstErr;
+        }
+      }
       setDetailData(res);
     } catch (err: any) {
-      alert("Lỗi khi tải chi tiết tin nhắn: " + err.message);
+      toast.error("Lỗi khi tải chi tiết tin nhắn: " + err.message);
     } finally {
       setLoadingDetail(false);
     }
   };
 
+  const getStatusLabel = (s: string) => {
+    switch (s?.toLowerCase()) {
+      case "processed":
+        return "Thành công";
+      case "needs_review":
+        return "Chờ duyệt";
+      case "cancelled":
+        return "Bị hủy";
+      case "failed":
+        return "Thất bại";
+      case "ignored_chat":
+        return "Tin rác";
+      case "ignored_non_text":
+        return "Bỏ qua (ảnh trống)";
+      case "received":
+        return "Mới nhận";
+      case "queued":
+        return "Đang chờ hàng đợi";
+      case "processing":
+        return "Đang xử lý";
+      default:
+        return s || "Chưa rõ";
+    }
+  };
+
+  const getStatusBadgeClass = (s: string) => {
+    switch (s?.toLowerCase()) {
+      case "processed":
+        return "bg-emerald-50 text-emerald-700 border-emerald-200";
+      case "needs_review":
+        return "bg-purple-50 text-purple-700 border-purple-200";
+      case "cancelled":
+      case "failed":
+        return "bg-rose-50 text-rose-700 border-rose-200";
+      case "ignored_chat":
+      case "ignored_non_text":
+        return "bg-slate-100 text-slate-600 border-slate-200";
+      default:
+        return "bg-slate-50 text-slate-700 border-slate-200";
+    }
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            <MessageSquare className="w-6 h-6 text-blue-400" />
-            Quản Lý Tin Nhắn Zalo
+          <h1 className="text-xl font-bold text-slate-900">
+            Quản lý tin nhắn Zalo
           </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Toàn bộ tin nhắn nhận được qua Zalo OA & Webhook • Dữ liệu bóc tách xe, container và cảnh báo
+          <p className="text-xs text-slate-500 mt-0.5">
+            Tin nhắn tiếp nhận qua Zalo OA & Webhook, dữ liệu bóc tách xe, container
           </p>
         </div>
 
@@ -169,39 +240,40 @@ export default function MessagesPage() {
           type="button"
           onClick={() => loadMessages(currentPage, pageSize)}
           disabled={loading}
-          className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition"
+          className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-900 rounded-sm text-xs font-medium border border-slate-200 transition"
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-          <span>Làm mới</span>
+          {loading ? "Đang tải..." : "Làm mới"}
         </button>
       </div>
 
       {/* Error Message */}
       {error && (
-        <div className="p-3 bg-rose-950/40 border border-rose-800 rounded-lg text-rose-300 text-xs flex items-center space-x-2">
-          <AlertTriangle className="w-4 h-4 text-rose-400" />
-          <span>{error}</span>
+        <div className="p-3 bg-white border border-rose-200 text-rose-700 rounded-sm text-xs">
+          {error}
         </div>
       )}
 
       {/* Quick Status Filter Tabs */}
-      <div className="flex flex-wrap items-center gap-2 pb-1 border-b border-slate-800">
+      <div className="flex flex-wrap items-center gap-2 pb-1 border-b border-slate-200">
         {[
-          { id: "", label: "Tất cả tin nhắn" },
-          { id: "processed", label: "✅ Thành công (processed)" },
-          { id: "needs_review", label: "⏳ Chờ duyệt (needs_review)" },
-          { id: "cancelled", label: "🚫 Bị hủy (cancelled)" },
-          { id: "failed", label: "⚠️ Thất bại / Lỗi (failed)" },
-          { id: "ignored_chat", label: "💬 Tin rác / Bỏ qua" },
+          { id: "", label: "Tất cả" },
+          { id: "processed", label: "Thành công" },
+          { id: "needs_review", label: "Chờ duyệt" },
+          { id: "cancelled", label: "Bị hủy" },
+          { id: "failed", label: "Thất bại" },
+          { id: "ignored_chat", label: "Tin rác / Xã giao" },
         ].map((tab) => (
           <button
             key={tab.id}
             type="button"
-            onClick={() => setStatus(tab.id)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+            onClick={() => {
+              setStatus(tab.id);
+              setCurrentPage(1);
+            }}
+            className={`px-3 py-1.5 rounded-sm text-xs font-medium transition ${
               status === tab.id
-                ? "bg-blue-600 text-white shadow-sm"
-                : "bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-slate-200 border border-slate-800"
+                ? "bg-purple-700 text-white"
+                : "bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 border border-slate-200"
             }`}
           >
             {tab.label}
@@ -209,17 +281,31 @@ export default function MessagesPage() {
         ))}
       </div>
 
-      {/* Filters Toolbar */}
+      {/* Search & Filters Toolbar */}
       <form
         onSubmit={handleSearch}
-        className="bg-slate-900 border border-slate-800 p-4 rounded-xl grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 text-xs"
+        className="bg-white border border-slate-200 p-3.5 rounded-sm grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5 text-xs"
       >
+        <div className="lg:col-span-2">
+          <label className="block text-slate-600 mb-1 font-medium">Tìm kiếm:</label>
+          <input
+            type="text"
+            placeholder="Nội dung, biển số, container, người gửi..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 focus:outline-none focus:border-purple-600"
+          />
+        </div>
+
         <div>
-          <label className="block text-slate-400 mb-1 font-medium">Trạng thái:</label>
+          <label className="block text-slate-600 mb-1 font-medium">Trạng thái:</label>
           <select
             value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+            onChange={(e) => {
+              setStatus(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-purple-600"
           >
             <option value="">Tất cả trạng thái</option>
             <option value="processed">Thành công (processed)</option>
@@ -232,83 +318,79 @@ export default function MessagesPage() {
         </div>
 
         <div>
-          <label className="block text-slate-400 mb-1 font-medium">Group ID:</label>
+          <label className="block text-slate-600 mb-1 font-medium">Group ID:</label>
           <input
             type="text"
-            placeholder="Lọc theo Group ID"
+            placeholder="Lọc Group ID"
             value={groupId}
             onChange={(e) => setGroupId(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 font-mono"
+            className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 focus:outline-none focus:border-purple-600 font-mono text-[11px]"
           />
         </div>
 
         <div>
-          <label className="block text-slate-400 mb-1 font-medium">User ID:</label>
-          <input
-            type="text"
-            placeholder="Lọc theo User ID người gửi"
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 font-mono"
-          />
-        </div>
-
-        <div>
-          <label className="block text-slate-400 mb-1 font-medium">Từ ngày:</label>
+          <label className="block text-slate-600 mb-1 font-medium">Từ ngày:</label>
           <input
             type="date"
             value={fromTime}
             onChange={(e) => setFromTime(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+            className="w-full bg-white border border-slate-300 rounded-sm px-2 py-1.5 text-slate-900 focus:outline-none focus:border-purple-600"
           />
         </div>
 
         <div>
-          <label className="block text-slate-400 mb-1 font-medium">Đến ngày:</label>
-          <div className="flex gap-2">
+          <label className="block text-slate-600 mb-1 font-medium">Đến ngày:</label>
+          <div className="flex gap-1.5">
             <input
               type="date"
               value={toTime}
               onChange={(e) => setToTime(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-white border border-slate-300 rounded-sm px-2 py-1.5 text-slate-900 focus:outline-none focus:border-purple-600"
             />
             <button
               type="submit"
-              className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-lg font-medium"
+              className="bg-purple-700 hover:bg-purple-800 text-white px-3 py-1.5 rounded-sm font-medium transition"
             >
               Lọc
+            </button>
+            <button
+              type="button"
+              onClick={handleResetFilter}
+              className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 px-2.5 py-1.5 rounded-sm font-medium transition"
+              title="Đặt lại bộ lọc"
+            >
+              Xóa
             </button>
           </div>
         </div>
       </form>
 
       {/* Messages Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-        <div className="p-3 border-b border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+      <div className="bg-white border border-slate-200 rounded-sm overflow-hidden">
+        <div className="p-3 border-b border-slate-200 text-xs text-slate-500 flex items-center justify-between">
           <span>
-            Tìm thấy <strong className="text-white">{messages.length}</strong> / {total} tin nhắn
+            Hiển thị <strong className="text-slate-900">{messages.length}</strong> / {total} tin nhắn
           </span>
         </div>
 
         <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
           <table className="w-full text-left text-xs border-collapse">
-            <thead className="bg-slate-950/80 sticky top-0 text-slate-300 font-semibold border-b border-slate-800 whitespace-nowrap">
+            <thead className="bg-slate-50 sticky top-0 text-slate-900 font-semibold border-b border-slate-200 whitespace-nowrap">
               <tr>
-                <th className="py-3 px-3">ID</th>
-                <th className="py-3 px-3">Người gửi</th>
-                <th className="py-3 px-3">Group ID</th>
-                <th className="py-3 px-3">Thời gian</th>
-                <th className="py-3 px-3">Trạng thái</th>
-                <th className="py-3 px-4 min-w-[280px]">Nội dung gốc</th>
-                <th className="py-3 px-3">Xe bóc tách</th>
-                <th className="py-3 px-3">Container</th>
-                <th className="py-3 px-3 text-center">Chi tiết</th>
+                <th className="py-2.5 px-3">Người gửi</th>
+                <th className="py-2.5 px-3">Nhóm Zalo</th>
+                <th className="py-2.5 px-3">Thời gian</th>
+                <th className="py-2.5 px-3 min-w-[240px]">Nội dung</th>
+                <th className="py-2.5 px-3">Trạng thái</th>
+                <th className="py-2.5 px-3">Xe bóc tách</th>
+                <th className="py-2.5 px-3">Container</th>
+                <th className="py-2.5 px-3 text-right">Thao tác</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60 font-normal">
+            <tbody className="divide-y divide-slate-200 font-normal">
               {messages.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-500">
+                  <td colSpan={8} className="py-10 text-center text-slate-500">
                     Không có tin nhắn nào khớp với bộ lọc.
                   </td>
                 </tr>
@@ -317,104 +399,64 @@ export default function MessagesPage() {
                   const plates = (m.trucks || []).map((t) => t?.truck_plate).filter(Boolean);
                   const conts = (m.containers || []).map((c) => c?.container_no).filter(Boolean);
                   return (
-                    <tr key={m.id} className="hover:bg-slate-800/40 transition">
-                      <td className="py-2.5 px-3 font-mono text-slate-400">#{m.id}</td>
-                      <td className="py-2.5 px-3 whitespace-nowrap font-medium text-slate-200">
-                        {m.sender_name || m.sender_id || "Chưa rõ"}
+                    <tr
+                      key={m.id}
+                      onClick={() => handleOpenDetail(m.id, m.zalo_message_id)}
+                      className="hover:bg-slate-50 transition cursor-pointer"
+                    >
+                      <td className="py-2.5 px-3 whitespace-nowrap font-medium text-slate-900">
+                        {m.sender_name || m.sender_id || "—"}
                       </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap font-mono text-slate-400">
-                        {m.group_id || "Direct"}
+                      <td className="py-2.5 px-3 whitespace-nowrap text-slate-500 text-[11px] max-w-[160px] truncate" title={m.group_name || m.group_id}>
+                        {m.group_name || m.group_id || "Direct"}
                       </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap text-slate-400">
+                      <td className="py-2.5 px-3 whitespace-nowrap text-slate-500">
                         {(m.sent_at || m.received_at)?.slice(0, 16).replace("T", " ") || "—"}
                       </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap">
-                        {m.processing_status === "processed" && (
-                          <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 inline-flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                            Thành công
-                          </span>
-                        )}
-                        {m.processing_status === "needs_review" && (
-                          <div className="flex items-center space-x-1.5">
-                            <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 inline-flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                              Chờ duyệt
-                            </span>
-                            <Link
-                              href="/reviews"
-                              className="text-[10px] text-amber-300 hover:text-amber-200 underline font-medium"
-                              title="Chuyển tới trang phê duyệt"
-                            >
-                              Duyệt ngay
-                            </Link>
-                          </div>
-                        )}
-                        {m.processing_status === "cancelled" && (
-                          <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30 inline-flex items-center gap-1">
-                            <XCircle className="w-3 h-3 text-rose-400" />
-                            Bị hủy
-                          </span>
-                        )}
-                        {m.processing_status === "failed" && (
-                          <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30 inline-flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3 text-rose-400" />
-                            Thất bại
-                          </span>
-                        )}
-                        {m.processing_status === "ignored_chat" && (
-                          <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">
-                            Tin rác / Xã giao
-                          </span>
-                        )}
-                        {m.processing_status === "received" && (
-                          <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-500/15 text-blue-400 border border-blue-500/30 inline-flex items-center gap-1">
-                            <Clock className="w-3 h-3 text-blue-400" />
-                            Mới nhận
-                          </span>
-                        )}
-                        {!["processed", "needs_review", "cancelled", "failed", "ignored_chat", "received"].includes(m.processing_status) && (
-                          <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-800 text-slate-400">
-                            {m.processing_status}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-4 font-mono text-slate-300 max-w-md truncate" title={m.raw_text || ""}>
+                      <td className="py-2.5 px-3 font-mono text-slate-900 max-w-sm truncate" title={m.raw_text || ""}>
                         {m.raw_text || "—"}
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <span className={`px-2 py-0.5 rounded-sm text-[11px] font-medium border ${getStatusBadgeClass(m.processing_status)}`}>
+                          {getStatusLabel(m.processing_status)}
+                        </span>
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap">
                         {plates.length > 0 ? (
                           <div className="flex flex-wrap gap-1">
                             {plates.map((p, idx) => (
-                              <span key={idx} className="bg-blue-950/80 text-blue-300 px-1.5 py-0.5 rounded text-[11px] font-mono">
+                              <span key={idx} className="bg-white text-slate-900 px-1.5 py-0.5 rounded-sm text-[11px] font-mono border border-slate-200">
                                 {p}
                               </span>
                             ))}
                           </div>
                         ) : (
-                          <span className="text-slate-500">—</span>
+                          <span className="text-slate-400">—</span>
                         )}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap">
                         {conts.length > 0 ? (
                           <div className="flex flex-wrap gap-1">
                             {conts.map((c, idx) => (
-                              <span key={idx} className="bg-purple-950/80 text-purple-300 px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold">
+                              <span key={idx} className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded-sm text-[11px] font-mono font-medium border border-purple-200">
                                 {c}
                               </span>
                             ))}
                           </div>
                         ) : (
-                          <span className="text-slate-500">—</span>
+                          <span className="text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                      <td
+                        className="py-2.5 px-3 text-right whitespace-nowrap"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <button
-                          onClick={() => handleOpenDetail(m.id)}
-                          className="inline-flex items-center space-x-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-blue-400 rounded text-xs transition"
+                          type="button"
+                          onClick={() => handleOpenDetail(m.id, m.zalo_message_id)}
+                          className="px-2 py-1 text-[11px] bg-white border border-slate-200 hover:border-purple-300 text-purple-700 rounded-sm font-medium"
                         >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Xem</span>
+                          Chi tiết
                         </button>
                       </td>
                     </tr>
@@ -427,11 +469,11 @@ export default function MessagesPage() {
 
         {/* Pagination Toolbar */}
         {total > 0 && (
-          <div className="px-4 py-3 bg-slate-950/80 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-            <div className="text-slate-400">
-              Hiển thị <span className="font-semibold text-white">{(currentPage - 1) * pageSize + 1}</span> -{" "}
-              <span className="font-semibold text-white">{Math.min(currentPage * pageSize, total)}</span> trong{" "}
-              <span className="font-semibold text-white">{total}</span> tin nhắn
+          <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+            <div className="text-slate-500">
+              Hiển thị <span className="font-semibold text-slate-900">{(currentPage - 1) * pageSize + 1}</span> -{" "}
+              <span className="font-semibold text-slate-900">{Math.min(currentPage * pageSize, total)}</span> trong{" "}
+              <span className="font-semibold text-slate-900">{total}</span> tin nhắn
             </div>
 
             <div className="flex items-center space-x-2">
@@ -444,7 +486,7 @@ export default function MessagesPage() {
                     setPageSize(newSize);
                     setCurrentPage(1);
                   }}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-blue-500"
+                  className="bg-white border border-slate-300 rounded-sm px-2 py-1 text-slate-900 focus:outline-none focus:border-purple-600"
                 >
                   <option value={10}>10</option>
                   <option value={15}>15</option>
@@ -457,22 +499,22 @@ export default function MessagesPage() {
                 type="button"
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                 disabled={currentPage <= 1 || loading}
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 transition"
+                className="px-2.5 py-1 rounded-sm bg-white hover:bg-slate-50 text-slate-700 border-slate-200 disabled:opacity-40 disabled:cursor-not-allowed border transition"
               >
-                ← Trước
+                Trước
               </button>
 
-              <span className="px-2 font-mono text-slate-300">
-                Trang <span className="text-white font-bold">{currentPage}</span> / {Math.ceil(total / pageSize) || 1}
+              <span className="px-2 font-mono text-slate-700">
+                Trang <span className="text-slate-900 font-bold">{currentPage}</span> / {Math.ceil(total / pageSize) || 1}
               </span>
 
               <button
                 type="button"
                 onClick={() => setCurrentPage((p) => Math.min(Math.ceil(total / pageSize), p + 1))}
                 disabled={currentPage >= Math.ceil(total / pageSize) || loading}
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 transition"
+                className="px-2.5 py-1 rounded-sm bg-white hover:bg-slate-50 text-slate-700 border-slate-200 disabled:opacity-40 disabled:cursor-not-allowed border transition"
               >
-                Sau →
+                Sau
               </button>
             </div>
           </div>
@@ -481,17 +523,29 @@ export default function MessagesPage() {
 
       {/* Detail Modal */}
       {selectedMsgId && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-3xl w-full p-6 text-xs text-slate-300 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <span>Chi Tiết Tin Nhắn #{selectedMsgId}</span>
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => {
+            setSelectedMsgId(null);
+            setDetailData(null);
+          }}
+        >
+          <div
+            className="bg-white border border-slate-200 rounded-sm max-w-3xl w-full p-6 text-xs text-slate-900 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Chi tiết tin nhắn #{selectedMsgId}
+                </h3>
                 {detailData?.message?.processing_status && (
-                  <span className="text-xs px-2 py-0.5 rounded font-mono bg-blue-950 text-blue-400 border border-blue-800">
-                    {detailData.message.processing_status}
+                  <span className={`text-[11px] px-2 py-0.5 rounded-sm border font-medium ${getStatusBadgeClass(detailData.message.processing_status)}`}>
+                    {getStatusLabel(detailData.message.processing_status)}
                   </span>
                 )}
-              </h3>
+              </div>
+
               <div className="flex items-center space-x-2">
                 {(detailData?.message?.processing_status === "needs_review" ||
                   detailData?.outbound_messages?.some((o: any) => o.status === "cho_duyet")) && (
@@ -499,135 +553,146 @@ export default function MessagesPage() {
                     <button
                       type="button"
                       disabled={rejectingMsg || approvingMsg}
-                      onClick={() => handleRejectMessage(selectedMsgId)}
-                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition shadow-sm disabled:opacity-50"
+                      onClick={() => selectedMsgId && handleOpenRejectModal(selectedMsgId)}
+                      className="px-3 py-1.5 bg-white border border-rose-300 hover:bg-rose-50 text-rose-700 rounded-sm text-xs font-medium transition disabled:opacity-50"
                     >
-                      <XCircle className={`w-4 h-4 ${rejectingMsg ? "animate-spin" : ""}`} />
-                      <span>{rejectingMsg ? "Đang xử lý..." : "ĐHVT Từ Chối"}</span>
+                      {rejectingMsg ? "Đang xử lý..." : "Từ chối"}
                     </button>
                     <button
                       type="button"
                       disabled={approvingMsg || rejectingMsg}
-                      onClick={() => handleApproveMessage(selectedMsgId)}
-                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition shadow-sm disabled:opacity-50"
+                      onClick={() => selectedMsgId && handleApproveMessage(selectedMsgId)}
+                      className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-sm text-xs font-medium transition disabled:opacity-50"
                     >
-                      <CheckCircle2 className={`w-4 h-4 ${approvingMsg ? "animate-spin" : ""}`} />
-                      <span>{approvingMsg ? "Đang gửi Zalo..." : "ĐHVT Duyệt & Gửi Zalo"}</span>
+                      {approvingMsg ? "Đang gửi Zalo..." : "Duyệt & Gửi Zalo"}
                     </button>
                   </>
                 )}
                 <button
+                  type="button"
                   onClick={() => {
                     setSelectedMsgId(null);
                     setDetailData(null);
                   }}
+                  className="text-slate-500 hover:text-slate-900"
                 >
-                  <X className="w-5 h-5 text-slate-400 hover:text-white" />
+                  <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
             {loadingDetail ? (
-              <div className="py-12 text-center text-slate-400">Đang tải chi tiết tin nhắn...</div>
+              <div className="py-12 text-center text-slate-500">Đang tải chi tiết tin nhắn...</div>
             ) : (
-              <div className="space-y-5 mt-4">
-                {/* 1. Raw message block */}
-                <div>
-                  <div className="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5">
-                    <MessageSquare className="w-3.5 h-3.5 text-blue-400" />
-                    <span>NỘI DUNG TIN NHẮN GỐC NHẬN TỪ ZALO:</span>
+              <div className="space-y-4 mt-4">
+                {/* Thông tin meta */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-slate-50 border border-slate-200 rounded-sm text-xs">
+                  <div>
+                    <span className="text-slate-500 block">Người gửi:</span>
+                    <strong className="text-slate-900 font-medium">
+                      {detailData?.message?.sender_name || detailData?.message?.sender_id || "—"}
+                    </strong>
                   </div>
-                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg font-mono text-sm text-slate-200 whitespace-pre-wrap leading-relaxed shadow-inner">
-                    {detailData?.message?.raw_text}
+                  <div>
+                    <span className="text-slate-500 block">Nhóm Zalo:</span>
+                    <strong className="text-slate-900 font-medium truncate block" title={detailData?.message?.group_name || detailData?.message?.group_id}>
+                      {detailData?.message?.group_name || detailData?.message?.group_id || "Direct"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Thời gian:</span>
+                    <strong className="text-slate-900 font-medium">
+                      {(detailData?.message?.sent_at || detailData?.message?.received_at)?.slice(0, 16).replace("T", " ") || "—"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Zalo Msg ID:</span>
+                    <span className="font-mono text-slate-900 text-[11px] truncate block" title={detailData?.message?.zalo_message_id}>
+                      {detailData?.message?.zalo_message_id || "—"}
+                    </span>
                   </div>
                 </div>
 
-                {/* 2. FORM TIN NHẮN GỬI ĐI CHO KHÁCH HÀNG / NHÓM ZALO */}
-                {detailData?.outbound_messages && detailData.outbound_messages.length > 0 ? (
-                  <div className="space-y-3">
+                {/* Nội dung tin nhắn gốc */}
+                <div>
+                  <div className="text-xs font-semibold text-slate-900 mb-1">
+                    Nội dung tin nhắn gốc:
+                  </div>
+                  <div className="p-3 bg-white border border-slate-200 rounded-sm font-mono text-xs text-slate-900 whitespace-pre-wrap leading-relaxed">
+                    {detailData?.message?.raw_text || "—"}
+                  </div>
+                </div>
+
+                {/* Thông tin Outbound gửi khách hàng */}
+                {detailData?.outbound_messages && detailData.outbound_messages.length > 0 && (
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 uppercase tracking-wide">
-                        <Send className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Form Tin Nhắn Gửi Đi Tới Nhóm Zalo ({detailData.outbound_messages.length} thông báo)</span>
+                      <div className="text-xs font-semibold text-slate-900">
+                        Thông báo gửi khách hàng ({detailData.outbound_messages.length})
                       </div>
                       <Link
                         href="/results"
-                        className="text-[11px] text-blue-400 hover:text-blue-300 hover:underline flex items-center gap-1 font-medium"
+                        className="text-[11px] text-purple-700 hover:underline font-medium"
                       >
-                        <span>Xem chi tiết tại Kết Quả Outbound</span>
-                        <ExternalLink className="w-3 h-3" />
+                        Mở trang Kết quả
                       </Link>
                     </div>
 
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       {detailData.outbound_messages.map((out: any) => (
                         <div
                           key={out.id}
-                          className="bg-slate-950 border border-emerald-500/40 rounded-xl p-4 space-y-3 shadow-lg"
+                          className="bg-slate-50 border border-slate-200 rounded-sm p-3 space-y-2"
                         >
-                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-800 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                             <div className="flex items-center gap-2">
                               <span
-                                className={`px-2 py-0.5 rounded font-semibold text-[11px] ${
+                                className={`px-2 py-0.5 rounded-sm font-medium text-[11px] border ${
                                   out.status === "da_gui"
-                                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                                     : out.status === "cho_duyet"
-                                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                    ? "bg-purple-50 text-purple-700 border-purple-200"
                                     : out.status === "bo_qua_trung_lap"
-                                    ? "bg-slate-700/40 text-slate-300 border border-slate-600"
-                                    : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                    ? "bg-slate-100 text-slate-600 border-slate-200"
+                                    : "bg-rose-50 text-rose-700 border-rose-200"
                                 }`}
                               >
                                 {out.status === "da_gui"
-                                  ? "✅ ĐÃ GỬI TỚI NHÓM ZALO"
+                                  ? "Đã gửi"
                                   : out.status === "cho_duyet"
-                                  ? "⏳ CHỜ PHÊ DUYỆT"
+                                  ? "Chờ duyệt"
                                   : out.status === "bo_qua_trung_lap"
-                                  ? "🛡️ BỎ QUA GỬI TRÙNG"
-                                  : "❌ GỬI THẤT BẠI"}
+                                  ? "Bỏ qua gửi trùng"
+                                  : "Gửi thất bại"}
                               </span>
                               {out.message_kind === "update" && (
-                                <span className="px-2 py-0.5 rounded font-semibold text-[11px] bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                                  🔄 CẬP NHẬT XE
+                                <span className="px-2 py-0.5 rounded-sm font-medium text-[11px] bg-purple-50 text-purple-700 border border-purple-200">
+                                  Cập nhật xe
                                 </span>
                               )}
-                              <span className="text-slate-400">
-                                Nhóm đích:{" "}
-                                <strong className="text-white font-mono">
-                                  {out.target_zalo_group_id || out.target_group_name}
-                                </strong>
+                              <span className="text-slate-500">
+                                Nhóm đích: <strong className="text-slate-900 font-mono">{out.target_zalo_group_id || out.target_group_name || "—"}</strong>
                               </span>
                             </div>
-                            {out.zalo_message_id && (
-                              <span className="text-[11px] font-mono text-emerald-400/90 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/40">
-                                Zalo MsgID: {out.zalo_message_id}
-                              </span>
-                            )}
+
                             {out.status === "cho_duyet" && (
                               <button
                                 type="button"
                                 disabled={approvingMsg}
                                 onClick={() => handleApproveOutbound(out.id)}
-                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-semibold transition disabled:opacity-50 flex items-center gap-1 shadow-sm"
+                                className="px-2.5 py-1 bg-purple-700 hover:bg-purple-800 text-white rounded-sm text-[11px] font-medium transition disabled:opacity-50"
                               >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>{approvingMsg ? "Đang gửi..." : "Duyệt & Gửi ngay"}</span>
+                                {approvingMsg ? "Đang gửi..." : "Duyệt & Gửi ngay"}
                               </button>
                             )}
                           </div>
 
-                          {/* Khung bong bóng tin nhắn gửi đi thực tế */}
-                          <div>
-                            <div className="text-[11px] font-semibold text-slate-400 mb-1 flex items-center gap-1">
-                              <span>Nội dung gửi vào nhóm Zalo khách hàng:</span>
-                            </div>
-                            <div className="bg-slate-900 border border-slate-800 rounded-lg p-3.5 font-mono text-xs sm:text-sm text-slate-100 whitespace-pre-wrap leading-relaxed shadow-inner">
-                              {out.content}
-                            </div>
+                          <div className="bg-white border border-slate-200 rounded-sm p-3 font-mono text-xs text-slate-900 whitespace-pre-wrap">
+                            {out.content}
                           </div>
 
                           {out.last_error && (
-                            <div className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-800/30">
+                            <div className="text-[11px] text-rose-700 bg-rose-50 p-2 rounded-sm border border-rose-200">
                               Lỗi gửi: {out.last_error}
                             </div>
                           )}
@@ -635,68 +700,49 @@ export default function MessagesPage() {
                       ))}
                     </div>
                   </div>
-                ) : (
-                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 text-xs flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      <Send className="w-3.5 h-3.5 text-slate-500" />
-                      <span>
-                        Chưa có tin nhắn gửi khách hàng (Outbound) cho tin nhắn này
-                        {detailData?.message?.processing_status === "needs_review" && " • Đang chờ ĐHVT phê duyệt"}
-                        {detailData?.message?.processing_status === "ignored_chat" && " • Tin rác/xã giao, không cần gửi thông báo"}
-                      </span>
-                    </span>
-                  </div>
                 )}
 
-                {/* 3. KẾT QUẢ XỬ LÝ LỖI & CẢNH BÁO NGHIỆP VỤ (Nếu tin có lỗi hoặc cần rà soát) */}
-                {(detailData?.review_cases?.length > 0 ||
-                  detailData?.bot_replies?.length > 0 ||
-                  detailData?.message?.processing_status === "needs_review" ||
-                  detailData?.message?.processing_status === "failed") && (
-                  <div className="bg-amber-950/20 border border-amber-500/40 rounded-xl p-4 space-y-3">
+                {/* Cảnh báo ca duyệt / Bot replies */}
+                {(detailData?.review_cases?.length > 0 || detailData?.bot_replies?.length > 0) && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-sm p-3.5 space-y-2.5">
                     <div className="flex items-center justify-between">
-                      <div className="text-xs font-bold text-amber-400 flex items-center gap-1.5 uppercase tracking-wide">
-                        <AlertTriangle className="w-4 h-4 text-amber-400" />
-                        <span>Kết Quả Xử Lý: Cảnh Báo Nghiệp Vụ & Lỗi Dữ Liệu</span>
+                      <div className="text-xs font-semibold text-slate-900">
+                        Cảnh báo nghiệp vụ & Ca duyệt
                       </div>
                       <Link
                         href="/reviews"
-                        className="text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1 rounded transition flex items-center gap-1"
+                        className="text-xs text-purple-700 hover:underline font-medium"
                       >
-                        <span>Duyệt tại Hàng Đợi (Reviews)</span>
-                        <ExternalLink className="w-3 h-3" />
+                        Mở Hàng đợi duyệt
                       </Link>
                     </div>
 
-                    {/* Danh sách các ca review */}
                     {detailData?.review_cases?.length > 0 && (
                       <div className="space-y-1.5">
-                        <div className="text-xs text-amber-300 font-semibold">Lý do cảnh báo / ca cần duyệt:</div>
                         {detailData.review_cases.map((rc: any) => (
                           <div
                             key={rc.id}
-                            className="p-2.5 bg-amber-950/50 border border-amber-800/50 rounded-lg text-xs text-amber-200 space-y-1"
+                            className="p-2.5 bg-white border border-purple-200 rounded-sm text-xs space-y-1"
                           >
                             <div className="flex items-center justify-between font-mono">
-                              <span className="font-bold text-amber-300">Ca #{rc.id}: {rc.case_type}</span>
-                              <span className="text-[10px] bg-amber-900/60 px-1.5 py-0.5 rounded text-amber-200">
+                              <span className="font-semibold text-purple-700">Ca #{rc.id}: {rc.case_type}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-slate-100 text-slate-700">
                                 {rc.status}
                               </span>
                             </div>
-                            <div>{rc.reason}</div>
+                            <div className="text-slate-700">{rc.reason}</div>
                           </div>
                         ))}
                       </div>
                     )}
 
-                    {/* Tin Bot phản hồi nhắc nhà xe */}
                     {detailData?.bot_replies?.length > 0 && (
                       <div className="space-y-1.5">
-                        <div className="text-xs text-rose-300 font-semibold">Tin nhắn Bot đã nhắc nhà xe sửa lỗi:</div>
+                        <div className="text-xs text-slate-500 font-medium">Tin Bot nhắc nhà xe sửa lỗi:</div>
                         {detailData.bot_replies.map((br: any) => (
                           <div
                             key={br.id}
-                            className="p-3 bg-slate-900 border border-rose-800/50 rounded-lg font-mono text-xs text-rose-300 whitespace-pre-wrap"
+                            className="p-2.5 bg-white border border-slate-200 rounded-sm font-mono text-xs text-slate-900 whitespace-pre-wrap"
                           >
                             {br.reply_text}
                           </div>
@@ -706,43 +752,39 @@ export default function MessagesPage() {
                   </div>
                 )}
 
-                {/* 4. CHI TIẾT XE VÀ CONTAINER BÓC TÁCH ĐƯỢC (Giao diện trực quan) */}
-                <div className="space-y-3">
-                  <div className="text-xs font-semibold text-slate-400 flex items-center gap-1.5 uppercase tracking-wider">
-                    <Truck className="w-3.5 h-3.5 text-blue-400" />
-                    <span>Phương Tiện & Container Đã Bóc Tách:</span>
+                {/* Chi tiết Phương tiện & Container đã bóc tách */}
+                <div className="space-y-2.5">
+                  <div className="text-xs font-semibold text-slate-900">
+                    Phương tiện & Container đã bóc tách:
                   </div>
 
-                  {/* Danh sách xe & lái xe */}
+                  {/* Xe & Lái xe */}
                   {detailData?.message?.trucks && detailData.message.trucks.length > 0 && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       {detailData.message.trucks.map((t: any) => (
                         <div
                           key={t.id}
-                          className="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1.5 text-xs"
+                          className="bg-slate-50 p-2.5 rounded-sm border border-slate-200 space-y-1 text-xs"
                         >
                           <div className="flex items-center justify-between">
-                            <span className="font-mono font-bold text-white bg-slate-900 px-2 py-0.5 rounded border border-slate-700">
-                              🚛 Xe: {t.truck_plate || "Chưa rõ biển"}
+                            <span className="font-mono font-bold text-slate-900">
+                              Xe: {t.truck_plate || "Chưa rõ"}
                             </span>
                             {t.trailer_plate && (
-                              <span className="text-[11px] text-slate-400 font-mono">
+                              <span className="text-[11px] text-slate-500 font-mono">
                                 Mooc: {t.trailer_plate}
                               </span>
                             )}
                           </div>
-                          <div className="text-slate-300">
-                            Lái xe: <strong className="text-white">{t.driver_name || "Chưa rõ"}</strong>
+                          <div className="text-slate-700">
+                            Lái xe: <strong className="text-slate-900">{t.driver_name || "—"}</strong>
                           </div>
-                          <div className="text-slate-300">
-                            SĐT liên hệ:{" "}
-                            <strong className="text-emerald-400 font-mono text-sm">
-                              {t.driver_phone || "Không có SĐT"}
-                            </strong>
+                          <div className="text-slate-700">
+                            SĐT: <strong className="font-mono text-purple-700">{t.driver_phone || "—"}</strong>
                           </div>
                           {t.eta_text && (
-                            <div className="text-slate-400 text-[11px]">
-                              ETA: <span className="text-amber-300 font-medium">{t.eta_text}</span>
+                            <div className="text-slate-500 text-[11px]">
+                              Giờ hẹn: {t.eta_text}
                             </div>
                           )}
                         </div>
@@ -750,62 +792,52 @@ export default function MessagesPage() {
                     </div>
                   )}
 
-                  {/* Danh sách containers */}
-                  <div className="space-y-2.5">
+                  {/* Container jobs */}
+                  <div className="space-y-2">
                     {(detailData?.message?.containers || []).map((c: any) => (
                       <div
                         key={c.id}
-                        className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5 hover:border-slate-700 transition"
+                        className="bg-slate-50 p-3 rounded-sm border border-slate-200 space-y-2"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
-                            <span className="font-mono font-bold text-white text-sm bg-slate-900 px-2.5 py-1 rounded border border-slate-700">
-                              📦 Cont: {c.container_no || "Chưa có cont"}
+                            <span className="font-mono font-bold text-slate-900 text-xs">
+                              Cont: {c.container_no || "Chưa có"}
                             </span>
                             {c.container_size && (
-                              <span className="text-xs text-blue-300 font-mono">
+                              <span className="text-xs font-mono text-slate-500">
                                 ({c.container_size}&#39;)
                               </span>
                             )}
                             {c.seal_no && (
-                              <span className="text-xs text-slate-300 font-mono">
-                                (Chì: <strong className="text-amber-400">{c.seal_no}</strong>)
+                              <span className="text-xs font-mono text-slate-700">
+                                Chì: <strong>{c.seal_no}</strong>
                               </span>
                             )}
-                            <span className={`text-[11px] px-2 py-0.5 rounded font-semibold ${
-                              c.order_type === "dong" ? "bg-blue-500/20 text-blue-300" : "bg-emerald-500/20 text-emerald-300"
-                            }`}>
-                              {c.order_type === "dong" ? "LỆNH ĐÓNG" : c.order_type === "tra" ? "LỆNH TRẢ" : "CHƯA RÕ"}
+                            <span className="text-[11px] px-2 py-0.5 rounded-sm font-medium bg-white border border-slate-200 text-slate-900">
+                              {c.order_type === "dong" ? "Lệnh Đóng" : c.order_type === "tra" ? "Lệnh Trả" : "Chưa rõ"}
                             </span>
                           </div>
 
-                          <span className={`text-[11px] px-2 py-0.5 rounded ${
-                            c.validation_status === "valid" ? "bg-emerald-950 text-emerald-400" : "bg-amber-950 text-amber-400"
+                          <span className={`text-[11px] px-2 py-0.5 rounded-sm font-medium border ${
+                            c.validation_status === "valid" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-purple-50 text-purple-700 border-purple-200"
                           }`}>
-                            {c.validation_status === "valid" ? "✅ Hợp lệ ISO 6346" : "⚠️ Cần kiểm tra"}
+                            {c.validation_status === "valid" ? "Hợp lệ ISO 6346" : "Cần kiểm tra"}
                           </span>
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-300 pt-1 border-t border-slate-900">
-                          <div>
-                            Khách hàng: <strong className="text-white">{c.customer_hint || "N/A"}</strong>
-                          </div>
-                          <div>
-                            Điểm nhận/giao: <strong className="text-white">{c.warehouse_hint || "N/A"}</strong>
-                          </div>
-                          <div>
-                            Nguồn ghép: <strong className="text-purple-300 font-mono">{c.match_source || "unmatched"}</strong>
-                          </div>
-                          <div>
-                            Định dạng: <strong className="text-blue-300 font-mono">{c.source_format || "tu_do"}</strong>
-                          </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 pt-1 border-t border-slate-200">
+                          <div>Khách hàng: <strong className="text-slate-900">{c.customer_hint || "—"}</strong></div>
+                          <div>Điểm giao/nhận: <strong className="text-slate-900">{c.warehouse_hint || "—"}</strong></div>
+                          <div>Nguồn ghép: <strong className="text-slate-900 font-mono">{c.match_source || "unmatched"}</strong></div>
+                          <div>Định dạng: <strong className="text-slate-900 font-mono">{c.source_format || "tu_do"}</strong></div>
                         </div>
 
                         {(c.warnings || []).length > 0 && (
-                          <div className="flex flex-wrap gap-1 text-[11px] text-amber-400 pt-1">
+                          <div className="flex flex-wrap gap-1 text-[11px] text-purple-700 pt-1">
                             {(c.warnings || []).map((w: string, i: number) => (
-                              <span key={i} className="bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/50">
-                                ⚠️ {w}
+                              <span key={i} className="bg-purple-50 px-2 py-0.5 rounded-sm border border-purple-200">
+                                {w}
                               </span>
                             ))}
                           </div>
@@ -816,6 +848,64 @@ export default function MessagesPage() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Reject Modal thay thế hoàn toàn prompt mặc định của browser */}
+      {rejectModalOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"
+          onClick={() => setRejectModalOpen(false)}
+        >
+          <div
+            className="bg-white border border-slate-200 rounded-sm max-w-md w-full p-5 text-xs text-slate-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2.5 border-b border-slate-200">
+              <h3 className="text-sm font-bold text-slate-900">
+                Từ chối tin nhắn #{rejectTargetId}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setRejectModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="mt-3 space-y-2">
+              <label className="block text-xs font-medium text-slate-700">
+                Lý do ĐHVT từ chối:
+              </label>
+              <textarea
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                rows={3}
+                className="w-full border border-slate-200 rounded-sm p-2 text-xs focus:outline-none focus:border-purple-600 font-sans"
+                placeholder="Nhập lý do từ chối..."
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setRejectModalOpen(false)}
+                disabled={rejectingMsg}
+                className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-sm text-xs font-medium transition"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReject}
+                disabled={rejectingMsg}
+                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-sm text-xs font-medium transition disabled:opacity-50"
+              >
+                {rejectingMsg ? "Đang xử lý..." : "Xác nhận từ chối"}
+              </button>
+            </div>
           </div>
         </div>
       )}

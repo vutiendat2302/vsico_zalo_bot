@@ -5,7 +5,7 @@
 **VSICO Zalo Bot & TMS Integration** là hệ thống tự động hóa tiếp nhận, bóc tách, đối chiếu kế hoạch và điều phối thông báo vận tải container đa kênh gồm các thành phần:
 
 - **`backend`**: Backend FastAPI sử dụng Python 3.12+, SQLAlchemy 2.0 ORM, Alembic, Pydantic v2, MySQL 8.4+, MinIO, Snowflake ID 64-bit, hàng đợi bất đồng bộ `FIFOQueue`, bộ điều tiết `ZaloOutboundThrottler` (Token Bucket) và tích hợp hai chiều với phần mềm `be-tms` (Tài liệu: [`backend/BACKEND.md`](./backend/BACKEND.md)).
-- **`frontend`**: Frontend Web Quản lý (dành cho ĐHVT & Admin) sử dụng Next.js 14+ (App Router), React 18+, TypeScript 5+, Tailwind CSS, Lucide Icons, Shadcn. (Tài liệu: [`frontend/FRONTEND.md`](./frontend/FRONTEND.md)).
+- **`frontend`**: Frontend Web Quản lý (dành cho ĐHVT & Admin) sử dụng Next.js 16+ (App Router, Turbopack), React 19+, TypeScript 5+, Tailwind CSS v4+, Lucide Icons, Shadcn. (Tài liệu: [`frontend/FRONTEND.md`](./frontend/FRONTEND.md)).
 - **`ai-service`**: Service AI & OCR riêng biệt (Python 3.12+, FastAPI), stateless: backend gửi kèm ngữ cảnh (tin trước, chuyến đang hoạt động) trong mỗi request, service không truy cập MySQL. Đảm nhiệm: phân loại ý định (tạo mới / bổ sung / đổi xe / hủy / hỏi thông tin / không rõ), phân đoạn đa xe/đa lệnh, bóc tách và liên kết thực thể (biển số, tài xế, SĐT, số cont, seal) kèm `confidence` và `evidence`, OCR ảnh/PDF scan (PaddleOCR, fallback Gemini Vision), và map địa chỉ kho nhiều tầng (thói quen nhà xe → fuzzy → LLM chọn ứng viên). Mọi kiểm tra tất định (ISO 6346, chuẩn hóa biển số/SĐT) thuộc `backend`; SĐT được che trước khi gọi cloud LLM. Chỉ giao tiếp nội bộ với `backend` (Tài liệu: [`ai-service/AISERVICE.md`](./ai-service/AISERVICE.md)).
 - **`database`**: Đặc tả thiết kế các bảng dữ liệu MySQL, sơ đồ ERD, quy ước khóa chính Snowflake ID 64-bit và khóa đồng bộ TMS (Tài liệu: [`database/DATABASE.md`](./database/DATABASE.md)).
 - **`zca-js`**: Cầu nối Zalo (Node.js ESM) lắng nghe sự kiện WebSocket thời gian thực từ các nhóm Zalo và cung cấp HTTP REST Server để phát hành tin nhắn (Tài liệu: [`zca-js/ZCA_BRIDGE.md`](./zca-js/ZCA_BRIDGE.md)).
@@ -21,7 +21,7 @@
 Trước khi thực hiện công việc ở phân hệ nào, Agent cần đọc và áp dụng skill tương ứng tại `.agents/skills/`:
 
 - [`vsico-backend`](./.agents/skills/vsico-backend/SKILL.md): Phát triển, sửa lỗi, refactor và kiểm thử Backend FastAPI tại `backend/`.
-- [`vsico-frontend`](./.agents/skills/vsico-frontend/SKILL.md): Phát triển, sửa lỗi, refactor và kiểm thử Frontend Next.js 14+ tại `frontend/`.
+- [`vsico-frontend`](./.agents/skills/vsico-frontend/SKILL.md): Phát triển, sửa lỗi, refactor và kiểm thử Frontend Next.js 16+ tại `frontend/`.
 - [`vsico-ai-service`](./.agents/skills/vsico-ai-service/SKILL.md): Phát triển AI Provider, OCR Vision, NLP Extraction và Map kho GP1–GP4 tại `ai-service/`.
 - [`vsico-database`](./.agents/skills/vsico-database/SKILL.md): Thiết kế schema, Snowflake ID, khóa TMS và quản lý Alembic migrations.
 - [`vsico-infra`](./.agents/skills/vsico-infra/SKILL.md): Quản lý `docker-compose.yml`, tệp `.env` tập trung, MinIO và cầu nối Zalo `zca-js/`.
@@ -54,7 +54,8 @@ Trước khi thực hiện công việc ở phân hệ nào, Agent cần đọc 
   - Toàn bộ khóa đồng bộ từ phần mềm TMS (`tms_customer_id`, `tms_warehouse_id`, `tms_carrier_id`, `tms_user_id`, `tms_dispatch_id`, `tms_order_id`) đều lưu dưới dạng **`BigInteger` (8 bytes)** có đánh Index để tối ưu bộ nhớ và tốc độ truy vấn; các mã chữ lưu riêng ở cột `code`.
 - **Quản lý Tài khoản (`users`), Nhà xe (`carriers`) & Nhóm Zalo (`zalo_info`)**:
   - Tất cả nhân viên ĐHVT sinh hoạt chung trong nhóm Zalo ĐHVT nội bộ (`zalo_info` có `role = 'dhvt'`), liên kết qua `users.zalo_info_id` (quan hệ Nhiều `users` - Một `zalo_info`).
-  - Định danh nhân viên ĐHVT khi quote duyệt `"ok"` trên Zalo thông qua đối chiếu `zalo_messages.sender_id == users.zalo_user_id`, và dùng chung tài khoản `users` đó cho tính năng đăng nhập Web quản lý (phân quyền `role = 'admin' | 'dhvt'`).
+  - Định danh nhân viên ĐHVT khi tra cứu nội bộ trên Zalo thông qua đối chiếu `zalo_messages.sender_id == users.zalo_user_id`, và dùng chung tài khoản `users` đó cho tính năng đăng nhập Web quản lý (phân quyền `role = 'admin' | 'dhvt'`).
+  - **Không cho phép duyệt trên Zalo**: Mọi thao tác duyệt, sửa, từ chối hoặc xác nhận hủy của ĐHVT phải thực hiện trên Web quản lý. Zalo ĐHVT chỉ dùng để nhận thông báo và tra cứu nội bộ (chỉ đọc). Khi nhận lệnh thao tác hoặc quote `"ok"` trên Zalo, Bot chỉ hướng dẫn mở ca trên Web, không thay đổi trạng thái nghiệp vụ.
   - Nhóm Zalo nhà xe (`role = 'car'`) và Kế hoạch vận chuyển (`transport_plans`) liên kết trực tiếp với bảng `carriers` qua khóa ngoại `carrier_id`.
 - **Lưu trữ File & Ảnh (MinIO)**: Lưu thông tin file trong bảng `files` gồm `file_key`, `bucket`, `object_key`, `sha256` (không lưu cứng URL tĩnh); khi cần xem thì sinh Presigned URL tạm thời.
 - Không thay đổi ID, quan hệ khóa ngoại, trường audit (`activity_logs`) và thời điểm trong vòng đời đối tượng nếu nghiệp vụ không yêu cầu.

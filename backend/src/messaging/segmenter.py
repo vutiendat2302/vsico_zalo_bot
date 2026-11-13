@@ -94,9 +94,16 @@ class MessageSegmenter:
         if not lines:
             return []
 
+        # Nếu toàn bộ tin nhắn chỉ có tối đa 1 biển số xe và 1 số container -> chắc chắn là 1 khối duy nhất (F2 nhiều dòng)
+        all_plates = cls._PLATE_REGEX.findall(cleaned_text)
+        all_conts = cls._CONT_REGEX.findall(cleaned_text)
+        if len(all_plates) <= 1 and len(all_conts) <= 1:
+            return [cleaned_text]
+
         # Trường hợp 1: Phân đoạn theo ranh giới xe rõ ràng (Emoji xe 🚛🚚🚗, "Xe 1:", "Xe 2:", "1.", "2.", "Biển số:", "BKS:")
+        # Lưu ý: Không tách theo nhãn "Cont:" đơn lẻ vì F2 nhiều dòng có "Xe: ..." ở trên và "Cont: ..." ở dưới thuộc cùng 1 xe.
         vehicle_split = re.split(
-            r"(?m)(?=^[ \t]*(?:[🚛🚚🚗🏎️🚜]|\d+[\.\)]\s*(?:xe|cont|bks|biển)?|(?:xe\s*\d*|cont\s*\d*|biển\s*số|bien\s*so|bks|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo)\s*[:\-])\s*)",
+            r"(?m)(?=^[ \t]*(?:[🚛🚚🚗🏎️🚜]|\d+[\.\)]\s*(?:xe|cont|bks|biển)?|(?:xe\s*\d*|biển\s*số|bien\s*so|bks|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo)\s*[:\-])\s*)",
             cleaned_text,
             flags=re.IGNORECASE,
         )

@@ -10,9 +10,10 @@ Phân hệ **Frontend Dashboard** (`frontend/`) là công cụ điều hành tru
 
 ### Công nghệ cốt lõi:
 
-- **Framework**: Next.js 14+ (App Router), React 18+, TypeScript 5+ (Strict Mode).
+- **Framework**: Next.js 16+ (App Router, Turbopack), React 19+, TypeScript 5+ (Strict Mode).
 - **Quản lý dữ liệu & Bảng**: TanStack Query (`@tanstack/react-query`) cho server state/caching và TanStack Table (`@tanstack/react-table`) cho bảng dữ liệu mật độ cao.
-- **Giao diện**: Tailwind CSS, `shadcn/ui` (tinh chỉnh tối giản cho nghiệp vụ điều vận), Lucide Icons.
+- **Giao diện**: Tailwind CSS v4+ (CSS-first `@import "tailwindcss"`), `shadcn/ui` (tinh chỉnh tối giản cho nghiệp vụ điều vận), Lucide Icons.
+- **Quy chuẩn mã nguồn**: ESLint 9+ (Flat Config `eslint.config.mjs`, TypeScript ESLint).
 - **Đồng bộ kiểu dữ liệu**: Tự động sinh TypeScript types từ OpenAPI của FastAPI bằng `openapi-typescript` (`src/types/api.d.ts`).
 - **Kiểm thử**: Playwright (`tests/e2e/`) kết hợp MSW (Mock Service Worker) cho kiểm thử tự động.
 
@@ -164,7 +165,7 @@ npm run gen:types
 # 3. Khởi chạy máy chủ phát triển (Cổng 3001)
 npm run dev
 
-# 4. Kiểm tra quy chuẩn code (ESLint, TypeScript & kiểm tra class bị cấm)
+# 4. Kiểm tra quy chuẩn code (ESLint 9 Flat Config, TypeScript & kiểm tra class bị cấm)
 npm run lint
 
 # 5. Đóng gói bản dựng Production

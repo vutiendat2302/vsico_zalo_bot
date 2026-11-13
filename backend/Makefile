@@ -1,4 +1,4 @@
-.PHONY: help run test test-txt ocr-run docker-up docker-down db-up db-down db-status db-check db-migrate db-clean db-clean-all db-clean-tests db-clean-plans db-reset db-shell
+.PHONY: help install egg-info run test test-txt ocr-run docker-up docker-down db-up db-down db-status db-check db-migrate db-clean db-clean-all db-clean-tests db-clean-plans db-reset db-shell
 
 PYTHON ?= $(shell if [ -f .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
 ALEMBIC ?= $(shell if [ -f .venv/bin/alembic ]; then echo .venv/bin/alembic; else echo alembic; fi)
@@ -8,6 +8,8 @@ help:
 	@echo " LỆNH KHẢ DỤNG CHO DỰ ÁN VSICO ZALO BOT (PM TMS TASK 2)"
 	@echo "=========================================================================="
 	@echo "  1. Ứng dụng & Kiểm thử:"
+	@echo "     make install         : Cài đặt editable package và cập nhật vsico_zalo_bot.egg-info"
+	@echo "     make egg-info        : Cập nhật siêu dữ liệu vsico_zalo_bot.egg-info"
 	@echo "     make run             : Khởi chạy FastAPI Webhook & TMS REST API (Port 8000)"
 	@echo "     make ocr-run         : Khởi chạy máy chủ PaddleOCR tự host cục bộ (Port 8866)"
 	@echo "     make test            : Chạy toàn bộ test suite tự động bằng Pytest"
@@ -28,6 +30,12 @@ help:
 	@echo "     make db-clean-all    : Dọn dẹp TRẮNG toàn bộ 17 bảng (giữ nguyên cấu trúc)"
 	@echo "     make db-reset        : Reset toàn bộ DB (Drop tables & chạy lại migrations)"
 	@echo "=========================================================================="
+
+install:
+	$(PYTHON) -m pip install -e ".[dev]"
+
+egg-info:
+	$(PYTHON) -c "import setuptools; setuptools.setup()" egg_info
 
 run:
 	$(PYTHON) run.py
@@ -63,7 +71,7 @@ db-migrate:
 	$(ALEMBIC) upgrade head
 
 db-shell:
-	docker exec -it vsico-zalo-mysql mysql -u root -p123456 vsico_zalo_bot
+	docker exec -it vsico-zalo-mysql mysql -u $${DB_USER:-vsico_user} -p vsico_zalo_bot
 
 db-clean:
 	$(PYTHON) scripts/manage_db.py clean --runtime -y

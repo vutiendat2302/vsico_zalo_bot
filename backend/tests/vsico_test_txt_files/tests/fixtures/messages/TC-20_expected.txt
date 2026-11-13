@@ -1,4 +1,0 @@
-TEST_ID: TC-20
-
-EXPECTED:
-Mỗi điểm trả phải định tuyến đúng theo bảng ánh xạ khách+tuyến+trả. Điểm chưa có mapping chuyển hàng chờ ĐHVT; tuyệt đối không gửi nhầm nhóm.

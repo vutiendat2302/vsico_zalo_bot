@@ -1,0 +1,8 @@
+VSICO - THÔNG BÁO HỦY CHUYẾN
+Khách hàng: {ten_khach_hang}
+
+Chuyến xe đã được xác nhận hủy:
+- Số cont: {so_cont} ({kich_thuoc})
+- Biển số xe: {bien_so}
+- Điểm đến: {diem_den}
+- Lý do: {ly_do}{dong_ghi_chu}

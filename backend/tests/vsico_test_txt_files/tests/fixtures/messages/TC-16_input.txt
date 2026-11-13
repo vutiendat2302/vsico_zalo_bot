@@ -1,5 +1,0 @@
-TEST_ID: TC-16
-FORMAT: TU_DO
-
-INPUT:
-ok anh, để em báo tài

@@ -1,46 +1,267 @@
 # =============================================================================
-# docker-compose.yml — HẠ TẦNG CONTAINER TRUNG TÂM DỰ ÁN VSICO ZALO BOT
-# Quản lý tập trung: MySQL 8.4 (Cơ sở dữ liệu) & MinIO (Lưu trữ File/Ảnh S3)
+# docker-compose.yml — HẠ TẦNG & ỨNG DỤNG CONTAINER TRUNG TÂM VSICO ZALO BOT
+# Quản lý tập trung:
+#   - Hạ tầng: MySQL 8.4, MinIO (S3), MinIO Init, Qdrant (Vector DB), PaddleOCR
+#   - Ứng dụng: Backend FastAPI (:8000), AI Service (:8001), Frontend Next.js (:3001)
 # Tự động đọc biến môi trường từ tệp `.env` duy nhất tại thư mục gốc.
+# Các cổng nội bộ bind vào 127.0.0.1 để chống quét cổng từ mạng bên ngoài.
+# Bắt buộc khai báo các Secret cốt lõi (DB, MinIO, JWT, Internal Secret) trong .env.
 # =============================================================================
 
 services:
+  # ---------------------------------------------------------------------------
+  # 1. Cơ sở dữ liệu MySQL 8.4 (Cơ sở dữ liệu quan hệ trung tâm)
+  # Phân tách user ứng dụng riêng (vsico_user) và tài khoản quản trị root
+  # ---------------------------------------------------------------------------
   mysql:
     image: mysql:8.4
     container_name: vsico-zalo-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-123456}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Bắt buộc khai báo DB_ROOT_PASSWORD trong .env}
       MYSQL_DATABASE: ${DB_NAME:-vsico_zalo_bot}
+      MYSQL_USER: ${MYSQL_USER:-vsico_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-${DB_PASSWORD:?Bắt buộc khai báo MYSQL_PASSWORD hoặc DB_PASSWORD trong .env}}
       TZ: Asia/Ho_Chi_Minh
     ports:
-      - "${DB_PORT:-3306}:3306"
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
       - vsico_mysql_data:/var/lib/mysql
+    networks:
+      - vsico_network
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # 2. MinIO S3 Object Storage (Lưu trữ ảnh OCR & File đính kèm)
+  # Bind cổng vào 127.0.0.1 để bảo vệ dữ liệu nội bộ
+  # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
     container_name: vsico-zalo-minio
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Bắt buộc khai báo MINIO_ROOT_PASSWORD trong .env}
       TZ: Asia/Ho_Chi_Minh
     ports:
-      - "9000:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     command: server /data --console-address ":9001"
     volumes:
       - vsico_minio_data:/data
+    networks:
+      - vsico_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # 3. MinIO Init Helper (Tự động khởi tạo Bucket nếu chưa tồn tại)
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: vsico-zalo-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - vsico_network
+    entrypoint: >
+      /bin/sh -c "
+        /usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?Bắt buộc khai báo MINIO_ROOT_PASSWORD trong .env};
+        /usr/bin/mc mb --ignore-existing local/${MINIO_BUCKET_NAME:-vsico-zalo-files};
+        exit 0;
+      "
+
+  # ---------------------------------------------------------------------------
+  # 4. Qdrant Vector Database (Vector Search 768-dim cho GP1 Map Địa chỉ Kho)
+  # Bind cổng vào 127.0.0.1 để chống truy cập trái phép
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: vsico-zalo-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - vsico_qdrant_data:/qdrant/storage
+    networks:
+      - vsico_network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # 5. PaddleOCR Server (Máy chủ OCR bóc tách ảnh lệnh điều xe / cont)
+  # Bind cổng vào 127.0.0.1
+  # ---------------------------------------------------------------------------
+  paddleocr:
+    build:
+      context: .
+      dockerfile: docker/paddleocr/Dockerfile
+    container_name: vsico-zalo-paddleocr
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8866:8866"
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+    networks:
+      - vsico_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8866/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # 6. Backend FastAPI (:8000 - Webhook Gateway & REST API)
+  # Kết nối MySQL bằng user ứng dụng riêng (vsico_user)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: vsico-zalo-backend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      HOST: 0.0.0.0
+      PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-vsico_user}
+      DB_PASSWORD: ${DB_PASSWORD:?Bắt buộc khai báo DB_PASSWORD trong .env}
+      DB_NAME: ${DB_NAME:-vsico_zalo_bot}
+      DATABASE_URL: mysql+pymysql://${DB_USER:-vsico_user}:${DB_PASSWORD:?Bắt buộc khai báo DB_PASSWORD trong .env}@mysql:3306/${DB_NAME:-vsico_zalo_bot}?charset=utf8mb4
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Bắt buộc khai báo MINIO_ROOT_PASSWORD trong .env}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-vsico-zalo-files}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      AI_SERVICE_URL: http://ai-service:8001
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?Bắt buộc khai báo INTERNAL_SECRET trong .env}
+      PADDLE_OCR_URL: http://paddleocr:8866/predict/ocr_system
+      OCR_ENABLED: ${OCR_ENABLED:-true}
+      OCR_PROVIDER: ${OCR_PROVIDER:-paddleocr}
+      AI_ENABLED: ${AI_ENABLED:-true}
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+      AI_BASE_URL: ${AI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      AI_API_KEY: ${AI_API_KEY}
+      AI_MODEL_NAME: ${AI_MODEL_NAME:-gemini-3.5-flash}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Bắt buộc khai báo JWT_SECRET_KEY trong .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ZALO_BRIDGE_URL: ${ZALO_BRIDGE_URL:-http://localhost:3000}
+      TMS_BASE_URL: ${TMS_BASE_URL:-http://localhost:8080/api}
+      TMS_SYNC_ENABLED: ${TMS_SYNC_ENABLED:-false}
+    networks:
+      - vsico_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # 7. AI & OCR Microservice (:8001 - NLP, Context & Map kho GP1-GP4)
+  # Dịch vụ nội bộ bind vào 127.0.0.1
+  # ---------------------------------------------------------------------------
+  ai-service:
+    build:
+      context: .
+      dockerfile: ai-service/Dockerfile
+    container_name: vsico-zalo-ai-service
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${AI_SERVICE_PORT:-8001}:8001"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      paddleocr:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      AI_SERVICE_HOST: 0.0.0.0
+      AI_SERVICE_PORT: 8001
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?Bắt buộc khai báo INTERNAL_SECRET trong .env}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION_WAREHOUSES: ${QDRANT_COLLECTION_WAREHOUSES:-vsico_warehouse_addresses}
+      PADDLE_OCR_URL: http://paddleocr:8866/predict/ocr_system
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Bắt buộc khai báo MINIO_ROOT_PASSWORD trong .env}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-vsico-zalo-files}
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+      AI_BASE_URL: ${AI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      AI_API_KEY: ${AI_API_KEY}
+      AI_MODEL_NAME: ${AI_MODEL_NAME:-gemini-3.5-flash}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-10}
+      AI_FALLBACK_CONFIDENCE_THRESHOLD: ${AI_FALLBACK_CONFIDENCE_THRESHOLD:-0.65}
+    networks:
+      - vsico_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # 8. Frontend Dashboard (:3001 - Next.js 14 App Router)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: vsico-zalo-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3001}:3001"
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    networks:
+      - vsico_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
 volumes:
   vsico_mysql_data:
+    driver: local
   vsico_minio_data:
+    driver: local
+  vsico_qdrant_data:
+    driver: local
+
+networks:
+  vsico_network:
+    driver: bridge

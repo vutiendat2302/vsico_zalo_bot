@@ -245,10 +245,11 @@ LOG_LEVEL=INFO
 # 2. Kết nối cơ sở dữ liệu MySQL 8.4 (Database Settings)
 DB_HOST=127.0.0.1
 DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=123456
+DB_ROOT_PASSWORD=your_mysql_root_password_here
+DB_USER=vsico_user
+DB_PASSWORD=your_mysql_app_password_here
 DB_NAME=vsico_zalo_bot
-DATABASE_URL=mysql+pymysql://root:123456@127.0.0.1:3306/vsico_zalo_bot?charset=utf8mb4
+DATABASE_URL=mysql+pymysql://vsico_user:your_mysql_app_password_here@127.0.0.1:3306/vsico_zalo_bot?charset=utf8mb4
 
 # 3. Bảo mật Webhook Zalo (Zalo Webhook Settings)
 ZALO_APP_ID=zca_personal_bot
@@ -758,7 +759,7 @@ Bảng dưới đây tổng hợp tất cả các câu lệnh thao tác với c�
 | `docker compose restart mysql`                                           | Khởi động lại dịch vụ MySQL                             |
 | `docker compose logs -f mysql`                                           | Xem nhật ký hoạt động thời gian thực của MySQL Server |
 | `make db-shell`                                                          | Mở MySQL Interactive Shell trực tiếp bên trong container  |
-| `docker exec -it vsico-zalo-mysql mysql -u root -p123456 vsico_zalo_bot` | Đăng nhập thẳng vào schema `vsico_zalo_bot`            |
+| `docker exec -it vsico-zalo-mysql mysql -u vsico_user -p vsico_zalo_bot` | Đăng nhập thẳng vào schema `vsico_zalo_bot`            |
 
 #### 2. Quản lý Phiên Bản Schema & Migrations (Alembic)
 
@@ -784,9 +785,9 @@ Bảng dưới đây tổng hợp tất cả các câu lệnh thao tác với c�
 
 | Lệnh                                                                                                                   | Chức năng chi tiết                                              |
 | :---------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------- |
-| `docker exec -i vsico-zalo-mysql mysqldump -u root -p123456 vsico_zalo_bot > backup_vsico_$(date +%Y%m%d_%H%M%S).sql` | Xuất toàn bộ dữ liệu và cấu trúc ra file `.sql` sao lưu |
-| `docker exec -i vsico-zalo-mysql mysqldump -u root -p123456 --no-data vsico_zalo_bot > schema_only.sql`               | Chỉ sao lưu cấu trúc bảng (không kèm dữ liệu)             |
-| `docker exec -i vsico-zalo-mysql mysql -u root -p123456 vsico_zalo_bot < backup_file.sql`                             | Phục hồi toàn bộ dữ liệu từ file sao lưu `.sql`          |
+| `docker exec -i vsico-zalo-mysql mysqldump -u vsico_user -p vsico_zalo_bot > backup_vsico_$(date +%Y%m%d_%H%M%S).sql` | Xuất toàn bộ dữ liệu và cấu trúc ra file `.sql` sao lưu |
+| `docker exec -i vsico-zalo-mysql mysqldump -u vsico_user -p --no-data vsico_zalo_bot > schema_only.sql`               | Chỉ sao lưu cấu trúc bảng (không kèm dữ liệu)             |
+| `docker exec -i vsico-zalo-mysql mysql -u vsico_user -p vsico_zalo_bot < backup_file.sql`                             | Phục hồi toàn bộ dữ liệu từ file sao lưu `.sql`          |
 
 #### 5. Các Câu Lệnh SQL Hữu Ích Thường Dùng Khi Giám Sát & Vận Hành
 
@@ -1082,3 +1083,11 @@ Cổng Webhook `POST /webhook` hỗ trợ tiếp nhận ảnh dưới các hình
 
 Tài liệu kiểm thử chi tiết kèm mã cURL mẫu và kết quả đầu ra:
 👉 Xem file [**`tests/postman/13_kiem_thu_tach_text_tu_anh_paddleocr.md`**](./tests/postman/13_kiem_thu_tach_text_tu_anh_paddleocr.md).
+
+## Luồng nhà xe và kế hoạch nội bộ (2026-11-13)
+
+Webhook lưu và xếp hàng, trả ngay trạng thái `QUEUED`. Worker xử lý tuần tự trong mỗi nhóm bằng khóa MySQL, tối đa bốn nhóm song song. Tin bị gián đoạn chuyển rà soát thay vì tự chạy lại không kiểm soát.
+
+Chỉ ghép bổ sung khi xác định duy nhất chuyến trong cùng nhóm. Kế hoạch và ngữ cảnh AI giới hạn theo `carrier_id`; nhiều kế hoạch phù hợp chuyển xử lý trên Web. Thông báo khách lưu DB trước khi worker cập nhật kế hoạch và gửi Zalo; tắt dispatch không được báo `SENT`. `SENDING` không rõ kết quả phải đối soát, không cam kết gửi đúng một lần khi bridge không hỗ trợ idempotency.
+
+Khi chưa có kết nối TMS, kế hoạch nội bộ là nơi nhận thông tin xe và trạng thái TMS giữ `PENDING`, không ghi `SYNCED` giả. API `PATCH /api/plans/{id}/vehicle` hỗ trợ cập nhật có kiểm tra phiên bản và xác thực ĐHVT/Admin; không có trường rơ-moóc. Xem [hướng dẫn API](tests/postman/08_cap_nhat_xe_ke_hoach.md).

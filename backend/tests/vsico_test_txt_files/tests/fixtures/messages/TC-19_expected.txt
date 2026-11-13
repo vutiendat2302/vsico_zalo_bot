@@ -1,4 +1,0 @@
-TEST_ID: TC-19
-
-EXPECTED:
-Kiểm tra nhập kế hoạch: lấy đúng ngày từ dòng tiêu đề; ánh xạ cột theo tên tiêu đề; phân biệt Xuất/Nhập; số dòng đọc được phải khớp số dòng có số thứ tự. Cần file Excel fixture để chạy test thật.

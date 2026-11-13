@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from src.api.schemas import (
@@ -28,7 +28,15 @@ from src.api.schemas import (
     TruckRecordOut,
 )
 from src.config.settings import settings
-from src.domain.enums import Intent, MessageStatus, ValidationStatus
+from src.domain.enums import (
+    Intent,
+    MessageStatus,
+    OutboundStatus,
+    ReviewStatus,
+    RoutingStatus,
+    TmsSyncStatus,
+    ValidationStatus,
+)
 from src.handlers.extraction_handler import ExtractionHandler
 from src.infrastructure.database import get_db
 from src.infrastructure.fifo_queue import fifo_queue
@@ -37,6 +45,7 @@ from src.infrastructure.models import (
     OutboundMessage,
     OutboundMessageItem,
     ReviewCase,
+    TruckRecord,
     ZaloGroup,
     ZaloMessage,
 )
@@ -210,7 +219,7 @@ def serialize_message(msg: ZaloMessage, group_name: Optional[str] = None) -> Mes
             effective_group_name = f"Chat 1-1 ({msg.sender_name or msg.sender_id})"
 
     return MessageItemOut(
-        id=msg.id,
+        id=str(msg.id),
         zalo_message_id=msg.zalo_message_id,
         group_id=msg.group_id,
         group_name=effective_group_name,
@@ -238,6 +247,7 @@ def query_messages_with_filters(
     status: Optional[str] = None,
     limit: Optional[int] = None,
     offset: int = 0,
+    search: Optional[str] = None,
 ) -> MessageListResponse:
     """Thực thi truy vấn danh sách tin nhắn kết hợp lọc theo User, Group và Khoảng thời gian.
 
@@ -284,7 +294,19 @@ def query_messages_with_filters(
     if group_id:
         stmt = stmt.where(ZaloMessage.group_id == group_id)
     if status:
-        stmt = stmt.where(ZaloMessage.processing_status == status)
+        norm_status = MessageStatus(status).value
+        stmt = stmt.where(ZaloMessage.processing_status.in_([norm_status, status.lower(), status.upper()]))
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        search_filter = or_(
+            ZaloMessage.message_text.ilike(term),
+            ZaloMessage.sender_name.ilike(term),
+            ZaloMessage.sender_id.ilike(term),
+            ZaloMessage.group_id.ilike(term),
+            ZaloMessage.truck_records.any(TruckRecord.truck_plate.ilike(term)),
+            ZaloMessage.container_jobs.any(ContainerJob.container_no.ilike(term)),
+        )
+        stmt = stmt.where(search_filter)
 
     effective_time_col = func.coalesce(ZaloMessage.zalo_sent_at, ZaloMessage.received_at)
     if from_dt is not None:
@@ -299,7 +321,19 @@ def query_messages_with_filters(
     if group_id:
         count_stmt = count_stmt.where(ZaloMessage.group_id == group_id)
     if status:
-        count_stmt = count_stmt.where(ZaloMessage.processing_status == status)
+        norm_status = MessageStatus(status).value
+        count_stmt = count_stmt.where(ZaloMessage.processing_status.in_([norm_status, status.lower(), status.upper()]))
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        search_filter = or_(
+            ZaloMessage.message_text.ilike(term),
+            ZaloMessage.sender_name.ilike(term),
+            ZaloMessage.sender_id.ilike(term),
+            ZaloMessage.group_id.ilike(term),
+            ZaloMessage.truck_records.any(TruckRecord.truck_plate.ilike(term)),
+            ZaloMessage.container_jobs.any(ContainerJob.container_no.ilike(term)),
+        )
+        count_stmt = count_stmt.where(search_filter)
     if from_dt is not None:
         count_stmt = count_stmt.where(effective_time_col >= from_dt)
     if to_dt is not None:
@@ -386,6 +420,7 @@ def get_taxonomy_statistics(
 def get_all_messages(
     user_id: Optional[str] = Query(default=None, description="Lọc theo User ID người gửi"),
     group_id: Optional[str] = Query(default=None, description="Lọc theo Group ID Zalo"),
+    search: Optional[str] = Query(default=None, description="Tìm kiếm theo từ khóa (nội dung, biển số, container, người gửi)"),
     from_time: Optional[str] = Query(
         default=None,
         description="Thời gian bắt đầu (VD: '2026-10-27' hoặc '2026-10-27 08:00:00'). Bỏ trống để lấy hết.",
@@ -413,6 +448,7 @@ def get_all_messages(
         status=status,
         limit=limit,
         offset=offset,
+        search=search,
     )
 
 
@@ -699,6 +735,12 @@ def get_message_detail(
         msg = db.scalar(stmt.where(ZaloMessage.id == int(message_id)))
     if msg is None:
         msg = db.scalar(stmt.where(ZaloMessage.zalo_message_id == message_id))
+    # Fallback cứu nguy nếu client JavaScript cũ bị làm tròn 2 chữ số cuối của Snowflake ID 64-bit
+    if msg is None and message_id.isdigit() and len(message_id) >= 17 and message_id.endswith("00"):
+        prefix = int(message_id[:-2])
+        range_start = prefix * 100
+        range_end = range_start + 100
+        msg = db.scalar(stmt.where(ZaloMessage.id >= range_start, ZaloMessage.id < range_end))
 
     if msg is None:
         raise HTTPException(
@@ -711,7 +753,7 @@ def get_message_detail(
     serialized = serialize_message(msg, grp_name)
     runs_out = [
         {
-            "id": r.id,
+            "id": str(r.id),
             "model_name": r.model_name,
             "used_ai": str(r.model_name or "").startswith("ai-fallback:"),
             "status": r.status,
@@ -723,8 +765,8 @@ def get_message_detail(
     ]
     reviews_out = [
         {
-            "id": rv.id,
-            "container_job_id": rv.container_job_id,
+            "id": str(rv.id),
+            "container_job_id": str(rv.container_job_id) if rv.container_job_id else None,
             "case_type": rv.case_type,
             "reason": rv.reason,
             "status": rv.status,
@@ -733,7 +775,7 @@ def get_message_detail(
     ]
     replies_out = [
         {
-            "id": rp.id,
+            "id": str(rp.id),
             "sender_id": rp.sender_id,
             "reply_text": rp.reply_text,
             "status": rp.status,
@@ -756,8 +798,8 @@ def get_message_detail(
         for om in out_rows:
             zg = om.target_group
             outbound_messages_out.append({
-                "id": om.id,
-                "target_group_id": om.target_group_id,
+                "id": str(om.id),
+                "target_group_id": str(om.target_group_id),
                 "target_zalo_group_id": zg.zalo_group_id if zg else None,
                 "target_group_name": zg.name if zg else f"Nhóm #{om.target_group_id}",
                 "order_type": om.order_type,
@@ -850,7 +892,14 @@ def approve_message_by_dhvt(
             .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
             .where(
                 OutboundMessageItem.container_job_id.in_(job_ids),
-                OutboundMessage.status.in_(["cho_duyet", "bo_qua_trung_lap", "that_bai"]),
+                OutboundMessage.status.in_([
+                    OutboundStatus.PENDING_APPROVAL.value,
+                    OutboundStatus.IGNORED_DUPLICATE.value,
+                    OutboundStatus.FAILED.value,
+                    "cho_duyet",
+                    "bo_qua_trung_lap",
+                    "that_bai",
+                ]),
             )
             .distinct()
         )
@@ -895,7 +944,7 @@ def approve_message_by_dhvt(
                     if not u_ok:
                         logger.warning("Không thể gửi tin riêng cho người gửi %s: %s", msg.sender_id, u_err)
 
-            out_msg.status = "da_gui"
+            out_msg.status = OutboundStatus.SENT.value
             out_msg.approved_by = operator_name
             out_msg.approved_at = now
             out_msg.sent_at = now
@@ -909,8 +958,8 @@ def approve_message_by_dhvt(
                 "status": out_msg.status,
             })
 
-    # 4. Đổi trạng thái tin nhắn gốc thành 'processed'
-    msg.processing_status = "processed"
+    # 4. Đổi trạng thái tin nhắn gốc thành PROCESSED
+    msg.processing_status = MessageStatus.PROCESSED.value
     db.commit()
     db.refresh(msg)
 
@@ -962,19 +1011,19 @@ def reject_message_by_dhvt(
     for rc in db.scalars(
         select(ReviewCase).where(
             ReviewCase.message_id == message_id,
-            ReviewCase.status == "pending",
+            ReviewCase.status.in_([ReviewStatus.PENDING.value, "pending"]),
         )
     ).all():
-        rc.status = "rejected"
+        rc.status = ReviewStatus.REJECTED.value
         rc.resolved_at = now
         rc.resolved_by = operator_name
         rc.reason = f"{rc.reason or ''} [ĐHVT từ chối: {reject_reason}]"
 
     # 2. Cập nhật ContainerJob
     for cj in msg.container_jobs:
-        cj.validation_status = "rejected"
-        cj.routing_status = "cancelled"
-        cj.tms_sync_status = "failed"
+        cj.validation_status = ValidationStatus.REJECTED.value
+        cj.routing_status = RoutingStatus.CANCELLED.value
+        cj.tms_sync_status = TmsSyncStatus.FAILED.value
 
     # 3. Hủy toàn bộ OutboundMessage đang chờ duyệt
     job_ids = [c.id for c in msg.container_jobs]
@@ -985,17 +1034,17 @@ def reject_message_by_dhvt(
             .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
             .where(
                 OutboundMessageItem.container_job_id.in_(job_ids),
-                OutboundMessage.status == "cho_duyet",
+                OutboundMessage.status.in_([OutboundStatus.PENDING_APPROVAL.value, "cho_duyet"]),
             )
             .distinct()
         )
         for out_msg in db.scalars(stmt_out).all():
-            out_msg.status = "huy"
+            out_msg.status = OutboundStatus.CANCELLED.value
             out_msg.last_error = f"ĐHVT từ chối duyệt: {reject_reason}"
             cancelled_outbounds.append(out_msg.id)
 
-    # 4. Đổi trạng thái tin nhắn gốc thành 'cancelled'
-    msg.processing_status = "cancelled"
+    # 4. Đổi trạng thái tin nhắn gốc thành CANCELLED
+    msg.processing_status = MessageStatus.CANCELLED.value
     db.commit()
     db.refresh(msg)
 

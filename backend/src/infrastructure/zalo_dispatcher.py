@@ -92,7 +92,7 @@ class ZaloDispatcher:
                         res_obj = resp_body.get("result") or {}
                         msg_obj = res_obj.get("message") or {}
                         zalo_msg_id = str(msg_obj.get("msgId") or "") or None
-                        logger.info("✅ Đã gửi tin nhắn tới nhóm Zalo %s (msgId: %s, lần %d)", group_id, zalo_msg_id, attempt)
+                        logger.info("[ZALO_OK] Đã gửi tin nhắn tới nhóm Zalo %s (msgId: %s, lần %d)", group_id, zalo_msg_id, attempt)
                         return True, zalo_msg_id, None
                     else:
                         err = resp_body.get("error") or "Lỗi từ ZCA bridge"
@@ -115,7 +115,7 @@ class ZaloDispatcher:
             if attempt < max_retries:
                 time.sleep(1.0 * attempt)
 
-        logger.error("❌ Thất bại sau %d lần thử gửi tin nhóm %s: %s", max_retries, group_id, last_error)
+        logger.error("[ZALO_ERR] Thất bại sau %d lần thử gửi tin nhóm %s: %s", max_retries, group_id, last_error)
         return False, None, last_error
 
     @classmethod
@@ -176,13 +176,13 @@ class ZaloDispatcher:
                         res_obj = resp_body.get("result") or {}
                         msg_obj = res_obj.get("message") or {}
                         zalo_msg_id = str(msg_obj.get("msgId") or "") or None
-                        logger.info("✅ Đã gửi tin nhắn tới User Zalo %s (msgId: %s, lần %d)", user_id, zalo_msg_id, attempt)
+                        logger.info("[ZALO_OK] Đã gửi tin nhắn tới User Zalo %s (msgId: %s, lần %d)", user_id, zalo_msg_id, attempt)
                         return True, zalo_msg_id, None
                     else:
                         err = resp_body.get("error") or "Lỗi từ ZCA bridge"
                         last_error = err
                         if resp_body.get("code") == 123 or "123" in str(err):
-                            logger.warning("⚠️ Người nhận %s chưa kết bạn hoặc chặn tin nhắn người lạ (Zalo error 123). Dừng thử lại.", user_id)
+                            logger.warning("[ZALO_WARN] Người nhận %s chưa kết bạn hoặc chặn tin nhắn người lạ (Zalo error 123). Dừng thử lại.", user_id)
                             break
             except urllib.error.HTTPError as e:
                 if e.code == 429:
@@ -192,7 +192,7 @@ class ZaloDispatcher:
                     err_json = json.loads(err_body)
                     last_error = err_json.get("error") or f"HTTP {e.code}: {e.reason}"
                     if err_json.get("code") == 123 or "123" in str(last_error):
-                        logger.warning("⚠️ Người nhận %s chưa kết bạn hoặc chặn tin nhắn người lạ (Zalo error 123). Dừng thử lại.", user_id)
+                        logger.warning("[ZALO_WARN] Người nhận %s chưa kết bạn hoặc chặn tin nhắn người lạ (Zalo error 123). Dừng thử lại.", user_id)
                         break
                 except Exception:
                     last_error = f"HTTP {e.code}: {e.reason}"
@@ -204,5 +204,5 @@ class ZaloDispatcher:
             if attempt < max_retries:
                 time.sleep(1.0 * attempt)
 
-        logger.error("❌ Thất bại sau %d lần thử gửi tin tới user %s: %s", max_retries, user_id, last_error)
+        logger.error("[ZALO_ERR] Thất bại sau %d lần thử gửi tin tới user %s: %s", max_retries, user_id, last_error)
         return False, None, last_error

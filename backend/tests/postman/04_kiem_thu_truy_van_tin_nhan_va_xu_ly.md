@@ -1,4 +1,4 @@
-# 📮 BỘ KIỂM THỬ POSTMAN: TRUY VẤN TIN NHẮN & TEST KHẢ NĂNG XỬ LÝ (FIFO EXTRACTOR)
+# BỘ KIỂM THỬ POSTMAN: TRUY VẤN TIN NHẮN & TEST KHẢ NĂNG XỬ LÝ (FIFO EXTRACTOR)
 ### DỰ ÁN VSICO ZALO BOT (BACKEND REST API - FASTAPI + MYSQL)
 
 Tài liệu này đặc tả chi tiết toàn bộ các bài kiểm thử theo đúng yêu cầu:

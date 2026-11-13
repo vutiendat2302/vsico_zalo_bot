@@ -1,5 +1,0 @@
-TEST_ID: TC-17
-FORMAT: ROUTE_MAP
-
-INPUT:
-Lệnh trả hàng Vạn Lợi, cont VSIU2620327, tuyến có route_map='gửi sales'

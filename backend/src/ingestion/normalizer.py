@@ -15,7 +15,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.domain.enums import MessageStatus
+from src.domain.enums import GroupRole, MessageStatus, SendMode
 from src.infrastructure.fifo_queue import fifo_queue
 from src.infrastructure.models import ZaloGroup, ZaloMessage
 from src.observability.logging import get_logger
@@ -102,20 +102,22 @@ class WebhookIngestor:
 
         text = payload_dict.get("text")
         if text is None:
-            text = nested_msg.get("text") or ""
+            text = payload_dict.get("message_text")
+        if text is None:
+            text = nested_msg.get("text") or nested_msg.get("message_text") or ""
 
         # Phân biệt tin nhắn nhắn trực tiếp (Direct 1-1) và tin nhắn nhắn trong Group Zalo
         if not raw_group_id:
             group_id = f"direct_{sender_id}"
             effective_group_name = group_name or f"Direct Chat - {sender_name or sender_id}"
-            group_role = "direct_chat"
+            group_role = "DIRECT_CHAT"
         else:
             group_id = raw_group_id
             effective_group_name = group_name or f"Zalo Group {group_id}"
             group_role = (
-                "direct_chat"
+                "DIRECT_CHAT"
                 if group_id.startswith("direct_")
-                else "source"
+                else GroupRole.SOURCE.value
             )
 
         # 1. Kiểm tra chống trùng lặp (Deduplication) theo `zalo_message_id`
@@ -127,7 +129,7 @@ class WebhookIngestor:
                 MessageStatus.RECEIVED.value,
                 MessageStatus.QUEUED.value,
             ):
-                fifo_queue.enqueue_and_drain(db, existing_msg.id)
+                fifo_queue.enqueue(existing_msg.id)
                 db.refresh(existing_msg)
             return existing_msg, True
 
@@ -148,7 +150,7 @@ class WebhookIngestor:
                 zalo_group_id=group_id,
                 name=effective_group_name,
                 group_role=group_role,
-                send_mode="tu_dong",
+                send_mode=SendMode.AUTO.value,
                 is_active=True,
                 is_test=is_mock_group,
             )
@@ -196,7 +198,7 @@ class WebhookIngestor:
 
         # 4. Đưa vào hàng đợi FIFO (Vào Trước - Ra Trước) và bóc tách ngay lập tức (Real-time)
         if has_text or has_image:
-            fifo_queue.enqueue_and_drain(db, new_msg.id)
+            fifo_queue.enqueue(new_msg.id)
             db.refresh(new_msg)
 
         return new_msg, False

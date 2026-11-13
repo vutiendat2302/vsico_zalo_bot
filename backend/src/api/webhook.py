@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from src.api.schemas import ZcaWebhookPayload
 from src.config.settings import settings
+from src.domain.enums import MessageStatus, OutboundStatus
 from src.infrastructure.database import get_db
 from src.infrastructure.models import BotReply, OutboundMessage, OutboundMessageItem, ZaloGroup
 from src.ingestion.normalizer import WebhookIngestor
@@ -55,7 +56,7 @@ def receive_zalo_webhook(
 
     msg, is_duplicate = WebhookIngestor.ingest_webhook_payload(
         db=db,
-        payload_dict=payload.model_dump(),
+        payload_dict=payload.model_dump(exclude_none=True),
     )
 
     trucks_summary = [
@@ -96,19 +97,19 @@ def receive_zalo_webhook(
         .order_by(BotReply.id.desc())
     )
 
-    action_label = "DUPLICATE_MESSAGE" if is_duplicate else "PROCESSED_FIFO"
+    action_label = "DUPLICATE_MESSAGE" if is_duplicate else "QUEUED"
 
-    # Chỉ gửi các tin đáp ứng đầy đủ các trường thông tin chính (processing_status == "processed")
+    # Chỉ gửi các tin đáp ứng đầy đủ các trường thông tin chính (processing_status == "PROCESSED")
     # Nếu thiếu hoặc sai, chuyển chờ duyệt và customer_notifications = []
     customer_notifications: list[dict[str, Any]] = []
-    if msg.processing_status == "processed":
+    if msg.processing_status in (MessageStatus.PROCESSED.value, "processed"):
         for c in msg.container_jobs:
             stmt = (
                 select(OutboundMessage)
                 .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
                 .where(
                     OutboundMessageItem.container_job_id == c.id,
-                    OutboundMessage.status == "da_gui",
+                    OutboundMessage.status.in_([OutboundStatus.SENT.value, "da_gui"]),
                 )
             )
             out_msg = db.scalar(stmt)
@@ -120,12 +121,12 @@ def receive_zalo_webhook(
                     "message_text": out_msg.content,
                     "cont": c.container_no,
                     "shipping_id": f"SHP-{c.id}",
-                    "send_status": "SENT",
+                    "send_status": OutboundStatus.SENT.value,
                 })
 
     return {
         "ok": True,
-        "status": "DUPLICATE" if is_duplicate else "ENQUEUED_AND_PROCESSED_FIFO",
+        "status": "DUPLICATE" if is_duplicate else "ENQUEUED",
         "record_id": msg.id,
         "zalo_message_id": msg.zalo_message_id,
         "group_id": msg.group_id,

@@ -8,9 +8,12 @@ luồng (race condition) hay đảo thứ tự xử lý.
 
 import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Callable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from src.domain.enums import MessageStatus
@@ -90,6 +93,18 @@ class FIFOExtractionQueue:
             logger.warning("Chưa đăng ký hàm processor_fn cho FIFOExtractionQueue.")
             return []
 
+        if db is None:
+            with SessionLocal() as scan:
+                rows = scan.execute(select(ZaloMessage.id, ZaloMessage.group_id).where(
+                    ZaloMessage.processing_status.in_(["RECEIVED", "QUEUED", "PROCESSING"])
+                ).order_by(ZaloMessage.id).limit(500)).all()
+            groups: dict[str, list[int]] = defaultdict(list)
+            for mid, gid in rows:
+                groups[gid].append(mid)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                batches = list(executor.map(self._process_group, groups.items()))
+            return [mid for batch in batches for mid in batch]
+
         processed_ids: list[int] = []
         with self._processing_lock:
             own_session = db is None
@@ -139,6 +154,40 @@ class FIFOExtractionQueue:
 
         return processed_ids
 
+    def _process_group(self, batch: tuple[str, list[int]]) -> list[int]:
+        """Xử lý tuần tự cùng nhóm; khóa MySQL ngăn hai tiến trình xử lý cùng hội thoại."""
+        import hashlib
+        from src.infrastructure.database import engine
+        group_id, ids = batch
+        lock_name = "fifo:" + hashlib.sha256(group_id.encode()).hexdigest()[:50]
+        done: list[int] = []
+        with engine.connect() as lock_conn:
+            acquired = lock_conn.scalar(text("SELECT GET_LOCK(:name, 0)"), {"name": lock_name})
+            if not acquired:
+                return done
+            try:
+                # Có khóa nhóm độc quyền: PROCESSING còn lại là tin bị gián đoạn trước đó.
+                with SessionLocal() as recovery:
+                    recovery.execute(update(ZaloMessage).where(
+                        ZaloMessage.group_id == group_id,
+                        ZaloMessage.processing_status == "PROCESSING",
+                    ).values(processing_status="NEEDS_REVIEW", last_error="Tiến trình bị gián đoạn; đối soát trước khi xử lý lại."))
+                    recovery.commit()
+                for mid in ids:
+                    with SessionLocal() as session:
+                        try:
+                            self._processor_fn(session, mid)
+                            done.append(mid)
+                        except Exception:
+                            session.rollback()
+                            session.execute(update(ZaloMessage).where(ZaloMessage.id == mid).values(processing_status="FAILED"))
+                            session.commit()
+                            logger.exception("Xử lý tin %s lỗi; giữ FAILED để đối soát.", mid)
+            finally:
+                lock_conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
+        self._total_processed += len(done)
+        return done
+
     def start_background_worker(self) -> None:
         """Khởi chạy luồng Worker chạy nền để vét và xử lý các tin nhắn tồn đọng theo FIFO."""
         if self._worker_thread and self._worker_thread.is_alive():
@@ -173,9 +222,15 @@ class FIFOExtractionQueue:
                 self._queue.task_done()
                 self.drain_fifo()
             except queue.Empty:
-                continue
+                self.drain_fifo()
             except Exception as exc:
                 logger.exception("Lỗi trong vòng lặp FIFO worker: %s", exc)
+            finally:
+                from src.infrastructure.outbox_worker import drain_outbox
+                try:
+                    drain_outbox()
+                except Exception:
+                    logger.exception("Lỗi xử lý hàng đợi phát hành.")
 
     def stats(self) -> dict[str, int]:
         """Trả về thông số thống kê tình trạng hoạt động của hàng đợi FIFO.
