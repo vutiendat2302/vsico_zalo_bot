@@ -25,7 +25,12 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]>=0.27.0" \
     pydantic>=2.0.0 \
     pillow>=10.0.0 \
-    numpy>=1.24.0
+    numpy>=1.24.0 \
+    paddlepaddle>=2.6.0 \
+    paddleocr>=2.7.3
+
+# Tắt oneDNN (MKL-DNN) tránh lỗi ConvertPirAttribute2RuntimeAttribute trên CPU
+ENV FLAGS_use_mkldnn=0
 
 # Copy mã nguồn máy chủ PaddleOCR
 COPY backend/scripts/paddle_ocr_server.py ./server.py

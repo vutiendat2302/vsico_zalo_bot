@@ -60,6 +60,7 @@ export default function ReviewsPage() {
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
   const [approveTarget, setApproveTarget] = useState<ReviewCaseItem | null>(null);
+  const [selectedPlanId, setSelectedPlanId] = useState<string>("");
   const [approveCont, setApproveCont] = useState("");
   const [approveSeal, setApproveSeal] = useState("");
   const [approvePlate, setApprovePlate] = useState("");
@@ -117,8 +118,15 @@ export default function ReviewsPage() {
     }
   };
 
-  const openApproveModal = (r: ReviewCaseItem) => {
+  const openApproveModal = (r: ReviewCaseItem, preselectedPlanId?: string) => {
     setApproveTarget(r);
+    const defaultPid =
+      preselectedPlanId ||
+      r.details?.selected_plan_id ||
+      r.details?.transport_plan_id ||
+      r.candidate_plans?.[0]?.plan_id ||
+      "";
+    setSelectedPlanId(defaultPid ? String(defaultPid) : "");
     setApproveCont(r.container_details?.container_no || "");
     setApproveSeal(r.container_details?.seal_no || "");
     setApprovePlate(r.container_details?.truck_plate || "");
@@ -135,6 +143,8 @@ export default function ReviewsPage() {
       setError(null);
       const res = await approveReviewCase(approveTarget.id, {
         operator_name: getOperatorName(),
+        save_warehouse_habit: true,
+        ...(selectedPlanId.trim() ? { selected_plan_id: Number(selectedPlanId.trim()) } : {}),
         ...(approveCont.trim() ? { container_no: approveCont.trim() } : {}),
         ...(approveSeal.trim() ? { seal_no: approveSeal.trim() } : {}),
         ...(approvePlate.trim() ? { truck_plate: approvePlate.trim() } : {}),
@@ -323,6 +333,59 @@ export default function ReviewsPage() {
                   </div>
                 </div>
 
+                {/* Kế hoạch ứng viên (nếu có) */}
+                {r.candidate_plans && r.candidate_plans.length > 0 && (
+                  <div className="bg-slate-50 p-3 rounded-sm border border-slate-200 space-y-2">
+                    <div className="font-medium text-slate-700">
+                      Ứng viên kế hoạch ({r.candidate_plans.length})
+                    </div>
+                    <div className="space-y-1.5">
+                      {r.candidate_plans.map((cand) => (
+                        <div
+                          key={cand.plan_id}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded-sm border border-slate-200"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono font-semibold text-slate-900">
+                              {cand.order_code || `#${cand.plan_id}`}
+                            </span>
+                            {cand.order_type && (
+                              <span className="font-mono text-[11px] px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded-sm text-slate-700">
+                                {cand.order_type}
+                              </span>
+                            )}
+                            {cand.customer_name && (
+                              <span className="text-slate-800">{cand.customer_name}</span>
+                            )}
+                            {cand.warehouse_name && (
+                              <span className="text-slate-600">• {cand.warehouse_name}</span>
+                            )}
+                            {typeof cand.score === "number" && (
+                              <span className="font-mono text-[11px] text-purple-700 font-semibold">
+                                Điểm: {cand.score}
+                              </span>
+                            )}
+                            {cand.evidences && cand.evidences.length > 0 && (
+                              <span className="font-mono text-[11px] text-slate-500">
+                                [{cand.evidences.join(", ")}]
+                              </span>
+                            )}
+                          </div>
+                          {st.isPending && (
+                            <button
+                              type="button"
+                              onClick={() => openApproveModal(r, String(cand.plan_id))}
+                              className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-sm font-medium transition"
+                            >
+                              Chọn lệnh này
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Thao tác */}
                 {st.isPending && (
                   <div className="flex justify-end items-center gap-2 pt-1">
@@ -426,6 +489,27 @@ export default function ReviewsPage() {
             <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-sm text-slate-900">
               {approveTarget.reason}
             </div>
+
+            {approveTarget.candidate_plans && approveTarget.candidate_plans.length > 0 && (
+              <div>
+                <label className="block text-slate-600 mb-1 font-medium">
+                  Chọn kế hoạch đồng bộ (tự động lưu thói quen kho)
+                </label>
+                <select
+                  value={selectedPlanId}
+                  onChange={(e) => setSelectedPlanId(e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 font-mono text-slate-900 focus:outline-none focus:border-purple-700"
+                >
+                  <option value="">-- Tự động đối chiếu --</option>
+                  {approveTarget.candidate_plans.map((cand) => (
+                    <option key={cand.plan_id} value={cand.plan_id}>
+                      {cand.order_code || `#${cand.plan_id}`} | {cand.customer_name || "—"} |{" "}
+                      {cand.warehouse_name || "—"} (Điểm: {cand.score ?? 0})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>

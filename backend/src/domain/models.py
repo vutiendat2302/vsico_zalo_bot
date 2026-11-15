@@ -17,6 +17,15 @@ from src.domain.rules import compact_plate
 class ExtractedContainerLine:
     """Thông tin một dòng xe / container bóc tách được từ tin nhắn nhà xe (mỗi container 1 bản ghi)."""
 
+    extraction_tier: str = "TIER_1_REGEX_RULE"
+    leg_sequence: int = 1
+    is_combined_from_return: bool = False
+    container_status: str = "UNKNOWN"
+    seal_status: str = "UNKNOWN"
+    field_evidences: dict[str, Any] = field(default_factory=dict)
+    unresolved_fields: list[str] = field(default_factory=list)
+    candidate_dates: list[str] = field(default_factory=list)
+    suggested_plan_id: Optional[int] = None
     line_no: int = 1
     line_text: str = ""
     source_format: str = "tu_do"  # 'F1', 'F2', 'F3' hoặc 'tu_do'

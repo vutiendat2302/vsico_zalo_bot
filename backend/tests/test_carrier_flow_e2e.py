@@ -26,6 +26,7 @@ from src.infrastructure.models import (
     Customer,
     FileRecord,
     OutboundMessage,
+    MessageDraft,
     OutboundMessageItem,
     ReviewCase,
     RouteMap,
@@ -273,7 +274,7 @@ def test_missing_seal_triggers_bot_reply_then_quote_supplement_resolves(
 def test_update_driver_flow_clarify_missing_cont_and_send_update_notification(
     api_client: TestClient, db_session: Session
 ) -> None:
-    """Luồng đổi xe/tài xế: thiếu cont -> Bot hỏi lại; đủ cont -> gửi THÔNG BÁO CẬP NHẬT và bỏ qua trùng lặp."""
+    """Luồng đổi xe/tài xế: tạo đề xuất, xác nhận đúng người rồi chuyển Web nếu có xung đột."""
     cont = _valid_cont("CSNU", "778899")
     env = _setup_carrier_customer_env(db_session, cont_no=cont)
     src_grp: ZaloGroup = env["src_grp"]  # type: ignore[assignment]
@@ -292,65 +293,24 @@ def test_update_driver_flow_clarify_missing_cont_and_send_update_notification(
     assert r1.status_code == 200
     assert r1.json()["processing_status"] == MessageStatus.PROCESSED.value
 
-    # 2. Nhà xe nhắn đổi xe nhưng quên ghi số cont -> Bot phải hỏi lại số cont
-    r_missing_cont = _post_and_process(api_client, db_session,
-        "/webhook",
-        json={
-            "msg_id": f"test_upd_nocont_{uuid4().hex[:8]}",
-            "group_id": src_grp.zalo_group_id,
-            "sender_id": "test_nha_xe_3",
-            "message_text": "Đổi sang xe 15C-999.88 tài xế Lê Hùng",
-            "is_test": True,
-        },
-    )
-    assert r_missing_cont.status_code == 200
-    assert r_missing_cont.json()["processing_status"] == MessageStatus.NEEDS_REVIEW.value
-    assert "Số Container" in (r_missing_cont.json()["reply_to_carrier"] or "")
-
-    # 3. Nhà xe gửi lệnh đổi xe có đủ số container -> Gửi THÔNG BÁO CẬP NHẬT
-    r_upd = _post_and_process(api_client, db_session,
-        "/webhook",
-        json={
-            "msg_id": f"test_upd_ok_{uuid4().hex[:8]}",
-            "group_id": src_grp.zalo_group_id,
-            "sender_id": "test_nha_xe_3",
-            "message_text": f"Đổi xe cont {cont} sang xe 15C-999.88 tài xế Lê Hùng 0988777666",
-            "is_test": True,
-        },
-    )
-    assert r_upd.status_code == 200
-    assert r_upd.json()["processing_status"] == MessageStatus.PROCESSED.value
-
-    upd_msg = db_session.scalar(
-        select(OutboundMessage)
-        .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
-        .join(ContainerJob, ContainerJob.id == OutboundMessageItem.container_job_id)
-        .where(
-            ContainerJob.container_no == cont,
-            OutboundMessage.message_kind == "update",
-            OutboundMessage.status == OutboundStatus.PENDING_SEND.value,
-        )
-    )
-    assert upd_msg is not None
-    assert "THÔNG BÁO CẬP NHẬT THÔNG TIN XE" in upd_msg.content
-    assert "15C-999.88" in upd_msg.content
-
-    # 4. Nhắn lại đúng thông tin xe mới đã gửi -> không spam lại khách
-    r_dup = _post_and_process(api_client, db_session,
-        "/webhook",
-        json={
-            "msg_id": f"test_upd_dup_{uuid4().hex[:8]}",
-            "group_id": src_grp.zalo_group_id,
-            "sender_id": "test_nha_xe_3",
-            "message_text": f"Cập nhật lại cont {cont} vẫn xe 15C-999.88 tài xế Lê Hùng 0988777666",
-            "is_test": True,
-        },
-    )
-    assert r_dup.status_code == 200
-    dup_out = db_session.scalar(
-        select(OutboundMessage).where(OutboundMessage.status == OutboundStatus.IGNORED_DUPLICATE.value)
-    )
-    assert dup_out is not None
+    # 2. Ngữ cảnh gần nhất chỉ có một chuyến: bot tạo đề xuất, chưa ghi thay đổi.
+    response = _post_and_process(api_client, db_session, "/webhook", json={
+        "msg_id": f"proposal_{uuid4().hex}", "group_id": src_grp.zalo_group_id,
+        "sender_id": "test_nha_xe_3", "message_text": f"Đổi xe cont {cont} sang xe 15C-999.88 tài xế Lê Hùng 0988777666",
+        "is_test": True})
+    draft = db_session.scalar(select(MessageDraft).where(MessageDraft.first_message_id == response.json()["record_id"]))
+    assert draft is not None and draft.status == "WAITING_REPLY"
+    plan = env["plan"]
+    version = plan.version
+    assert "999" not in plan.planned_truck_plate
+    # 3. Xác nhận chuyển ĐHVT kiểm tra xe mới và tin đã xếp hàng, chưa tự gửi đính chính.
+    confirmed = _post_and_process(api_client, db_session, "/webhook", json={
+        "msg_id": f"confirm_{uuid4().hex}", "group_id": src_grp.zalo_group_id,
+        "sender_id": "test_nha_xe_3", "message_text": f"xác nhận #{draft.id}", "is_test": True})
+    review = db_session.scalar(select(ReviewCase).where(ReviewCase.message_id == confirmed.json()["record_id"]))
+    assert review is not None and review.status == "PENDING"
+    db_session.refresh(plan)
+    assert plan.version == version and "999" not in plan.planned_truck_plate
 
 
 def test_wrong_carrier_mismatch_blocks_outbound_and_alerts_dhvt(

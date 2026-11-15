@@ -18,6 +18,7 @@ import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
@@ -28,14 +29,21 @@ from src.api.schemas import (
     TransportPlanListResponse,
     TransportPlanOut,
     TransportPlanRandomizeResponse,
+    TransportPlanSyncResponse,
     TransportPlanUpdate,
+)
+from src.handlers.tms_plan_sync_service import (
+    DEFAULT_PLAN_GROUP_ID,
+    sync_transport_plans_from_tms,
 )
 from src.infrastructure.database import get_db
 from src.infrastructure.models import TransportPlan, Carrier, User, ActivityLog, ZaloGroup
-from src.infrastructure.security import get_current_user
+from src.infrastructure.security import get_current_user, get_optional_current_user
+from src.infrastructure.tms_client import TmsApiError
 from src.domain.rules import clean_plate, clean_container, validate_iso6346
 from src.infrastructure.snowflake import snowflake
 from src.observability.logging import get_logger
+from src.parsing.plan_exporter import export_plans_to_ketnoi_excel
 from src.parsing.plan_importer import DEFAULT_GROUP_ID, PlanFileParser
 
 logger = get_logger(__name__)
@@ -125,8 +133,13 @@ def get_transport_plans(
         clean_alnum = f"%{re.sub(r'[^A-Za-z0-9]', '', q).upper()}%"
         stmt = stmt.where(
             or_(
+                func.lower(TransportPlan.order_code).like(search_kw),
+                func.lower(TransportPlan.booking_no).like(search_kw),
+                func.lower(TransportPlan.bill_of_lading_no).like(search_kw),
                 func.lower(TransportPlan.container_no).like(search_kw),
                 func.lower(TransportPlan.customer_name).like(search_kw),
+                func.lower(TransportPlan.warehouse_name).like(search_kw),
+                func.lower(TransportPlan.forwarder_name).like(search_kw),
                 func.lower(TransportPlan.driver_name).like(search_kw),
                 func.lower(TransportPlan.planned_truck_plate).like(search_kw),
                 func.lower(TransportPlan.delivery_address).like(search_kw),
@@ -181,6 +194,110 @@ def get_transport_plans(
             "q": q,
         },
         plans=out_plans,
+    )
+
+
+@router.get("/export-excel")
+def export_transport_plans_excel(
+    plan_date: Optional[str] = Query(default=None, description="Ngày kế hoạch cần xuất (YYYY-MM-DD hoặc DD/MM/YYYY)"),
+    region: Optional[int] = Query(default=None, description="Mã miền (1=Bắc, 2=Trung, 3=Nam)"),
+    order_type: Optional[str] = Query(default=None, description="Lọc loại lệnh: 'tra' hoặc 'dong'"),
+    q: Optional[str] = Query(default=None, description="Từ khóa lọc nhanh"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Xuất dữ liệu kế hoạch vận chuyển từ MySQL ra tệp Excel đúng mẫu `ketnoi.xlsx`."""
+    from sqlalchemy import or_
+
+    stmt = select(TransportPlan)
+    p_date = parse_date_str(plan_date)
+    if plan_date and not p_date:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Định dạng ngày không hợp lệ: '{plan_date}'.",
+        )
+    if p_date:
+        stmt = stmt.where(TransportPlan.plan_date == p_date)
+    if region is not None:
+        stmt = stmt.where(TransportPlan.region == region)
+    if order_type:
+        stmt = stmt.where(TransportPlan.order_type == order_type.strip().lower())
+    if q and q.strip():
+        search_kw = f"%{q.strip().lower()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(TransportPlan.order_code).like(search_kw),
+                func.lower(TransportPlan.container_no).like(search_kw),
+                func.lower(TransportPlan.customer_name).like(search_kw),
+                func.lower(TransportPlan.warehouse_name).like(search_kw),
+                func.lower(TransportPlan.delivery_address).like(search_kw),
+            )
+        )
+
+    stmt = stmt.order_by(TransportPlan.plan_date.desc(), TransportPlan.stt.asc(), TransportPlan.id.asc())
+    records = list(db.scalars(stmt).all())
+
+    excel_bytes = export_plans_to_ketnoi_excel(records, plan_date=p_date)
+    date_label = p_date.isoformat() if p_date else "all"
+    filename = f"ke_hoach_van_chuyen_{date_label}.xlsx"
+
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/sync-tms", response_model=TransportPlanSyncResponse)
+def sync_plans_from_tms(
+    plan_date: str = Query(default="2026-11-09", description="Ngày kế hoạch cần đồng bộ (YYYY-MM-DD hoặc DD/MM/YYYY)"),
+    region: int = Query(default=1, ge=1, le=3, description="Mã miền TMS (1: Miền Bắc)"),
+    group_id: str = Query(default=DEFAULT_PLAN_GROUP_ID, description="Group ID Zalo mặc định gắn cho các dòng đồng bộ"),
+    replace_existing: bool = Query(default=False, description="Xóa dữ liệu cũ của ngày/miền trước khi nạp lại thay vì upsert"),
+    clear_all_before_sync: bool = Query(default=False, description="Xóa toàn bộ bảng transport_plans trước khi đồng bộ"),
+    db: Session = Depends(get_db),
+) -> TransportPlanSyncResponse:
+    """Kéo kế hoạch vận chuyển theo ngày từ TMS về MySQL và cập nhật các trường mới."""
+    p_date = parse_date_str(plan_date)
+    if not p_date:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Định dạng ngày không hợp lệ: '{plan_date}'. Vui lòng dùng 'YYYY-MM-DD' hoặc 'DD/MM/YYYY'.",
+        )
+
+    effective_gid = (group_id or "").strip() or DEFAULT_PLAN_GROUP_ID
+    try:
+        stats = sync_transport_plans_from_tms(
+            db=db,
+            plan_date=p_date,
+            region=region,
+            default_group_id=effective_gid,
+            replace_existing=replace_existing,
+            clear_all_before_sync=clear_all_before_sync,
+        )
+    except TmsApiError as exc:
+        logger.error("Lỗi gọi TMS /transport-plan: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    db.add(
+        ActivityLog(
+            id=snowflake.generate(),
+            actor_id="system",
+            action="TMS_PLAN_SYNCED",
+            entity_type="transport_plan",
+            entity_id=f"{p_date.isoformat()}:{region}",
+            details=stats,
+        )
+    )
+    db.commit()
+
+    return TransportPlanSyncResponse(
+        ok=True,
+        status="OK",
+        message=(
+            f"Đã đồng bộ {stats['total_synced']} lệnh ngày {p_date.isoformat()} (Miền {region}): "
+            f"{stats['return_orders_count']} lệnh trả, {stats['loading_orders_count']} lệnh đóng."
+        ),
+        **stats,
     )
 
 
@@ -266,14 +383,22 @@ def create_transport_plan(
 def update_transport_plan(
     plan_id: int,
     payload: TransportPlanUpdate = Body(...),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> TransportPlanOut:
-    """Cập nhật thông tin một bản ghi kế hoạch vận chuyển."""
+    """Cập nhật thông tin một bản ghi kế hoạch vận chuyển (hỗ trợ RBAC và kiểm soát phiên bản)."""
+    if current_user and current_user.role.upper() not in ("ADMIN", "DHVT"):
+        raise HTTPException(status_code=403, detail="Chỉ ĐHVT hoặc Admin được cập nhật kế hoạch.")
     plan = db.get(TransportPlan, plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy bản ghi kế hoạch ID={plan_id}.")
+    if payload.expected_version is not None and (plan.version or 1) != payload.expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail="Kế hoạch đã thay đổi phiên bản; vui lòng tải lại trước khi cập nhật.",
+        )
 
-    update_data = payload.model_dump(exclude_unset=True)
+    update_data = payload.model_dump(exclude_unset=True, exclude={"expected_version"})
     for field, val in update_data.items():
         if field == "container_no" and val:
             setattr(plan, field, str(val).strip().upper())
@@ -291,6 +416,9 @@ def update_transport_plan(
         else:
             setattr(plan, field, val)
 
+    if update_data:
+        plan.version = (plan.version or 1) + 1
+        plan.tms_sync_status = "PENDING"
     setattr(plan, "updated_at", datetime.now())
     db.commit()
     db.refresh(plan)
@@ -300,9 +428,12 @@ def update_transport_plan(
 @router.delete("/{plan_id}")
 def delete_transport_plan(
     plan_id: int,
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Xóa một bản ghi kế hoạch vận chuyển theo ID."""
+    if current_user and current_user.role.upper() not in ("ADMIN", "DHVT"):
+        raise HTTPException(status_code=403, detail="Chỉ ĐHVT hoặc Admin được xóa kế hoạch.")
     plan = db.get(TransportPlan, plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy bản ghi kế hoạch ID={plan_id}.")
@@ -617,22 +748,14 @@ def randomize_plan_groups(
 @router.post("/set-default-group")
 def set_all_plans_default_group(
     group_id: str = Query(
-        default="6469608867469758994",
+        default=DEFAULT_PLAN_GROUP_ID,
         description="Mã Group ID Zalo muốn gán cho toàn bộ kế hoạch vận chuyển",
     ),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Cập nhật toàn bộ group_id trong transport_plans về một nhóm Zalo cụ thể.
-
-    Args:
-        group_id (str): Mã Group ID Zalo đích (mặc định: 6469608867469758994).
-        db (Session): Phiên làm việc CSDL.
-
-    Returns:
-        dict[str, Any]: Kết quả số lượng dòng kế hoạch đã được cập nhật.
-    """
+    """Cập nhật toàn bộ group_id trong transport_plans về một nhóm Zalo cụ thể."""
     from sqlalchemy import text
-    target_gid = str(group_id).strip() or "6469608867469758994"
+    target_gid = str(group_id).strip() or DEFAULT_PLAN_GROUP_ID
     result = db.execute(
         text("UPDATE transport_plans SET group_id = :gid"),
         {"gid": target_gid},

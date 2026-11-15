@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # 4. PaddleOCR & Vision
     PADDLE_OCR_URL: str = "http://127.0.0.1:8866/predict/ocr_system"
+    OCR_API_KEY: str = ""
     OCR_TIMEOUT_SECONDS: int = 15
     OCR_LANG: str = "vi"
 

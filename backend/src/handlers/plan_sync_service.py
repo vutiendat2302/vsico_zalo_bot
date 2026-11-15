@@ -21,9 +21,17 @@ from typing import Any, Optional
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from src.domain.rules import clean_container, clean_phone, compact_plate
-from src.infrastructure.models import ActivityLog, ContainerJob, TransportPlan, ZaloGroup
+from src.config.settings import settings
+from src.domain.rules import clean_container, clean_phone, compact_plate, mask_phone
+from src.infrastructure.models import (
+    ActivityLog,
+    ContainerJob,
+    TmsSyncLog,
+    TransportPlan,
+    ZaloGroup,
+)
 from src.infrastructure.snowflake import snowflake
+from src.infrastructure.tms_client import TmsApiClient, TmsApiError
 
 
 @dataclass
@@ -383,3 +391,206 @@ def sync_job_to_local_plan(
 def update_local_plan(db: Session, job: ContainerJob, plan: TransportPlan) -> PlanSyncOutcome:
     """Wrapper tương thích ngược: đồng bộ ContainerJob vào kế hoạch nội bộ."""
     return sync_job_to_local_plan(db=db, job=job, plan=plan)
+
+
+def sync_combined_ro_to_lo_plans(
+    db: Session,
+    job: ContainerJob,
+    ro_plan: TransportPlan,
+    lo_plan: TransportPlan,
+    actor_id: str = "bot",
+    allow_plan_override: bool = False,
+) -> tuple[PlanSyncOutcome, PlanSyncOutcome]:
+    """Đồng bộ nguyên tử (Atomic Dual-Plan Sync) cho chuyến kết hợp từ lệnh trả (RO) sang lệnh đóng (LO)."""
+    # 1. Kiểm tra cảnh báo vỏ trên lệnh trả nếu chưa được ĐHVT override trên Web
+    if not allow_plan_override:
+        if ro_plan.container_ownership == 2 or ro_plan.container_warning in (
+            "empty_drop",
+            "other_requested",
+            "soc",
+            "over_combined",
+        ):
+            warn_lbl = "soc" if ro_plan.container_ownership == 2 else str(ro_plan.container_warning)
+            conflict = [f"Vỏ trả {ro_plan.container_no} bị chặn ghép kết hợp ({warn_lbl})."]
+            return (
+                PlanSyncOutcome(mode="CONFLICT", plan_id=ro_plan.id, conflict_reasons=conflict),
+                PlanSyncOutcome(mode="CONFLICT", plan_id=lo_plan.id, conflict_reasons=conflict),
+            )
+        if (
+            ro_plan.carrier_id
+            and lo_plan.carrier_id
+            and ro_plan.carrier_id != lo_plan.carrier_id
+        ):
+            conflict = ["Lệnh trả và lệnh đóng thuộc hai nhà xe khác nhau; không tự động ghép vỏ."]
+            return (
+                PlanSyncOutcome(mode="CONFLICT", plan_id=ro_plan.id, conflict_reasons=conflict),
+                PlanSyncOutcome(mode="CONFLICT", plan_id=lo_plan.id, conflict_reasons=conflict),
+            )
+
+    # 2. Lấy số container từ RO sang job và LO nếu LO chưa có container
+    shared_cont = clean_container(job.container_no or ro_plan.container_no)
+    if shared_cont and not job.container_no:
+        job.container_no = shared_cont
+
+    # 3. Đồng bộ chặng RO (không ghi đè seal của lệnh đóng vào RO nếu RO đã có seal riêng)
+    saved_job_order_type = job.order_type
+    saved_job_seal = job.seal_no
+    try:
+        job.order_type = ro_plan.order_type or "tra"
+        if ro_plan.seal_no and saved_job_seal and ro_plan.seal_no != saved_job_seal:
+            job.seal_no = ro_plan.seal_no
+        ro_outcome = sync_job_to_local_plan(
+            db=db,
+            job=job,
+            plan=ro_plan,
+            allow_plan_override=allow_plan_override,
+            actor_id=actor_id,
+        )
+    finally:
+        job.order_type = saved_job_order_type
+        job.seal_no = saved_job_seal
+
+    if ro_outcome.mode == "CONFLICT":
+        return ro_outcome, PlanSyncOutcome(
+            mode="CONFLICT",
+            plan_id=lo_plan.id,
+            conflict_reasons=list(ro_outcome.conflict_reasons),
+        )
+
+    # 4. Đồng bộ chặng LO (điền container lấy từ RO, xe, tài xế, seal mới của lệnh đóng)
+    try:
+        job.order_type = lo_plan.order_type or "dong"
+        lo_outcome = sync_job_to_local_plan(
+            db=db,
+            job=job,
+            plan=lo_plan,
+            allow_plan_override=allow_plan_override,
+            actor_id=actor_id,
+        )
+    finally:
+        job.order_type = saved_job_order_type
+
+    if lo_outcome.mode != "CONFLICT":
+        raw_f = dict(job.raw_fields or {}) if isinstance(job.raw_fields, dict) else {}
+        raw_f["transport_plan_id"] = lo_plan.id
+        raw_f["secondary_plan_id"] = ro_plan.id
+        raw_f["combined_ro_lo"] = True
+        job.raw_fields = raw_f
+        db.add(
+            ActivityLog(
+                id=snowflake.generate(),
+                actor_id=actor_id,
+                action="COMBINED_RO_LO_SYNCED",
+                entity_type="transport_plan",
+                entity_id=str(lo_plan.id),
+                details={
+                    "job_id": str(job.id),
+                    "ro_plan_id": str(ro_plan.id),
+                    "lo_plan_id": str(lo_plan.id),
+                    "container_no": shared_cont,
+                    "ro_mode": ro_outcome.mode,
+                    "lo_mode": lo_outcome.mode,
+                },
+            )
+        )
+    return ro_outcome, lo_outcome
+
+
+def mask_pii_payload(data: dict[str, Any] | None) -> dict[str, Any]:
+    """Che SĐT tài xế (`0903xxxx59`) trong payload trước khi ghi vào bảng `tms_sync_logs`."""
+    if not data:
+        return {}
+    masked: dict[str, Any] = {}
+    for k, v in data.items():
+        if isinstance(v, dict):
+            masked[k] = mask_pii_payload(v)
+        elif isinstance(v, str) and ("phone" in k.lower() or "sdt" in k.lower()):
+            masked[k] = mask_phone(v)
+        elif isinstance(v, str):
+            masked[k] = mask_phone(v)
+        else:
+            masked[k] = v
+    return masked
+
+
+def sync_plan_to_tms(
+    db: Session,
+    plan: TransportPlan,
+    job: Optional[ContainerJob] = None,
+    client: Optional[TmsApiClient] = None,
+) -> str:
+    """Đồng bộ chiều ghi từ `TransportPlan` sang `be-tms` có kiểm soát phiên bản, idempotency và che PII.
+
+    Tuyệt đối không giả trạng thái `SYNCED` khi `TMS_SYNC_ENABLED` hoặc `TMS_WRITE_ENABLED` đang tắt.
+    """
+    if not settings.TMS_SYNC_ENABLED or not settings.TMS_WRITE_ENABLED:
+        plan.tms_sync_status = "PENDING"
+        if job is not None:
+            job.tms_sync_status = "PENDING"
+        return "PENDING"
+
+    idemp_key = f"tms-write:{plan.id}:v{plan.version or 1}"
+    if job is not None:
+        existing_ok = db.scalar(
+            select(TmsSyncLog).where(
+                TmsSyncLog.container_job_id == job.id,
+                TmsSyncLog.status == "SUCCESS",
+                TmsSyncLog.request_data["idempotency_key"].as_string() == idemp_key,
+            )
+        )
+        if existing_ok is not None:
+            plan.tms_sync_status = "SYNCED"
+            job.tms_sync_status = "SYNCED"
+            return "SYNCED"
+
+    raw_payload: dict[str, Any] = {
+        "idempotency_key": idemp_key,
+        "plan_id": str(plan.id),
+        "tms_order_id": plan.tms_order_id,
+        "order_code": plan.order_code,
+        "version": plan.version or 1,
+        "container_no": plan.container_no,
+        "seal_no": plan.seal_no,
+        "planned_truck_plate": plan.planned_truck_plate,
+        "driver_name": plan.driver_name,
+        "driver_phone": plan.driver_phone,
+        "required_time": plan.required_time,
+    }
+    tms_client = client or TmsApiClient()
+    try:
+        http_code, resp_data = tms_client.push_dispatch_update(
+            raw_payload, idempotency_key=idemp_key
+        )
+        plan.tms_sync_status = "SYNCED"
+        if job is not None:
+            job.tms_sync_status = "SYNCED"
+            db.add(
+                TmsSyncLog(
+                    id=snowflake.generate(),
+                    container_job_id=job.id,
+                    operation="PUSH_DISPATCH_UPDATE",
+                    request_data=mask_pii_payload(raw_payload),
+                    response_data=mask_pii_payload(resp_data),
+                    http_status=http_code,
+                    status="SUCCESS",
+                )
+            )
+        return "SYNCED"
+    except Exception as exc:
+        http_status = getattr(exc, "status_code", None) if isinstance(exc, TmsApiError) else None
+        plan.tms_sync_status = "FAILED"
+        if job is not None:
+            job.tms_sync_status = "FAILED"
+            db.add(
+                TmsSyncLog(
+                    id=snowflake.generate(),
+                    container_job_id=job.id,
+                    operation="PUSH_DISPATCH_UPDATE",
+                    request_data=mask_pii_payload(raw_payload),
+                    response_data=None,
+                    http_status=http_status,
+                    status="FAILED",
+                    error_message=str(exc)[:500],
+                )
+            )
+        return "FAILED"

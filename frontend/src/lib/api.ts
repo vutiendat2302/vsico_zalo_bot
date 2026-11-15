@@ -66,6 +66,19 @@ export interface DashboardSummary {
   }>;
 }
 
+export interface TransportPlanPoint {
+  sequence?: number;
+  warehouse_id?: number | null;
+  warehouse_name?: string | null;
+  province_name?: string | null;
+  ward_name?: string | null;
+  address?: string | null;
+  required_time?: string | null;
+  end_time?: string | null;
+  gross_weight?: number | string | null;
+  is_pairing_point?: boolean;
+}
+
 export interface TransportPlanItem {
   id: string;
   plan_date: string;
@@ -79,8 +92,8 @@ export interface TransportPlanItem {
   cargo_weight?: number | string | null;
   required_time?: string | null;
   customer_name?: string | null;
-  customer_id?: number | null;
-  warehouse_id?: number | null;
+  customer_id?: number | string | null;
+  warehouse_id?: number | string | null;
   cargo_type?: string | null;
   vessel_voyage?: string | null;
   empty_depot?: string | null;
@@ -96,6 +109,27 @@ export interface TransportPlanItem {
   operator_staff?: string | null;
   notes?: string | null;
   extra_fee_notes?: string | null;
+  tms_order_id?: string | null;
+  order_code?: string | null;
+  region?: number | null;
+  forwarder_id?: string | null;
+  forwarder_name?: string | null;
+  province_id?: number | null;
+  province_name?: string | null;
+  ward_name?: string | null;
+  warehouse_name?: string | null;
+  booking_no?: string | null;
+  bill_of_lading_no?: string | null;
+  container_type?: string | null;
+  container_grade?: string | null;
+  container_ownership?: number | null;
+  delivery_term?: number | null;
+  container_warning?: string | null;
+  container_status_message?: string | null;
+  dispatch_state?: number | null;
+  eta?: string | null;
+  carrier_name?: string | null;
+  points_json?: TransportPlanPoint[] | null;
   created_at: string;
   updated_at?: string | null;
 }
@@ -167,6 +201,19 @@ export interface MessagesResponse {
   messages: ZaloMessageItem[];
 }
 
+export interface ReviewCandidatePlan {
+  plan_id: string;
+  order_code?: string | null;
+  order_type?: string | null;
+  customer_name?: string | null;
+  warehouse_name?: string | null;
+  container_no?: string | null;
+  version?: number | null;
+  score?: number;
+  evidences?: string[];
+  exclusions?: string[];
+}
+
 export interface ReviewCaseItem {
   id: string;
   message_id: string;
@@ -176,6 +223,8 @@ export interface ReviewCaseItem {
   status: string;
   assigned_to?: string | null;
   priority?: string | null;
+  candidate_plans?: ReviewCandidatePlan[];
+  details?: Record<string, any>;
   created_at: string;
   resolved_at?: string | null;
   resolved_by?: string | null;
@@ -444,6 +493,10 @@ export async function approveReviewCase(
   reviewId: string | number,
   payload?: {
     operator_name?: string;
+    selected_plan_id?: number | string;
+    secondary_plan_id?: number | string;
+    expected_version?: number;
+    save_warehouse_habit?: boolean;
     container_no?: string;
     seal_no?: string;
     order_type?: string;
@@ -840,5 +893,61 @@ export async function getGroupDetail(
   return res.json();
 }
 
+export async function downloadTransportPlansExcel(params?: {
+  plan_date?: string;
+  region?: number;
+  order_type?: string;
+  q?: string;
+}): Promise<void> {
+  const qs = new URLSearchParams();
+  if (params?.plan_date) qs.set("plan_date", params.plan_date);
+  if (params?.region !== undefined) qs.set("region", String(params.region));
+  if (params?.order_type) qs.set("order_type", params.order_type);
+  if (params?.q) qs.set("q", params.q);
 
+  const url = `${API_BASE_URL}/api/plans/export-excel${qs.toString() ? `?${qs.toString()}` : ""}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi xuất tệp Excel kế hoạch vận chuyển");
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = `ke_hoach_van_chuyen_${params?.plan_date || "all"}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+export async function syncTransportPlansFromTms(params: {
+  plan_date: string;
+  region?: number;
+  replace_existing?: boolean;
+}): Promise<{
+  ok: boolean;
+  message: string;
+  plan_date: string;
+  region: number;
+  total_synced: number;
+  return_orders_count: number;
+  loading_orders_count: number;
+}> {
+  const qs = new URLSearchParams();
+  qs.set("plan_date", params.plan_date);
+  qs.set("region", String(params.region ?? 1));
+  if (params.replace_existing !== undefined) {
+    qs.set("replace_existing", String(params.replace_existing));
+  }
+  const res = await fetch(`${API_BASE_URL}/api/plans/sync-tms?${qs.toString()}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Không thể đồng bộ kế hoạch từ TMS");
+  }
+  return res.json();
+}
 

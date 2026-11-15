@@ -1,35 +1,50 @@
-# BỘ KIỂM THỬ POSTMAN: TRUY VẤN TIN NHẮN & TEST KHẢ NĂNG XỬ LÝ (FIFO EXTRACTOR)
-### DỰ ÁN VSICO ZALO BOT (BACKEND REST API - FASTAPI + MYSQL)
+# BỘ KIỂM THỬ POSTMAN: TRUY VẤN TIN NHẮN VÀ BÓC TÁCH DỮ LIỆU (FIFO EXTRACTOR)
 
-Tài liệu này đặc tả chi tiết toàn bộ các bài kiểm thử theo đúng yêu cầu:
-1. **Lấy tất cả tin nhắn** (`GET /api/messages`)
-2. **Lấy tất cả tin nhắn bởi `groupId`** (`GET /api/messages/group/{group_id}`)
-3. **Lấy tất cả tin nhắn bởi `userId`** (`GET /api/messages/user/{user_id}`)
-4. **Lấy tất cả tin nhắn bởi `userId` trong `groupId`** (`GET /api/messages/group/{group_id}/user/{user_id}`)
-5. **Lấy tất cả các kết quả đã xử lý xong** (`GET /api/messages?status=processed`)
-6. **Lấy tất cả các tin nhắn đã xử lý bởi `userId`** (`GET /api/messages/user/{user_id}?status=processed`)
-7. **Lấy tất cả các tin nhắn đã xử lý trong `groupId`** (`GET /api/messages/group/{group_id}?status=processed`)
-8. **Lấy tất cả các tin nhắn đã xử lý bởi `userId` trong `groupId`** (`GET /api/messages/group/{group_id}/user/{user_id}?status=processed`)
-9. **Test khả năng xử lý tin nhắn** (Nhập tin nhắn thô -> Tự động bóc tách Xe, Tài xế, SĐT, Cont, Seal, Giờ đến và thẩm định ISO 6346 Mod 11)
+Tài liệu đặc tả các kịch bản kiểm thử API tiếp nhận bóc tách tin nhắn (Webhook FIFO) và các endpoint truy vấn tin nhắn, kết quả xử lý trong hệ thống VSICO Zalo Bot.
 
 ---
 
-## 1. Thiết Lập Môi Trường (Postman Environment)
+## 1. Thiết Lập Biến Môi Trường (Postman Environment)
 
-- **`baseUrl`**: `http://localhost:8000`
-- **`groupId`**: `2001000000000000001` (hoặc `6469608867469758994`)
-- **`userId`**: `1001000000000000001` (hoặc `6691387223255581446`)
-- **Header chung cho `POST`**: `Content-Type: application/json; charset=utf-8`
+| Biến | Giá trị mẫu | Ghi chú |
+| :--- | :--- | :--- |
+| `baseUrl` | `http://localhost:8000` | Địa chỉ Backend FastAPI |
+| `groupId` | `2001000000000000001` | ID nhóm Zalo (ví dụ: `6469608867469758994`) |
+| `userId` | `1001000000000000001` | ID tài khoản người gửi (ví dụ: `6691387223255581446`) |
+| `messageId` | `test_process_001` | Mã tin nhắn Zalo hoặc ID bản ghi MySQL |
 
 ---
 
-## 2. PHẦN A: TEST KHẢ NĂNG XỬ LÝ TIN NHẮN (NHẬP TIN NHẮN -> TRẢ RA KẾT QUẢ ĐÃ BÓC TÁCH)
+## 2. Danh Mục Kịch Bản Kiểm Thử
 
-### Kịch Bản 01: Test khả năng xử lý 1 xe chuẩn (Happy Path)
-* **Method**: `POST`
-* **URL**: `{{baseUrl}}/webhook`
-* **Mô tả**: Nhập vào tin nhắn thô, hệ thống tự động đưa vào hàng đợi FIFO, bóc tách đầy đủ biển số, tài xế, SĐT, số cont, seal, giờ đến và kiểm tra Check Digit ISO 6346 Mod 11.
-* **Request Body (`raw` -> `JSON`)**:
+| STT | Nhóm chức năng | Method | Endpoint |
+| :---: | :--- | :---: | :--- |
+| 01 | Bóc tách tin nhắn | `POST` | `{{baseUrl}}/webhook` (1 xe chuẩn) |
+| 02 | Bóc tách tin nhắn | `POST` | `{{baseUrl}}/webhook` (Đa xe qua dấu `/`) |
+| 03 | Bóc tách tin nhắn | `POST` | `{{baseUrl}}/webhook` (Thiếu seal) |
+| 04 | Truy vấn tin nhắn thô | `GET` | `{{baseUrl}}/api/messages` |
+| 05 | Truy vấn tin nhắn thô | `GET` | `{{baseUrl}}/api/messages/group/{{groupId}}` |
+| 06 | Truy vấn tin nhắn thô | `GET` | `{{baseUrl}}/api/messages/user/{{userId}}` |
+| 07 | Truy vấn tin nhắn thô | `GET` | `{{baseUrl}}/api/messages/group/{{groupId}}/user/{{userId}}` |
+| 08 | Chi tiết tin nhắn | `GET` | `{{baseUrl}}/api/messages/detail/{{messageId}}` |
+| 09 | Tin nhắn đã xử lý | `GET` | `{{baseUrl}}/api/messages?status=processed` |
+| 10 | Tin nhắn đã xử lý | `GET` | `{{baseUrl}}/api/messages/user/{{userId}}?status=processed` |
+| 11 | Tin nhắn đã xử lý | `GET` | `{{baseUrl}}/api/messages/group/{{groupId}}?status=processed` |
+| 12 | Tin nhắn đã xử lý | `GET` | `{{baseUrl}}/api/messages/group/{{groupId}}/user/{{userId}}?status=processed` |
+
+---
+
+## 3. PHẦN A: Bóc Tách Tin Nhắn Qua Webhook FIFO
+
+### Kịch Bản 01: Xử lý 1 xe chuẩn (Happy Path)
+
+Nhập tin nhắn thô, hệ thống tự động đưa vào hàng đợi FIFO, bóc tách đầy đủ biển số, tài xế, SĐT, số cont, seal, giờ đến và kiểm tra Check Digit ISO 6346 Modulo 11.
+
+- **Method**: `POST`
+- **URL**: `{{baseUrl}}/webhook`
+- **Headers / Bảo mật**:
+  - `Content-Type: application/json`
+- **Params / Body (`raw` - JSON)**:
 ```json
 {
   "app_id": "zca_personal_bot",
@@ -47,7 +62,7 @@ Tài liệu này đặc tả chi tiết toàn bộ các bài kiểm thử theo �
   }
 }
 ```
-* **Kết quả sau xử lý (`200 OK`)**:
+- **Kết quả mong đợi**: HTTP `200 OK`
 ```json
 {
   "ok": true,
@@ -83,10 +98,15 @@ Tài liệu này đặc tả chi tiết toàn bộ các bài kiểm thử theo �
 
 ---
 
-### Kịch Bản 02: Test khả năng xử lý nhiều xe trong 1 tin (Dấu gạch chéo `/`)
-* **Method**: `POST`
-* **URL**: `{{baseUrl}}/webhook`
-* **Request Body**:
+### Kịch Bản 02: Xử lý nhiều xe trong 1 tin (Phân cách bằng dấu gạch chéo `/`)
+
+Hệ thống tự động phân tách từng dòng và bóc tách nhiều xe/container độc lập.
+
+- **Method**: `POST`
+- **URL**: `{{baseUrl}}/webhook`
+- **Headers / Bảo mật**:
+  - `Content-Type: application/json`
+- **Params / Body (`raw` - JSON)**:
 ```json
 {
   "app_id": "zca_personal_bot",
@@ -104,15 +124,28 @@ Tài liệu này đặc tả chi tiết toàn bộ các bài kiểm thử theo �
   }
 }
 ```
-* **Kết quả sau xử lý (`200 OK`)**:
-Hệ thống tự động phân đoạn thành `trucks_count: 2`, `containers_count: 2` độc lập.
+- **Kết quả mong đợi**: HTTP `200 OK`
+```json
+{
+  "ok": true,
+  "status": "ENQUEUED_AND_PROCESSED_FIFO",
+  "processing_status": "processed",
+  "trucks_count": 2,
+  "containers_count": 2
+}
+```
 
 ---
 
-### Kịch Bản 03: Test khả năng xử lý tin nhắn thiếu seal (Yêu cầu bổ sung)
-* **Method**: `POST`
-* **URL**: `{{baseUrl}}/webhook`
-* **Request Body**:
+### Kịch Bản 03: Xử lý tin nhắn thiếu seal (Yêu cầu bổ sung)
+
+Tin nhắn thiếu thông tin bắt buộc (số seal), hệ thống chuyển trạng thái `needs_review` và sinh thông báo nhắc nhở nhà xe.
+
+- **Method**: `POST`
+- **URL**: `{{baseUrl}}/webhook`
+- **Headers / Bảo mật**:
+  - `Content-Type: application/json`
+- **Params / Body (`raw` - JSON)**:
 ```json
 {
   "app_id": "zca_personal_bot",
@@ -130,74 +163,111 @@ Hệ thống tự động phân đoạn thành `trucks_count: 2`, `containers_co
   }
 }
 ```
-* **Kết quả sau xử lý**:
-Trường `processing_status` là `"needs_review"` và `reply_to_carrier` trả về: *"Chuyến cont VSIU7399796 còn thiếu: số seal/chì. Vui lòng bổ sung!"*.
+- **Kết quả mong đợi**: HTTP `200 OK`
+```json
+{
+  "ok": true,
+  "processing_status": "needs_review",
+  "reply_to_carrier": "[VSICO Bot] Anh/chị vui lòng kiểm tra và bổ sung lại các thông tin còn thiếu/sai sau:\n- Xe 15C-878.99: thiếu/sai số chì / seal."
+}
+```
 
 ---
 
-## 3. PHẦN B: TRUY VẤN TIN NHẮN RAW (TẤT CẢ TRẠNG THÁI)
+## 4. PHẦN B: Truy Vấn Tin Nhắn Thô (Tất Cả Trạng Thái)
 
 ### Kịch Bản 04: Lấy tất cả tin nhắn
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages`
-* **Query Params (tùy chọn)**:
-  - `limit`: `20`
-  - `offset`: `0`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages"
+
+Trả về toàn bộ tin nhắn đã lưu trong hệ thống kèm kết quả bóc tách.
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`
+```json
+{
+  "total": 100,
+  "items": [
+    {
+      "id": 1,
+      "zalo_message_id": "test_process_001",
+      "group_id": "2001000000000000001",
+      "sender_id": "1001000000000000001",
+      "sender_name": "Điều hành Hải Long",
+      "message_type": "text",
+      "raw_text": "TRẢ HÀNG\nCont: VSIU7399796...",
+      "processing_status": "processed"
+    }
+  ]
+}
 ```
-* **Ý nghĩa**: Trả về toàn bộ tin nhắn đã lưu trong hệ thống, bao gồm cả tin thô (`raw_text`) và kết quả bóc tách (`trucks`, `containers`).
 
 ---
 
-### Kịch Bản 05: Lấy tất cả tin nhắn bởi `groupId`
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages/group/2001000000000000001"
-```
-* **Ý nghĩa**: Lọc tất cả các tin nhắn phát sinh trong nhóm nhà xe hoặc nhóm khách hàng tương ứng.
+### Kịch Bản 05: Lấy tất cả tin nhắn theo `groupId`
+
+Lọc toàn bộ tin nhắn phát sinh trong nhóm nhà xe hoặc nhóm khách hàng tương ứng.
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`, mảng danh sách tin nhắn thuộc nhóm `groupId`.
 
 ---
 
-### Kịch Bản 06: Lấy tất cả tin nhắn bởi `userId`
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages/user/{{userId}}`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages/user/1001000000000000001"
-```
-* **Ý nghĩa**: Lấy tất cả tin nhắn do một người dùng gửi (cả nhắn riêng 1-1 và nhắn trong bất kỳ nhóm nào).
+### Kịch Bản 06: Lấy tất cả tin nhắn theo `userId`
+
+Lấy tất cả tin nhắn do một tài khoản người dùng gửi (nhắn riêng 1-1 và trong các nhóm).
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages/user/{{userId}}`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`, mảng danh sách tin nhắn do `userId` gửi.
 
 ---
 
-### Kịch Bản 07: Lấy tất cả tin nhắn bởi `userId` trong `groupId`
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}/user/{{userId}}`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages/group/2001000000000000001/user/1001000000000000001"
-```
-* **Ý nghĩa**: Lọc chính xác các tin nhắn mà tài khoản `userId` đó đã gửi bên trong nhóm `groupId`.
+### Kịch Bản 07: Lấy tất cả tin nhắn theo `userId` trong `groupId`
+
+Lọc chính xác các tin nhắn mà tài khoản `userId` đã gửi bên trong nhóm `groupId`.
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}/user/{{userId}}`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`, danh sách tin nhắn của `userId` gửi trong nhóm `groupId`.
 
 ---
 
-### Kịch Bản 08: Lấy chi tiết tin nhắn và kết quả đã xử lý bóc tách bởi `messageId`
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages/detail/{{messageId}}` *(hoặc `{{baseUrl}}/api/messages/id/{{messageId}}`)*
-* **Path Variable**:
-  - `messageId`: Có thể truyền `zalo_message_id` (ví dụ: `test_process_001`) hoặc ID số nguyên trong MySQL (ví dụ: `1`).
-* **cURL**:
-```bash
-# Tra cứu theo mã tin nhắn Zalo
-curl -X GET "http://localhost:8000/api/messages/detail/test_process_001"
+### Kịch Bản 08: Lấy chi tiết tin nhắn và kết quả bóc tách theo `messageId`
 
-# Hoặc tra cứu theo ID MySQL
-curl -X GET "http://localhost:8000/api/messages/detail/1"
-```
-* **Kết quả kỳ vọng (`200 OK`)**:
+Tra cứu chi tiết một tin nhắn kèm thông tin xe (`trucks`) và container (`containers`) đã bóc tách.
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages/detail/{{messageId}}`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Path Variable**: `messageId` (mã tin nhắn Zalo ví dụ `test_process_001` hoặc ID số nguyên MySQL ví dụ `1`)
+- **Kết quả mong đợi**: HTTP `200 OK`
 ```json
 {
   "ok": true,
@@ -244,18 +314,22 @@ curl -X GET "http://localhost:8000/api/messages/detail/1"
 
 ---
 
-## 4. PHẦN C: TRUY VẤN CÁC KẾT QUẢ ĐÃ XỬ LÝ XONG (`status=processed`)
+## 5. PHẦN C: Truy Vấn Tin Nhắn Đã Xử Lý Xong (`status=processed`)
 
-Khi thêm tham số `status=processed`, API chỉ trả về các tin nhắn **đã được bóc tách dữ liệu thành công** (đã tách xong xe và container hợp lệ).
+Chỉ lọc các tin nhắn đã bóc tách dữ liệu thành công (đủ xe và container hợp lệ).
 
-### Kịch Bản 08: Lấy tất cả các kết quả đã xử lý xong
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages?status=processed`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages?status=processed"
-```
-* **Kết quả kỳ vọng (`200 OK`)**:
+### Kịch Bản 09: Lấy tất cả tin nhắn đã xử lý xong
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages?status=processed`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `status`: `processed`
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`
 ```json
 {
   "total": 2,
@@ -290,41 +364,57 @@ curl -X GET "http://localhost:8000/api/messages?status=processed"
 
 ---
 
-### Kịch Bản 09: Lấy tất cả các tin nhắn đã xử lý bởi `userId`
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages/user/{{userId}}?status=processed`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages/user/1001000000000000001?status=processed"
-```
-* **Ý nghĩa**: Xem lịch sử các chuyến xe mà tài khoản `userId` (tài xế hoặc điều hành nhà xe) đã gửi và hệ thống bóc tách thành công.
+### Kịch Bản 10: Lấy tất cả tin nhắn đã xử lý theo `userId`
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages/user/{{userId}}?status=processed`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `status`: `processed`
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`, danh sách tin nhắn đã bóc tách thành công của `userId`.
 
 ---
 
-### Kịch Bản 10: Lấy tất cả các tin nhắn đã xử lý trong `groupId`
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}?status=processed`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages/group/2001000000000000001?status=processed"
-```
-* **Ý nghĩa**: Xem toàn bộ kết quả bóc tách xe & cont của nhà xe thuộc nhóm `groupId`.
+### Kịch Bản 11: Lấy tất cả tin nhắn đã xử lý trong `groupId`
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}?status=processed`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `status`: `processed`
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`, danh sách tin nhắn đã bóc tách thành công trong nhóm `groupId`.
 
 ---
 
-### Kịch Bản 11: Lấy tất cả các tin nhắn đã xử lý bởi `userId` trong `groupId`
-* **Method**: `GET`
-* **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}/user/{{userId}}?status=processed`
-* **cURL**:
-```bash
-curl -X GET "http://localhost:8000/api/messages/group/2001000000000000001/user/1001000000000000001?status=processed"
-```
-* **Ý nghĩa**: Báo cáo chính xác từng lượt điều xe thành công của riêng một nhân sự trong nhóm cụ thể.
+### Kịch Bản 12: Lấy tất cả tin nhắn đã xử lý theo `userId` trong `groupId`
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/messages/group/{{groupId}}/user/{{userId}}?status=processed`
+- **Headers / Bảo mật**:
+  - `Accept: application/json`
+- **Params / Body**:
+  - **Query Params**:
+    - `status`: `processed`
+    - `limit`: `20` (tùy chọn)
+    - `offset`: `0` (tùy chọn)
+- **Kết quả mong đợi**: HTTP `200 OK`, danh sách tin nhắn đã bóc tách thành công của `userId` trong nhóm `groupId`.
 
 ---
 
-## 5. TÙY CHỌN NÂNG CAO: LỌC THEO KHOẢNG THỜI GIAN (TIME RANGE FILTER)
-Tất cả các API ở Phần B và Phần C đều hỗ trợ lọc thời gian linh hoạt:
-- **Theo ngày**: `?from_time=2026-10-27&to_time=2026-10-27`
-- **Theo giờ phút giây**: `?from_time=2026-10-27 08:00:00&to_time=2026-10-27 18:00:00`
-- **Định dạng Việt Nam**: `?from_time=27/10/2026&to_time=27/10/2026`
+## 6. Tham Số Lọc Khoảng Thời Gian (Time Range Filter)
+
+Tất cả các API ở Phần B và Phần C đều hỗ trợ lọc thời gian linh hoạt qua query params:
+
+| Kiểu lọc | Tham số Query | Ví dụ |
+| :--- | :--- | :--- |
+| **Theo ngày** | `from_time`, `to_time` | `?from_time=2026-10-27&to_time=2026-10-27` |
+| **Theo ngày giờ** | `from_time`, `to_time` | `?from_time=2026-10-27 08:00:00&to_time=2026-10-27 18:00:00` |
+| **Định dạng Việt Nam** | `from_time`, `to_time` | `?from_time=27/10/2026&to_time=27/10/2026` |

@@ -296,13 +296,18 @@ class PaddleOCRClient:
             "lang": settings.OCR_LANG,
         }).encode("utf-8")
 
+        req_headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "VSICO-Zalo-Bot-OCR/2.0",
+        }
+        api_key = (settings.OCR_API_KEY or "").strip()
+        if api_key:
+            req_headers["X-API-Key"] = api_key
+
         req = urllib.request.Request(
             url=url,
             data=req_body,
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "User-Agent": "VSICO-Zalo-Bot-OCR/2.0",
-            },
+            headers=req_headers,
             method="POST",
         )
 

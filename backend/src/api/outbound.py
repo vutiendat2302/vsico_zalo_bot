@@ -403,6 +403,8 @@ def approve_outbound_message(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Phê duyệt tin nhắn đang ở trạng thái 'cho_duyet' (cho phép sửa nội dung) và kích hoạt phát hành."""
+    if current_user and current_user.role.upper() not in ("ADMIN", "DHVT"):
+        raise HTTPException(status_code=403, detail="Chỉ tài khoản ĐHVT hoặc Admin được duyệt gửi thông báo.")
     msg = db.get(OutboundMessage, message_id)
     if not msg:
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")
@@ -506,12 +508,15 @@ def approve_outbound_message(
 def cancel_outbound_message(
     message_id: int,
     req: CancelRequest = CancelRequest(),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Hủy tin nhắn thông báo điều xe (chuyển sang trạng thái 'huy').
 
     Thường áp dụng khi điều độ hủy cuốc xe, nhà xe xin đổi lịch, hoặc thông tin bị sai lệch.
     """
+    if current_user and current_user.role.upper() not in ("ADMIN", "DHVT"):
+        raise HTTPException(status_code=403, detail="Chỉ tài khoản ĐHVT hoặc Admin được hủy thông báo.")
     msg = db.get(OutboundMessage, message_id)
     if not msg:
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")
@@ -532,9 +537,12 @@ def cancel_outbound_message(
 @outbound_router.post("/messages/{message_id}/resend")
 def resend_outbound_message(
     message_id: int,
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Gửi lại tin nhắn kết quả (thường dùng khi bị lỗi mạng hoặc thất bại)."""
+    if current_user and current_user.role.upper() not in ("ADMIN", "DHVT"):
+        raise HTTPException(status_code=403, detail="Chỉ tài khoản ĐHVT hoặc Admin được gửi lại thông báo.")
     msg = db.get(OutboundMessage, message_id)
     if not msg:
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")
@@ -551,9 +559,12 @@ def resend_outbound_message(
 def mark_outbound_manual_sent(
     message_id: int,
     note: Optional[str] = Query(default=None, description="Ghi chú xác nhận gửi thủ công"),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Đánh dấu tin nhắn outbound lỗi là Đã gửi thủ công bởi ĐHVT sau khi copy gửi tay qua Zalo."""
+    if current_user and current_user.role.upper() not in ("ADMIN", "DHVT"):
+        raise HTTPException(status_code=403, detail="Chỉ tài khoản ĐHVT hoặc Admin được xác nhận gửi thủ công.")
     msg = db.get(OutboundMessage, message_id)
     if not msg:
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả.")

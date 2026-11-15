@@ -211,8 +211,8 @@ class TransportPlanBase(BaseModel):
     planned_truck_plate: Optional[str] = Field(default=None, description="Số xe dự kiến (VD: '29C-445.41')")
     delivery_address: Optional[str] = Field(default=None, description="Địa chỉ đóng/ trả hàng kèm liên hệ thủ kho")
     group_id: Optional[str] = Field(
-        default="6469608867469758994",
-        description="ID nhóm Zalo nhận thông báo (mặc định map: '6469608867469758994')",
+        default="b0301d81c0ee29b070ff",
+        description="ID nhóm Zalo nhận thông báo (mặc định map: 'b0301d81c0ee29b070ff')",
     )
     operator_staff: Optional[str] = Field(default=None, description="Cán bộ giao nhận")
     notes: Optional[str] = Field(default=None, description="Ghi chú điều vận")
@@ -243,10 +243,11 @@ class TransportPlanCreate(BaseModel):
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     delivery_address: Optional[str] = None
-    group_id: Optional[str] = "6469608867469758994"
+    group_id: Optional[str] = "b0301d81c0ee29b070ff"
     operator_staff: Optional[str] = None
     notes: Optional[str] = None
     extra_fee_notes: Optional[str] = None
+    expected_version: Optional[int] = Field(default=None, ge=1)
 
 
 class TransportPlanUpdate(BaseModel):
@@ -277,6 +278,7 @@ class TransportPlanUpdate(BaseModel):
     operator_staff: Optional[str] = None
     notes: Optional[str] = None
     extra_fee_notes: Optional[str] = None
+    expected_version: Optional[int] = Field(default=None, ge=1)
 
 
 class PlanVehicleUpdate(BaseModel):
@@ -312,6 +314,25 @@ class TransportPlanOut(TransportPlanBase):
     carrier_name: Optional[str] = None
     eta: Optional[str] = None
     combine_note: Optional[str] = None
+    tms_order_id: Optional[str] = None
+    order_code: Optional[str] = None
+    region: Optional[int] = 1
+    forwarder_id: Optional[str] = None
+    forwarder_name: Optional[str] = None
+    province_id: Optional[int] = None
+    province_name: Optional[str] = None
+    ward_name: Optional[str] = None
+    warehouse_name: Optional[str] = None
+    booking_no: Optional[str] = None
+    bill_of_lading_no: Optional[str] = None
+    container_type: Optional[str] = None
+    container_grade: Optional[str] = None
+    container_ownership: Optional[int] = None
+    delivery_term: Optional[int] = None
+    container_warning: Optional[str] = None
+    container_status_message: Optional[str] = None
+    dispatch_state: Optional[int] = None
+    points_json: Optional[list[dict[str, Any]]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -336,8 +357,26 @@ class TransportPlanImportResponse(BaseModel):
     plan_date: Optional[str] = None
     total_imported: int
     total_skipped: int
-    default_group_id_applied: str = "6469608867469758994"
+    default_group_id_applied: str = "b0301d81c0ee29b070ff"
     sample_imported: list[TransportPlanOut] = Field(default_factory=list)
+
+
+class TransportPlanSyncResponse(BaseModel):
+    """Phản hồi kết quả đồng bộ kế hoạch vận chuyển từ hệ thống TMS."""
+
+    ok: bool = True
+    status: str = "OK"
+    message: str
+    plan_date: str
+    region: int
+    provinces_count: int
+    return_orders_count: int
+    loading_orders_count: int
+    total_synced: int
+    inserted: int
+    updated: int
+    deleted_old: int
+    default_group_id_applied: str = "b0301d81c0ee29b070ff"
 
 
 class TransportPlanRandomizeResponse(BaseModel):
@@ -703,6 +742,108 @@ class FileRecordOut(BaseModel):
     meta: Optional[dict[str, Any]] = None
     created_at: datetime
     deleted_at: Optional[datetime] = None
+
+
+class FileItemOut(BaseModel):
+    """DTO chuẩn hóa quản lý tệp tin (Snowflake ID dạng chuỗi kèm Presigned URL tạm thời)."""
+
+    id: str
+    file_key: str
+    bucket: str
+    object_key: str
+    original_name: Optional[str] = None
+    mime_type: str
+    size_bytes: int
+    sha256: str
+    source_type: str
+    source_url: Optional[str] = None
+    message_id: Optional[str] = None
+    storage_status: str = Field(default="PENDING", description="PENDING | STORED | FAILED | DELETED")
+    minio_exists: Optional[bool] = None
+    presigned_url: Optional[str] = None
+    presigned_expires_in: Optional[int] = None
+    meta: Optional[dict[str, Any]] = None
+    created_at: datetime
+    deleted_at: Optional[datetime] = None
+
+
+class FileUploadResponse(BaseModel):
+    """Phản hồi sau khi tải tệp lên MinIO và lưu metadata MySQL thành công."""
+
+    ok: bool = True
+    message: str = "Tải tệp lên MinIO và lưu metadata thành công."
+    file: FileItemOut
+
+
+class FileListResponse(BaseModel):
+    """Danh sách tệp tin phân trang trong hệ thống."""
+
+    ok: bool = True
+    total: int
+    page: int
+    page_size: int
+    items: list[FileItemOut] = Field(default_factory=list)
+
+
+class FileDetailResponse(BaseModel):
+    """Chi tiết một tệp tin kèm kết quả đối soát trực tiếp từ MinIO."""
+
+    ok: bool = True
+    file: FileItemOut
+    minio_stat: Optional[dict[str, Any]] = None
+
+
+class FileUrlResponse(BaseModel):
+    """Thông tin khóa đối tượng và liên kết Presigned GET URL tạm thời."""
+
+    ok: bool = True
+    id: str
+    file_key: str
+    bucket: str
+    object_key: str
+    presigned_url: str
+    expires_in_seconds: int
+
+
+class FileDeleteResponse(BaseModel):
+    """Kết quả thao tác xóa tệp theo phạm vi MySQL, MinIO hoặc cả hai."""
+
+    ok: bool = True
+    scope: str = Field(description="both | mysql | minio")
+    soft_delete: bool = False
+    id: str
+    file_key: str
+    bucket: str
+    object_key: str
+    deleted_from_minio: bool = False
+    deleted_from_mysql: bool = False
+    storage_status: str
+    message: str
+
+
+class FileOCRRequest(BaseModel):
+    """Tham số tùy chọn khi chạy OCR trực tiếp trên tệp đã lưu trong MinIO."""
+
+    lang: str = Field(default="vi", description="Ngôn ngữ nhận diện (vi | en)")
+    force_vision: bool = Field(
+        default=False,
+        description="Nếu True, bỏ qua PaddleOCR và gọi thẳng Gemini Vision LLM",
+    )
+    save_meta: bool = Field(
+        default=True,
+        description="Lưu kết quả OCR gần nhất vào cột `files.meta.ocr` trên MySQL",
+    )
+
+
+class FileOCRResponse(BaseModel):
+    """Kết quả OCR trực tiếp cho tệp được tra cứu từ bảng `files` và MinIO."""
+
+    ok: bool = True
+    id: str
+    file_key: str
+    bucket: str
+    object_key: str
+    ocr: dict[str, Any]
 
 
 class MessageDraftOut(BaseModel):

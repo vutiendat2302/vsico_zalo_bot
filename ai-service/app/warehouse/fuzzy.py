@@ -1,13 +1,15 @@
-"""Tầng 2 (Fuzzy): So khớp chuỗi mờ theo từ khóa và SequenceMatcher trên danh mục kho ứng viên."""
+"""Tầng 2 (Fuzzy): So khớp chuỗi mờ bằng RapidFuzz kết hợp từ khóa danh mục kho ứng viên."""
 
 from difflib import SequenceMatcher
 from typing import Any
+
+from rapidfuzz import fuzz
 
 from app.warehouse.normalizer import normalize_address
 
 
 def _similarity_score(target: str, candidate: str) -> float:
-    """Tính điểm tương đồng kết hợp giữa tỷ lệ giao từ (token overlap) và SequenceMatcher."""
+    """Tính điểm tương đồng kết hợp giữa RapidFuzz (WRatio, token_set_ratio) và giao từ."""
     if not target or not candidate:
         return 0.0
     if target in candidate or candidate in target:
@@ -17,9 +19,12 @@ def _similarity_score(target: str, candidate: str) -> float:
 
     t_tokens = set(target.split())
     c_tokens = set(candidate.split())
-    token_score = len(t_tokens & c_tokens) / max(1, len(t_tokens | c_tokens))
+    token_overlap = len(t_tokens & c_tokens) / max(1, len(t_tokens | c_tokens))
+    wratio = fuzz.WRatio(target, candidate) / 100.0
+    tset = fuzz.token_set_ratio(target, candidate) / 100.0
     seq_score = SequenceMatcher(None, target, candidate).ratio()
-    return round(0.55 * token_score + 0.45 * seq_score, 4)
+    combined = 0.35 * wratio + 0.30 * tset + 0.20 * token_overlap + 0.15 * seq_score
+    return round(combined, 4)
 
 
 def match_by_fuzzy(

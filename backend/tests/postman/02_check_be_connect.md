@@ -6,37 +6,25 @@ Tài liệu này đặc tả chi tiết các bài kiểm thử trên cổng Webh
 
 ---
 
-## 1. Khởi Động Server Backend Python
+## 1. Thiết Lập Môi Trường Postman (Environment)
 
-Mở terminal và chạy máy chủ Backend (Cổng `8000`):
-
-```bash
-cd /home/datbritget/Documents/vsico_zalo_bot/backend
-make run
-```
+- **Variable Name**: `backend_url` -> **Initial / Current Value**: `http://localhost:8000`
+- **Variable Name**: `webhook_secret` -> **Initial / Current Value**: `secret123` *(tùy chọn khớp với `ZALO_SECRET_KEY` trong `.env`)*
+- **Header bắt buộc cho request `POST`**:
+  - `Content-Type: application/json; charset=utf-8`
 
 ---
 
-## 2. Thiết Lập Môi Trường Postman (Environment)
-
-* **Variable Name**: `backend_url` -> **Initial / Current Value**: `http://localhost:8000`
-* **Header bắt buộc cho request `POST`**:
-  * `Content-Type`: `application/json; charset=utf-8`
-
----
-
-## 3. Danh Mục Chi Tiết Các Kịch Bản Kiểm Thử
+## 2. Danh Mục Chi Tiết Các Kịch Bản Kiểm Thử
 
 ### Kịch Bản 1: Kiểm Tra Trạng Thái Backend & MySQL
 
-* **Tên Request**: `01. Kiểm tra sức khỏe Server & MySQL`
-* **Method**: `GET`
-* **URL**: `{{backend_url}}/api/health`
-* **cURL**:
-  ```bash
-  curl -X GET http://localhost:8000/api/health
-  ```
-* **Kết quả kỳ vọng (`200 OK`)**:
+- **Tên Request**: `01. Kiểm tra sức khỏe Server & MySQL`
+- **Method**: `GET`
+- **URL**: `{{backend_url}}/api/health`
+- **Headers / Bảo mật**: Không yêu cầu
+- **Params / Body**: Không có
+- **Kết quả mong đợi**: HTTP `200 OK`
   ```json
   {
     "ok": true,
@@ -53,10 +41,13 @@ make run
 
 ### Kịch Bản 2: Báo Xe Chuẩn 1 Xe (Happy Path)
 
-* **Tên Request**: `02. Webhook - Báo xe chuẩn 1 xe`
-* **Method**: `POST`
-* **URL**: `{{backend_url}}/webhook`
-* **Body (`raw` -> `JSON`)**:
+- **Tên Request**: `02. Webhook - Báo xe chuẩn 1 xe`
+- **Method**: `POST`
+- **URL**: `{{backend_url}}/webhook`
+- **Headers / Bảo mật**:
+  - `Content-Type: application/json`
+  - `X-Webhook-Secret: {{webhook_secret}}` *(tùy chọn)*
+- **Params / Body** (`raw` -> `JSON`):
   ```json
   {
     "app_id": "zca_personal_bot",
@@ -74,7 +65,7 @@ make run
     }
   }
   ```
-* **Kết quả kỳ vọng (`200 OK`)**:
+- **Kết quả mong đợi**: HTTP `200 OK`
   ```json
   {
     "ok": true,
@@ -94,10 +85,13 @@ make run
 
 ### Kịch Bản 7: Báo Nhiều Xe Trong 1 Tin Nhắn (Phân Tách Bằng Dấu `/`)
 
-* **Tên Request**: `07. Webhook - Báo 2 xe trong 1 tin`
-* **Method**: `POST`
-* **URL**: `{{backend_url}}/webhook`
-* **Body (`raw` -> `JSON`)**:
+- **Tên Request**: `07. Webhook - Báo 2 xe trong 1 tin`
+- **Method**: `POST`
+- **URL**: `{{backend_url}}/webhook`
+- **Headers / Bảo mật**:
+  - `Content-Type: application/json`
+  - `X-Webhook-Secret: {{webhook_secret}}` *(tùy chọn)*
+- **Params / Body** (`raw` -> `JSON`):
   ```json
   {
     "app_id": "zca_personal_bot",
@@ -115,19 +109,31 @@ make run
     }
   }
   ```
+- **Kết quả mong đợi**: HTTP `200 OK`
+  ```json
+  {
+    "ok": true,
+    "status": "success",
+    "data": {
+      "msg_id": "test_multi_vehicle_005",
+      "group_id": "2001000000000000001",
+      "action": "STORED_RAW",
+      "processing_status": "received"
+    }
+  }
+  ```
 
 ---
 
 ### Kịch Bản 8: Tra Cứu Danh Sách Tin Thô Đã Lưu Trong MySQL
 
-* **Tên Request**: `08. Tra cứu tin nhắn thô MySQL`
-* **Method**: `GET`
-* **URL**: `{{backend_url}}/api/messages?limit=20`
-* **cURL**:
-  ```bash
-  curl -X GET "http://localhost:8000/api/messages?limit=20"
-  ```
-* **Kết quả kỳ vọng (`200 OK`)**:
+- **Tên Request**: `08. Tra cứu tin nhắn thô MySQL`
+- **Method**: `GET`
+- **URL**: `{{backend_url}}/api/messages`
+- **Headers / Bảo mật**: Không yêu cầu
+- **Params / Body**:
+  - Query Params: `limit=20`
+- **Kết quả mong đợi**: HTTP `200 OK`
   ```json
   {
     "ok": true,

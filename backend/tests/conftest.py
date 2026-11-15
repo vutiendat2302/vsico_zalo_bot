@@ -44,7 +44,9 @@ def api_client(db_session: Session) -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_db] = _override_get_db
     try:
+        from src.config.settings import settings
         with TestClient(app) as client:
+            client.headers["X-Webhook-Secret"] = settings.ZALO_SECRET_KEY or ""
             yield client
     finally:
         app.dependency_overrides.clear()

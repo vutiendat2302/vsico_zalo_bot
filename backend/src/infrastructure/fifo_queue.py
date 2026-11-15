@@ -178,9 +178,16 @@ class FIFOExtractionQueue:
                         try:
                             self._processor_fn(session, mid)
                             done.append(mid)
-                        except Exception:
+                        except Exception as exc:
                             session.rollback()
-                            session.execute(update(ZaloMessage).where(ZaloMessage.id == mid).values(processing_status="FAILED"))
+                            session.execute(
+                                update(ZaloMessage)
+                                .where(ZaloMessage.id == mid)
+                                .values(
+                                    processing_status="FAILED",
+                                    last_error=f"{type(exc).__name__}: {str(exc)}"[:1000],
+                                )
+                            )
                             session.commit()
                             logger.exception("Xử lý tin %s lỗi; giữ FAILED để đối soát.", mid)
             finally:

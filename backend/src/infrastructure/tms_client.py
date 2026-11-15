@@ -88,6 +88,8 @@ class TmsApiClient:
         method: str,
         path: str,
         params: Optional[dict[str, Any]] = None,
+        json_body: Optional[dict[str, Any]] = None,
+        headers_extra: Optional[dict[str, str]] = None,
         retry_on_401: bool = True,
     ) -> dict[str, Any]:
         """Gửi HTTP request có Bearer token và tự đăng nhập lại khi token hết hạn."""
@@ -95,21 +97,31 @@ class TmsApiClient:
             self.login()
 
         url = f"{self.base_url}{path}"
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/json",
+            **(headers_extra or {}),
+        }
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.request(
                 method,
                 url,
                 params=params,
-                headers={
-                    "Authorization": f"Bearer {self._token}",
-                    "Accept": "application/json",
-                },
+                json=json_body,
+                headers=headers,
             )
 
         if resp.status_code == 401 and retry_on_401:
             logger.info("Token TMS hết hạn (401), đang đăng nhập lại...")
             self.login()
-            return self._request_json(method, path, params=params, retry_on_401=False)
+            return self._request_json(
+                method,
+                path,
+                params=params,
+                json_body=json_body,
+                headers_extra=headers_extra,
+                retry_on_401=False,
+            )
 
         if resp.status_code >= 400:
             raise TmsApiError(
@@ -180,3 +192,27 @@ class TmsApiClient:
         payload = self._request_json("GET", f"/dispatch/{dispatch_id}")
         data = payload.get("data") or {}
         return data if isinstance(data, dict) else {}
+
+    def fetch_transport_plan_by_date(self, plan_date: str, region: int = 1) -> dict[str, Any]:
+        """Kéo toàn bộ kế hoạch vận chuyển theo ngày (`YYYY-MM-DD`) và miền từ `GET /transport-plan`."""
+        payload = self._request_json(
+            "GET",
+            "/transport-plan",
+            params={"plan_date": plan_date, "region": region},
+        )
+        return payload if isinstance(payload, dict) else {"data": []}
+
+    def push_dispatch_update(
+        self,
+        payload: dict[str, Any],
+        idempotency_key: Optional[str] = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """Đẩy cập nhật thông tin xe/container/chì từ Bot ngược về TMS (`be-tms`)."""
+        headers_extra = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        resp = self._request_json(
+            "POST",
+            settings.TMS_WRITE_ENDPOINT,
+            json_body=payload,
+            headers_extra=headers_extra,
+        )
+        return 200, resp if isinstance(resp, dict) else {"data": resp}

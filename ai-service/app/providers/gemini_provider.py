@@ -122,7 +122,7 @@ class GeminiProvider(BaseAIProvider):
         if not image_bytes:
             return VisionOCRResult(success=False, model_name=settings.AI_MODEL_NAME, error="Dữ liệu ảnh rỗng")
 
-        timeout = timeout_seconds or float(settings.OCR_TIMEOUT_SECONDS or 15)
+        timeout = timeout_seconds or max(30.0, float(settings.OCR_TIMEOUT_SECONDS or 15))
         img_b64 = base64.b64encode(image_bytes).decode("ascii")
         prompt = (
             "Đọc chính xác toàn bộ chữ và số trong hình ảnh điều phối vận tải container này "

@@ -8,7 +8,7 @@ Tuân thủ bảo mật Zero-Trust:
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -43,6 +43,9 @@ class AIOCRResult:
     confidence: float
     lines: list[dict[str, Any]]
     has_text: bool
+    layout_type: str = "unknown"
+    preprocessing_applied: list[str] = field(default_factory=list)
+    error: str | None = None
 
 
 @dataclass
@@ -177,12 +180,30 @@ class AIServiceClient:
             return None
 
     @classmethod
+    def assistant_intent(cls, message_text: str, allowed_tools: list[str], reference_date: str) -> dict[str, Any] | None:
+        """Gọi parser intent chỉ đọc qua client chung, che PII trước khi rời backend."""
+        if not cls._base_url() or not settings.AI_ENABLED:
+            return None
+        masked, _ = cls.mask_phones(message_text)
+        try:
+            with httpx.Client(timeout=float(settings.AI_TIMEOUT_SECONDS or 10)) as client:
+                response = client.post(f"{cls._base_url()}/api/v1/assistant-intent",
+                    headers=cls._headers(), json={"message_text": masked, "allowed_tools": allowed_tools,
+                                                "reference_date": reference_date})
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else None
+        except (httpx.HTTPError, ValueError, TypeError):
+            return None
+
+    @classmethod
     def perform_ocr(
         cls,
         image_base64: str | None = None,
         image_url: str | None = None,
         file_key: str | None = None,
         lang: str = "vi",
+        force_vision: bool = False,
     ) -> AIOCRResult | None:
         """Gọi `/api/v1/ocr` trên `ai-service` để trích xuất chữ từ ảnh điều xe."""
         base = cls._base_url()
@@ -196,9 +217,11 @@ class AIServiceClient:
             "image_url": image_url,
             "file_key": file_key,
             "lang": lang,
+            "force_vision": force_vision,
         }
         try:
-            timeout = float(settings.OCR_TIMEOUT_SECONDS or 15) + 5.0
+            base_timeout = float(settings.OCR_TIMEOUT_SECONDS or 15) + 5.0
+            timeout = max(35.0, base_timeout) if force_vision else base_timeout
             with httpx.Client(timeout=timeout) as client:
                 resp = client.post(
                     f"{base}/api/v1/ocr",
@@ -216,6 +239,9 @@ class AIServiceClient:
                 confidence=float(data.get("confidence") or 0.0),
                 lines=data.get("lines") or [],
                 has_text=bool(data.get("has_text")),
+                layout_type=str(data.get("layout_type") or "unknown"),
+                preprocessing_applied=list(data.get("preprocessing_applied") or []),
+                error=data.get("error"),
             )
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             logger.debug("Không thể kết nối AI Service /ocr (%s), dùng OCR fallback cục bộ.", exc)

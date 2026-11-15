@@ -23,7 +23,7 @@ from src.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_GROUP_ID = "6469608867469758994"
+DEFAULT_GROUP_ID = "b0301d81c0ee29b070ff"
 
 
 class PlanFileParser:

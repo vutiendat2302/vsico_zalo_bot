@@ -7,10 +7,12 @@ import {
   TransportPlanItem,
   getTransportPlans,
   importPlanFile,
+  downloadTransportPlansExcel,
   createTransportPlan,
   updateTransportPlan,
   deleteTransportPlan,
 } from "@/lib/api";
+import { PlanDetailModal } from "@/features/plans/components/PlanDetailModal";
 
 export default function PlansPage() {
   const [plans, setPlans] = useState<TransportPlanItem[]>([]);
@@ -23,7 +25,7 @@ export default function PlansPage() {
   const [pageSize, setPageSize] = useState(20);
 
   // Filters
-  const [planDate, setPlanDate] = useState<string>("2026-10-12");
+  const [planDate, setPlanDate] = useState<string>("2026-11-09");
   const [containerNo, setContainerNo] = useState<string>("");
   const [customerName, setCustomerName] = useState<string>("");
   const [orderType, setOrderType] = useState<string>("");
@@ -42,7 +44,7 @@ export default function PlansPage() {
 
   // Create Form State
   const [newPlan, setNewPlan] = useState({
-    plan_date: "2026-10-12",
+    plan_date: "2026-11-09",
     stt: "",
     route_name: "",
     cargo_io_type: "I",
@@ -192,6 +194,20 @@ export default function PlansPage() {
               className="hidden"
             />
           </label>
+
+          <button
+            type="button"
+            onClick={() =>
+              downloadTransportPlansExcel({
+                plan_date: planDate || undefined,
+                order_type: orderType || undefined,
+                q: searchKeyword || undefined,
+              }).catch((err) => toast.error(err.message))
+            }
+            className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-900 border border-slate-200 rounded-sm text-xs font-medium transition"
+          >
+            Export Excel
+          </button>
 
           <button
             onClick={() => setIsCreateModalOpen(true)}
@@ -488,120 +504,7 @@ export default function PlansPage() {
       </div>
 
       {/* Detail Dialog */}
-      {selectedPlan && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-          onClick={() => setSelectedPlan(null)}
-        >
-          <div
-            className="bg-white border border-slate-200 rounded-sm max-w-xl w-full p-5 text-xs text-slate-900"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
-              <h3 className="text-sm font-bold text-slate-900">
-                Chi tiết chuyến — {selectedPlan.container_no || selectedPlan.id}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setSelectedPlan(null)}
-                className="text-slate-500 hover:text-slate-900"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 mt-4">
-              <div>
-                <div className="text-slate-500">Ngày kế hoạch</div>
-                <div className="font-medium text-slate-900 mt-0.5">{selectedPlan.plan_date || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Lệnh</div>
-                <div className="font-medium text-purple-700 mt-0.5">
-                  {selectedPlan.order_type === "tra" ? "Trả (Nhập)" : "Đóng (Xuất)"}
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-500">Số Container</div>
-                <div className="font-mono font-semibold text-slate-900 mt-0.5">{selectedPlan.container_no || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Số Seal</div>
-                <div className="font-mono text-slate-900 mt-0.5">{selectedPlan.seal_no || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Cỡ / Tải trọng</div>
-                <div className="text-slate-900 mt-0.5">
-                  {selectedPlan.container_size ? `${selectedPlan.container_size}'` : "—"} /{" "}
-                  {selectedPlan.cargo_weight ? `${selectedPlan.cargo_weight}T` : "—"}
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-500">Giờ hẹn</div>
-                <div className="font-medium text-slate-900 mt-0.5">{selectedPlan.required_time || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Khách hàng</div>
-                <div className="font-medium text-purple-700 mt-0.5">{selectedPlan.customer_name || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Tuyến</div>
-                <div className="text-slate-900 mt-0.5">{selectedPlan.route_name || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Tàu / Số</div>
-                <div className="text-slate-900 mt-0.5">{selectedPlan.vessel_voyage || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Bãi hàng</div>
-                <div className="text-slate-900 mt-0.5">{selectedPlan.full_depot || selectedPlan.empty_depot || "—"}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">Tài xế / SĐT</div>
-                <div className="font-medium text-slate-900 mt-0.5">
-                  {selectedPlan.driver_name || "—"}{" "}
-                  {selectedPlan.driver_phone ? `(${selectedPlan.driver_phone})` : ""}
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-500">Biển số xe / Đội xe</div>
-                <div className="font-mono text-slate-900 mt-0.5">
-                  {selectedPlan.planned_truck_plate || "—"} ({selectedPlan.fleet_partner || "—"})
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-500">Loại hàng</div>
-                <div className="text-slate-900 mt-0.5">{selectedPlan.cargo_type || "—"}</div>
-              </div>
-              <div className="col-span-2">
-                <div className="text-slate-500">Địa chỉ đóng / trả hàng</div>
-                <div className="text-slate-900 mt-0.5">{selectedPlan.delivery_address || "—"}</div>
-              </div>
-              <div className="col-span-2">
-                <div className="text-slate-500">Nhóm Zalo nhận thông báo</div>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <span className="font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-sm">
-                    {selectedPlan.group_name || "Chưa đặt tên nhóm"}
-                  </span>
-                  <span className="font-mono text-slate-500 text-[11px]">
-                    (ID: {selectedPlan.group_id || "—"})
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-5 pt-3 border-t border-slate-200 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setSelectedPlan(null)}
-                className="px-4 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-sm text-xs font-medium"
-              >
-                Đóng
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PlanDetailModal plan={selectedPlan} onClose={() => setSelectedPlan(null)} />
 
       {/* Create Modal */}
       {isCreateModalOpen && (

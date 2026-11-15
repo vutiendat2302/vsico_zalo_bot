@@ -243,3 +243,14 @@ def split_truck_plate_and_driver(
     # Nếu không tìm thấy biển số, kiểm tra xem có phải tên tài xế thuần không
     driver = clean_driver_name(s)
     return driver, s
+
+
+def mask_phone(text: Optional[str]) -> str:
+    """Che 4 chữ số giữa của SĐT di động Việt Nam (ví dụ: `0903123459` -> `0903xxxx59`)."""
+    if not text:
+        return ""
+    return re.sub(
+        r"\b((?:\+?84|0)\d{2,3})\d{4}(\d{2})\b",
+        lambda m: f"{'0' + m.group(1).lstrip('+84') if m.group(1).startswith(('+84', '84')) else m.group(1)}xxxx{m.group(2)}",
+        str(text),
+    )

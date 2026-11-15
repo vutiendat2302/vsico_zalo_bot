@@ -1091,3 +1091,15 @@ Webhook lưu và xếp hàng, trả ngay trạng thái `QUEUED`. Worker xử lý
 Chỉ ghép bổ sung khi xác định duy nhất chuyến trong cùng nhóm. Kế hoạch và ngữ cảnh AI giới hạn theo `carrier_id`; nhiều kế hoạch phù hợp chuyển xử lý trên Web. Thông báo khách lưu DB trước khi worker cập nhật kế hoạch và gửi Zalo; tắt dispatch không được báo `SENT`. `SENDING` không rõ kết quả phải đối soát, không cam kết gửi đúng một lần khi bridge không hỗ trợ idempotency.
 
 Khi chưa có kết nối TMS, kế hoạch nội bộ là nơi nhận thông tin xe và trạng thái TMS giữ `PENDING`, không ghi `SYNCED` giả. API `PATCH /api/plans/{id}/vehicle` hỗ trợ cập nhật có kiểm tra phiên bản và xác thực ĐHVT/Admin; không có trường rơ-moóc. Xem [hướng dẫn API](tests/postman/08_cap_nhat_xe_ke_hoach.md).
+
+## Pipeline local và đề xuất kế hoạch (2026-11-15)
+
+`local_nlp_extractor.py` được gọi trước AI fallback khi regex chưa đủ thông tin. Phiên bản đầu tra biển số rút gọn và tài xế trong danh mục thuộc đúng nhà xe; các kết quả mơ hồ không được tự điền. Mốc ngày dùng thời gian tạo tin, quy đổi timezone Việt Nam khi timestamp có timezone. Dữ liệu datetime không timezone được xem là giờ địa phương theo quy ước DB hiện có.
+
+`PlanResolutionEngine` là bộ đánh giá tập ứng viên đóng: lọc ngày, nhà xe, cỡ cont, loại lệnh và ID khách/kho trước khi xếp điểm. Có phát hiện nghi gõ nhầm cont, kiểm tra vỏ SOC/empty_drop/other_requested. Điểm hiện tại là luật thử nghiệm, không phải xác suất đã hiệu chuẩn. Kết quả lệnh đóng chưa cont và tham chiếu chưa rõ được lưu vào `review_cases.details.resolution`, chưa tự ghi kế hoạch.
+
+Chưa hoàn thành trong phiên bản này: tách/gắn hai chặng RO→LO đầy đủ; giải tham chiếu quote/bản nháp; gazetteer kho và alias theo nhà xe; ghi Pha 1 và transaction hai kế hoạch; giao diện chọn ứng viên; schema LLM có evidence từng trường; bộ đo golden dataset. Các mục tiêu tỷ lệ local, recall và ghép sai chưa được đo. Không bật tự áp dụng các ca phức tạp chỉ dựa trên điểm hiện tại.
+
+## Trợ lý vận tải Phase 1
+
+Hội thoại ba vai trò đi qua `src/assistant/` với scope DB bắt buộc, tool registry và local intent trước AI fallback. Đổi xe có nháp xác nhận 15 phút; version thay đổi hoặc thông báo khách đã/đang phát hành chuyển ca Web. Dữ liệu kế hoạch nội bộ luôn giữ TMS `PENDING` đến khi ghi ngược thành công. Chi tiết triển khai, giới hạn và kiểm thử tại [TRANSPORT_ASSISTANT_IMPLEMENTATION.md](../docs/TRANSPORT_ASSISTANT_IMPLEMENTATION.md).

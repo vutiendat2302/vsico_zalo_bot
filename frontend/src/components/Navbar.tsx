@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -14,6 +14,12 @@ import {
   LogOut,
   UserCheck,
   FlaskConical,
+  SlidersHorizontal,
+  ChevronDown,
+  Building2,
+  UserCog,
+  Warehouse,
+  Contact,
 } from "lucide-react";
 import { getClientSession, clearClientSession } from "@/lib/auth";
 import { AuthUser } from "@/features/auth/types";
@@ -22,10 +28,23 @@ export default function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setCurrentUser(getClientSession());
+    setOptionsOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setOptionsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Không hiển thị Navbar trên trang Đăng nhập
   if (pathname === "/login") {
@@ -51,6 +70,17 @@ export default function Navbar() {
       ? [{ href: "/admin/users", label: "Người dùng", icon: UserCheck }]
       : []),
   ];
+
+  const masterItems = [
+    { href: "/master/transport-plans", label: "Kế hoạch TMS", icon: CalendarDays },
+    { href: "/master/carriers", label: "Nhà xe", icon: Building2 },
+    { href: "/master/drivers", label: "Tài xế", icon: UserCog },
+    { href: "/master/vehicles", label: "Xe đầu kéo", icon: Truck },
+    { href: "/master/customers", label: "Danh sách khách hàng", icon: Contact },
+    { href: "/master/warehouses", label: "Kho khách hàng", icon: Warehouse },
+  ];
+
+  const isMasterActive = pathname.startsWith("/master");
 
   return (
     <header className="bg-white border-b border-slate-200 text-slate-900 sticky top-0 z-50">
@@ -88,6 +118,47 @@ export default function Navbar() {
                 </Link>
               );
             })}
+
+            {/* Dropdown Tùy chọn (Master Data) */}
+            <div className="relative" ref={dropdownRef}>
+              <button
+                type="button"
+                onClick={() => setOptionsOpen((prev) => !prev)}
+                className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-sm text-xs transition-colors duration-100 ${
+                  isMasterActive || optionsOpen
+                    ? "bg-purple-50 text-purple-700 font-semibold border-b-2 border-purple-700"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                }`}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>Tùy chọn</span>
+                <ChevronDown className={`w-3 h-3 transition-transform ${optionsOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {optionsOpen && (
+                <div className="absolute right-0 mt-1.5 w-52 bg-white border border-slate-200 rounded-sm py-1 z-50">
+                  {masterItems.map((m) => {
+                    const MIcon = m.icon;
+                    const active = pathname === m.href;
+                    return (
+                      <Link
+                        key={m.href}
+                        href={m.href}
+                        onClick={() => setOptionsOpen(false)}
+                        className={`flex items-center space-x-2.5 px-3 py-2 text-xs transition-colors ${
+                          active
+                            ? "bg-purple-50 text-purple-700 font-semibold"
+                            : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+                        }`}
+                      >
+                        <MIcon className="w-3.5 h-3.5 shrink-0" />
+                        <span>{m.label}</span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </nav>
 
           {/* Right Auth */}
@@ -138,6 +209,24 @@ export default function Navbar() {
             >
               <Icon className="w-3 h-3" />
               <span>{item.label}</span>
+            </Link>
+          );
+        })}
+        {masterItems.map((m) => {
+          const MIcon = m.icon;
+          const active = pathname === m.href;
+          return (
+            <Link
+              key={m.href}
+              href={m.href}
+              className={`flex items-center space-x-1 px-2 py-1 rounded-sm text-xs whitespace-nowrap transition-colors ${
+                active
+                  ? "bg-purple-100 text-purple-800 font-semibold"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <MIcon className="w-3 h-3" />
+              <span>{m.label}</span>
             </Link>
           );
         })}

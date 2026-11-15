@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI
 from app.core.config import settings
 from app.routers.extract import router as extract_router
+from app.routers.assistant import router as assistant_router
 from app.routers.ocr import router as ocr_router
 from app.routers.warehouse import router as warehouse_router
 
@@ -18,6 +19,7 @@ app = FastAPI(
 
 # Gắn các internal router
 app.include_router(extract_router)
+app.include_router(assistant_router)
 app.include_router(ocr_router)
 app.include_router(warehouse_router)
 

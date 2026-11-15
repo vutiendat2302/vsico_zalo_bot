@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     OCR_ENABLED: bool = True
     OCR_PROVIDER: str = "paddleocr"  # paddleocr hoặc gemini_vision
     PADDLE_OCR_URL: str = "http://127.0.0.1:8866/predict/ocr_system"
+    OCR_API_KEY: str = ""
     OCR_TIMEOUT_SECONDS: int = 15
     OCR_LANG: str = "vi"  # Hỗ trợ: vi (Tiếng Việt), en, ch
 
@@ -97,6 +98,8 @@ class Settings(BaseSettings):
     TMS_PASSWORD: str = ""
     TMS_TIMEOUT_SECONDS: int = 15
     TMS_SYNC_ENABLED: bool = False
+    TMS_WRITE_ENABLED: bool = False
+    TMS_WRITE_ENDPOINT: str = "/transport-plan/update-dispatch"
 
     # 11. Cấu hình AI Microservice Nội bộ (ai-service)
     AI_SERVICE_URL: str = "http://127.0.0.1:8001"

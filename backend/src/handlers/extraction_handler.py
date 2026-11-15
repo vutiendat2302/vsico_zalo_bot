@@ -580,7 +580,7 @@ class ExtractionHandler:
             return message
 
         # 3. Bóc tách bằng Rule-based (F1, F2, F3, Tự do)
-        ref_time = message.zalo_sent_at or message.received_at
+        ref_time = message.created_at or message.zalo_sent_at or message.received_at
         extracted_lines = TripParser.parse_message(raw_text, reference_time=ref_time)
         validated_lines = ContainerValidator.validate_all(extracted_lines)
         used_model_name = "vsico-hybrid-rule-v2"
@@ -598,6 +598,22 @@ class ExtractionHandler:
                 if q_msg:
                     quoted_text = q_msg.message_text
 
+        from src.parsing.local_nlp_extractor import enrich_local, message_dates
+        if AIFallbackExtractor.should_trigger_ai(validated_lines, intent=intent):
+            validated_lines = enrich_local(
+                db,
+                validated_lines,
+                carrier_ctx.numeric_carrier_id,
+                raw_text,
+                ref_time,
+                quoted_text,
+                group_id=message.group_id,
+                sender_id=message.sender_id,
+            )
+            used_model_name = "local-nlp-rapidfuzz-phobert-v2"
+        for line in validated_lines:
+            line.candidate_dates = message_dates(raw_text, ref_time)
+
         # 4. Cơ chế AI / LLM Extraction qua `ai-service` (Rule-first: chỉ gọi AI khi Rule-based thiếu/mơ hồ)
         has_any_rule_entity = any(
             ln.container_no
@@ -609,7 +625,10 @@ class ExtractionHandler:
             for ln in validated_lines
         )
         should_ai = AIFallbackExtractor.should_trigger_ai(validated_lines, intent=intent)
-        need_ai_context = should_ai or (bool(quoted_text) and not has_any_rule_entity)
+        deferred_only = bool(validated_lines) and all(
+            (ln.container_status == "DEFERRED" or ln.seal_status == "DEFERRED")
+            and ln.truck_plate and not ln.unresolved_fields for ln in validated_lines)
+        need_ai_context = (should_ai or (bool(quoted_text) and not has_any_rule_entity)) and not deferred_only
         if need_ai_context:
             active_plans = CarrierFlowService.load_active_plans_for_ai(db, raw_text, carrier_ctx.numeric_carrier_id)
             ai_lines, ai_res = AIFallbackExtractor.extract_with_ai_context(
@@ -656,6 +675,36 @@ class ExtractionHandler:
 
         for line in validated_lines:
             line.carrier_id = carrier_ctx.numeric_carrier_id
+
+        # Ca đóng chưa có cont hoặc tham chiếu chưa rõ đi qua bộ đề xuất an toàn.
+        from dataclasses import asdict
+        from src.handlers.plan_resolution_engine import PlanResolutionEngine, order_kind
+        complex_lines = [ln for ln in validated_lines if ln.unresolved_fields or
+                         (order_kind(ln.order_type) == "LO" and not ln.container_no)]
+        if complex_lines and carrier_ctx.numeric_carrier_id:
+            dates = message_dates(raw_text, ref_time)
+            from datetime import date
+            scoped = list(db.scalars(select(TransportPlan).where(
+                TransportPlan.plan_date.in_([date.fromisoformat(d) for d in dates]),
+                or_(TransportPlan.carrier_id == carrier_ctx.numeric_carrier_id, TransportPlan.carrier_id.is_(None)),
+            )).all())
+            resolutions = PlanResolutionEngine.resolve_batch(
+                complex_lines, scoped, carrier_ctx.numeric_carrier_id, dates
+            )
+            for ln, resolution in zip(complex_lines, resolutions):
+                res_dict = asdict(resolution)
+                db.add(ReviewCase(message_id=message.id, case_type="PLAN_RESOLUTION",
+                                  reason=resolution.reason, status="PENDING",
+                                  details={"resolution": res_dict,
+                                           "candidate_plans": res_dict.get("candidates", []),
+                                           "selected_plan_id": resolution.selected_plan_id,
+                                           "secondary_plan_id": resolution.secondary_plan_id,
+                                           "tier": ln.extraction_tier,
+                                           "field_evidences": ln.field_evidences,
+                                           "unresolved_fields": ln.unresolved_fields}))
+            message.processing_status = MessageStatus.NEEDS_REVIEW.value
+            db.commit()
+            return message
 
         # 4b. Xử lý nhanh các nhánh đặc biệt theo luồng Bot - Nhà xe (Hủy / Bổ sung / Sửa đổi xe)
         if intent == Intent.CANCEL_REQUEST:
@@ -852,6 +901,9 @@ class ExtractionHandler:
                 tms_sync_status=TmsSyncStatus.NOT_STARTED.value,
                 raw_fields={
                     "transport_plan_id": line.transport_plan_id,
+                    "extraction_tier": line.extraction_tier,
+                    "field_evidences": line.field_evidences,
+                    "unresolved_fields": line.unresolved_fields,
                     "source_format": line.source_format,
                     "plan_date": line.plan_date,
                     "eta": line.eta_time,

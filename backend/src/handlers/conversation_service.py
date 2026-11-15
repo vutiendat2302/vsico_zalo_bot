@@ -370,6 +370,7 @@ def _send_or_queue_group_reply(
     source_message: ZaloMessage,
     reply_text: str,
     order_type: str = "ANSWER",
+    dispatch: bool = True,
 ) -> OutboundMessage:
     """Lưu phản hồi vào outbound_messages và phát trực tiếp qua ZaloDispatcher nếu là nhóm thật."""
     outbound = OutboundMessage(
@@ -384,7 +385,7 @@ def _send_or_queue_group_reply(
     db.add(outbound)
     db.flush()
 
-    if not group.is_test and settings.AUTO_DISPATCH_OUTBOUND:
+    if dispatch and not group.is_test and settings.AUTO_DISPATCH_OUTBOUND:
         ok, zalo_msg_id, error = ZaloDispatcher.send_to_group(
             group_id=group.zalo_group_id,
             message=reply_text,
@@ -1307,11 +1308,6 @@ def route_conversation(db: Session, message: ZaloMessage) -> bool:
     if not group or not group.is_active:
         return False
 
-    role = (group.group_role or "").upper()
-    if role in ("CUSTOMER", "DESTINATION"):
-        return _handle_customer_group_message(db, message, group)
-    if role == "DHVT":
-        return _handle_dhvt_group_message(db, message, group)
-    if role in ("SOURCE", "CARRIER"):
-        return _handle_carrier_group_qa(db, message, group)
-    return False
+    from src.assistant.service import handle_assistant
+
+    return handle_assistant(db, message, group)

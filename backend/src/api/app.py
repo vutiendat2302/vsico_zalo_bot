@@ -20,7 +20,9 @@ from sqlalchemy.orm import Session
 
 from src.api.auth import router as auth_router
 from src.api.dashboard import router as dashboard_router
+from src.api.files import router as files_router
 from src.api.groups import router as groups_router
+from src.api.master_data import router as master_data_router
 from src.api.messages import router as messages_router
 from src.api.outbound import outbound_router
 from src.api.plans import router as plans_router
@@ -271,6 +273,8 @@ def create_app() -> FastAPI:
     application.include_router(reviews_router)
     application.include_router(outbound_router)
     application.include_router(groups_router)
+    application.include_router(master_data_router)
+    application.include_router(files_router)
     application.include_router(sandbox_router)
     return application
 

@@ -33,7 +33,11 @@ from src.domain.models import ExtractedContainerLine
 from src.domain.rules import clean_container, clean_phone, clean_plate
 from src.handlers.carrier_flow_service import CarrierFlowService
 from src.handlers.dhvt_service import DhvtNotificationService
-from src.handlers.plan_sync_service import resolve_plan_detailed, sync_job_to_local_plan
+from src.handlers.plan_sync_service import (
+    resolve_plan_detailed,
+    sync_combined_ro_to_lo_plans,
+    sync_job_to_local_plan,
+)
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
     ActivityLog,
@@ -78,6 +82,8 @@ class ReviewApprovePayload(BaseModel):
     """Schema tùy chọn cho phép ĐHVT chỉnh sửa/chọn kho/chọn kế hoạch trước khi duyệt."""
 
     selected_plan_id: Optional[int] = Field(default=None, description="ID kế hoạch được ĐHVT chọn để đồng bộ")
+    secondary_plan_id: Optional[int] = Field(default=None, description="ID kế hoạch thứ 2 (lệnh trả gốc RO khi ghép RO -> LO)")
+    expected_version: Optional[int] = Field(default=None, ge=1, description="Phiên bản kế hoạch kỳ vọng (Optimistic Lock)")
     container_no: Optional[str] = Field(default=None)
     container_size: Optional[str] = Field(default=None)
     seal_no: Optional[str] = Field(default=None)
@@ -132,6 +138,15 @@ def _resolve_actor(current_user: Optional[User], override_name: Optional[str] = 
     return "admin_reviewer"
 
 
+def _ensure_reviewer_role(current_user: Optional[User]) -> None:
+    """Chặn người dùng không thuộc vai trò ĐHVT/Admin thực hiện thao tác duyệt/sửa trên Web."""
+    if current_user and current_user.role.upper() not in ("ADMIN", "DHVT"):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ tài khoản ĐHVT hoặc Admin được phép xử lý ca rà soát.",
+        )
+
+
 def _ensure_not_locked_by_other(
     case_obj: ReviewCase,
     actor: str,
@@ -183,6 +198,32 @@ def list_review_cases(
         truck_rec = job.truck_record if job else None
         if truck_rec is None and msg and msg.truck_records:
             truck_rec = msg.truck_records[0]
+        raw_candidates = (
+            details_dict.get("candidate_plans")
+            or (details_dict.get("resolution") or {}).get("candidates")
+            or []
+        )
+        if not raw_candidates and details_dict.get("candidate_plan_ids"):
+            for pid in details_dict.get("candidate_plan_ids", [])[:10]:
+                try:
+                    p_obj = db.get(TransportPlan, int(pid))
+                    if p_obj:
+                        raw_candidates.append(
+                            {
+                                "plan_id": str(p_obj.id),
+                                "order_code": p_obj.order_code,
+                                "order_type": p_obj.order_type,
+                                "customer_name": p_obj.customer_name,
+                                "warehouse_name": p_obj.warehouse_name or p_obj.delivery_address,
+                                "container_no": p_obj.container_no,
+                                "version": p_obj.version,
+                                "score": 70,
+                                "evidences": ["candidate_plan_id"],
+                                "exclusions": [],
+                            }
+                        )
+                except (ValueError, TypeError):
+                    pass
         results.append(
             {
                 "id": str(c.id),
@@ -193,6 +234,7 @@ def list_review_cases(
                 "status": c.status,
                 "assigned_to": c.assigned_to,
                 "priority": details_dict.get("priority", "NORMAL"),
+                "candidate_plans": raw_candidates,
                 "details": details_dict,
                 "resolution": c.resolution,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
@@ -244,6 +286,7 @@ def claim_review_case(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Khóa nhận xử lý một ca rà soát để tránh nhiều ĐHVT xử lý trùng cùng lúc."""
+    _ensure_reviewer_role(current_user)
     case_obj = db.get(ReviewCase, review_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy ca rà soát ID={review_id}.")
@@ -295,6 +338,7 @@ def transfer_review_case(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Chuyển giao quyền xử lý ca rà soát sang một nhân viên ĐHVT khác đang hoạt động."""
+    _ensure_reviewer_role(current_user)
     case_obj = db.get(ReviewCase, review_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy ca rà soát ID={review_id}.")
@@ -614,11 +658,25 @@ def approve_review_case(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Phê duyệt ca rà soát (có thể sửa trường, chọn kho lưu thói quen, chọn plan hoặc duyệt hủy)."""
+    _ensure_reviewer_role(current_user)
     case_obj = db.get(ReviewCase, review_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy ca rà soát ID={review_id}.")
+    if case_obj.status in (ReviewStatus.APPROVED.value, ReviewStatus.REJECTED.value, "approved", "rejected"):
+        raise HTTPException(status_code=409, detail="Ca rà soát đã được xử lý hoàn tất trước đó.")
 
     actor = _resolve_actor(current_user, payload.operator_name if payload else None)
+    # Đề xuất trợ lý phải được duyệt bằng tài khoản Web và còn đúng phiên bản.
+    proposal = case_obj.details or {}
+    expected_ver = (payload.expected_version if payload else None) or proposal.get("expected_version")
+    if proposal.get("expected_version") is not None:
+        if not current_user or current_user.role.lower() not in ("admin", "dhvt"):
+            raise HTTPException(status_code=403, detail="Cần tài khoản ĐHVT/Admin để duyệt đề xuất trợ lý.")
+    if expected_ver is not None:
+        plan_id = (payload.selected_plan_id if payload and payload.selected_plan_id else None) or proposal.get("transport_plan_id") or proposal.get("selected_plan_id")
+        proposed_plan = db.scalar(select(TransportPlan).where(TransportPlan.id == int(plan_id)).with_for_update().execution_options(populate_existing=True)) if plan_id else None
+        if not proposed_plan or proposed_plan.version != int(expected_ver):
+            raise HTTPException(status_code=409, detail="Kế hoạch đã thay đổi; kiểm tra lại đề xuất trước khi duyệt.")
     _ensure_not_locked_by_other(case_obj, actor, current_user)
 
     jobs_to_update: list[ContainerJob] = []
@@ -630,11 +688,61 @@ def approve_review_case(
         c_jobs = list(db.scalars(select(ContainerJob).where(ContainerJob.message_id == case_obj.message_id)).all())
         jobs_to_update.extend(c_jobs)
 
+    if not jobs_to_update and case_obj.message_id and (
+        (payload and payload.selected_plan_id)
+        or proposal.get("selected_plan_id")
+        or proposal.get("transport_plan_id")
+    ):
+        prop_changes = proposal.get("proposed_changes") if isinstance(proposal.get("proposed_changes"), dict) else {}
+        tr_new = TruckRecord(
+            id=snowflake.generate(),
+            message_id=case_obj.message_id,
+            truck_plate=(payload.truck_plate if payload and payload.truck_plate else None)
+            or prop_changes.get("planned_truck_plate")
+            or proposal.get("truck_plate"),
+            driver_name=(payload.driver_name if payload and payload.driver_name else None)
+            or prop_changes.get("driver_name")
+            or proposal.get("driver_name"),
+            driver_phone=(payload.driver_phone if payload and payload.driver_phone else None)
+            or prop_changes.get("driver_phone")
+            or proposal.get("driver_phone"),
+        )
+        db.add(tr_new)
+        db.flush()
+        synth_job = ContainerJob(
+            id=snowflake.generate(),
+            message_id=case_obj.message_id,
+            truck_record_id=tr_new.id,
+            container_no=(payload.container_no if payload and payload.container_no else None)
+            or prop_changes.get("container_no")
+            or proposal.get("container_no"),
+            seal_no=(payload.seal_no if payload and payload.seal_no else None)
+            or prop_changes.get("seal_no")
+            or proposal.get("seal_no"),
+            order_type=(payload.order_type if payload and payload.order_type else None)
+            or proposal.get("order_type")
+            or "dong",
+            warehouse_hint=proposal.get("warehouse_hint"),
+            customer_hint=proposal.get("customer_hint"),
+            validation_status=ValidationStatus.VALID.value,
+            routing_status=RoutingStatus.PENDING.value,
+            tms_sync_status=TmsSyncStatus.PENDING.value,
+            raw_fields={"created_from_review": str(case_obj.id)},
+        )
+        db.add(synth_job)
+        db.flush()
+        synth_job.truck_record = tr_new
+        case_obj.container_job_id = synth_job.id
+        jobs_to_update.append(synth_job)
+
     orig_msg = db.get(ZaloMessage, case_obj.message_id) if case_obj.message_id else None
     is_real_msg = _is_real_source_message(orig_msg)
 
     # Nhánh riêng: Phê duyệt yêu cầu hủy chuyến
-    if case_obj.case_type == "CANCEL_REQUEST":
+    if case_obj.case_type == "CANCEL_REQUEST" or (
+        case_obj.case_type == "CARRIER_CANCEL_OR_ISSUE"
+        and (case_obj.details or {}).get("requested_action") == "CANCEL"
+    ):
         return _approve_cancel_request_case(
             db=db,
             case_obj=case_obj,
@@ -670,9 +778,14 @@ def approve_review_case(
 
         # Đồng bộ trực tiếp lên TransportPlan được chọn hoặc khớp duy nhất
         selected_plan: Optional[TransportPlan] = None
-        if payload and payload.selected_plan_id:
-            selected_plan = db.get(TransportPlan, payload.selected_plan_id)
-            if not selected_plan:
+        target_pid = (
+            (payload.selected_plan_id if payload and payload.selected_plan_id else None)
+            or proposal.get("selected_plan_id")
+            or proposal.get("transport_plan_id")
+        )
+        if target_pid:
+            selected_plan = db.get(TransportPlan, int(target_pid))
+            if not selected_plan and payload and payload.selected_plan_id:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Không tìm thấy kế hoạch ID={payload.selected_plan_id}.",
@@ -681,6 +794,15 @@ def approve_review_case(
             plan_res = resolve_plan_detailed(db, job, source_group, for_update=True)
             selected_plan = plan_res.plan
 
+        secondary_pid = (
+            (payload.secondary_plan_id if payload and payload.secondary_plan_id else None)
+            or proposal.get("secondary_plan_id")
+            or (proposal.get("resolution") or {}).get("secondary_plan_id")
+        )
+        secondary_plan: Optional[TransportPlan] = (
+            db.get(TransportPlan, int(secondary_pid)) if secondary_pid else None
+        )
+
         if selected_plan is not None:
             if not job.customer_id and selected_plan.customer_id:
                 job.customer_id = selected_plan.customer_id
@@ -688,16 +810,39 @@ def approve_review_case(
                 job.customer_hint = selected_plan.customer_name
             if not job.warehouse_id and selected_plan.warehouse_id:
                 job.warehouse_id = selected_plan.warehouse_id
+            if (
+                (payload is None or payload.save_warehouse_habit)
+                and selected_plan.warehouse_id
+                and (job.warehouse_hint or proposal.get("warehouse_hint"))
+            ):
+                hint_str = str(job.warehouse_hint or proposal.get("warehouse_hint")).strip()
+                alias_rec = DhvtNotificationService.record_warehouse_habit(
+                    db, hint_str, selected_plan.warehouse_id
+                )
+                habit_recorded_any = habit_recorded_any or (alias_rec is not None)
             if not job.warehouse_hint and selected_plan.delivery_address:
                 job.warehouse_hint = selected_plan.delivery_address
-            sync_out = sync_job_to_local_plan(
-                db=db,
-                job=job,
-                plan=selected_plan,
-                allow_plan_override=True,
-                actor_id=actor,
-            )
-            synced_plan_ids.append(sync_out.plan_id)
+            if secondary_plan is not None and secondary_plan.id != selected_plan.id:
+                ro_p = secondary_plan if (secondary_plan.order_type or "").lower() in ("tra", "return", "ro") else selected_plan
+                lo_p = selected_plan if ro_p is secondary_plan else secondary_plan
+                ro_out, lo_out = sync_combined_ro_to_lo_plans(
+                    db=db,
+                    job=job,
+                    ro_plan=ro_p,
+                    lo_plan=lo_p,
+                    actor_id=actor,
+                    allow_plan_override=True,
+                )
+                synced_plan_ids.extend([ro_out.plan_id, lo_out.plan_id])
+            else:
+                sync_out = sync_job_to_local_plan(
+                    db=db,
+                    job=job,
+                    plan=selected_plan,
+                    allow_plan_override=True,
+                    actor_id=actor,
+                )
+                synced_plan_ids.append(sync_out.plan_id)
 
         out_stmt = (
             select(OutboundMessage)
@@ -912,9 +1057,12 @@ def reject_review_case(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Từ chối ca rà soát: hủy outbound chờ duyệt, đóng tin gốc và phản hồi nhà xe nếu là nhóm thật."""
+    _ensure_reviewer_role(current_user)
     case_obj = db.get(ReviewCase, review_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy ca rà soát ID={review_id}.")
+    if case_obj.status in (ReviewStatus.APPROVED.value, ReviewStatus.REJECTED.value, "approved", "rejected"):
+        raise HTTPException(status_code=409, detail="Ca rà soát đã được xử lý hoàn tất trước đó.")
 
     actor = _resolve_actor(current_user, payload.operator_name if payload else None)
     _ensure_not_locked_by_other(case_obj, actor, current_user)

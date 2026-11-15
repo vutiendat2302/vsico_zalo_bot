@@ -42,6 +42,7 @@ from src.domain.rules import clean_container, clean_phone, clean_plate, compact_
 from src.handlers.dhvt_service import DhvtNotificationService
 from src.handlers.plan_sync_service import resolve_plan_detailed, sync_job_to_local_plan
 from src.infrastructure.ai_service_client import AIServiceClient
+from src.infrastructure.minio_client import minio_storage
 from src.infrastructure.models import (
     ActivityLog,
     BotReply,
@@ -142,6 +143,38 @@ class CarrierFlowService:
         return not target_gid.startswith(("grp_test_", "test_", "pytest_", "direct_"))
 
     @classmethod
+    def _decode_or_fetch_image_bytes(cls, raw_str: str) -> bytes | None:
+        """Giải mã Base64/DataURI hoặc tải nhanh ảnh từ URL để đẩy lên MinIO (trả None nếu lỗi)."""
+        import base64
+        import urllib.request
+
+        clean = raw_str.strip()
+        if clean.startswith("data:") and ";base64," in clean:
+            clean = clean.split(";base64,", 1)[1].strip()
+        if not clean.startswith(("http://", "https://")) and len(clean) >= 16:
+            try:
+                return base64.b64decode(clean, validate=False)
+            except Exception:
+                return None
+
+        if clean.startswith(("http://", "https://")):
+            try:
+                req = urllib.request.Request(
+                    clean,
+                    headers={
+                        "User-Agent": "VSICO-Zalo-Bot/2.0",
+                        "Referer": "https://chat.zalo.me/",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if getattr(resp, "status", 200) == 200:
+                        data = resp.read()
+                        return data or None
+            except Exception:
+                return None
+        return None
+
+    @classmethod
     def record_image_file_metadata(
         cls,
         db: Session,
@@ -150,7 +183,7 @@ class CarrierFlowService:
         image_input: str | None,
         ocr_meta: dict[str, Any] | None = None,
     ) -> None:
-        """Lưu metadata tệp ảnh Zalo vào bảng `files` để đồng bộ MinIO và truy vết OCR."""
+        """Lưu metadata và đồng bộ ảnh Zalo lên MinIO theo `<nhóm>/<người gửi>-<tên file>-<thời gian>`."""
         if not image_input:
             return
         existing = db.scalar(select(FileRecord.id).where(FileRecord.message_id == message.id))
@@ -162,25 +195,69 @@ class CarrierFlowService:
         sha = hashlib.sha256(raw_bytes).hexdigest()
         is_data_uri = raw_str.startswith("data:") or (len(raw_str) > 256 and not raw_str.startswith("http"))
         mime = "image/png" if "png" in raw_str[:64].lower() else "image/jpeg"
+        ext = "png" if mime == "image/png" else "jpg"
+
+        grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == message.group_id))
+        group_label = (grp.name if grp and grp.name else None) or payload_dict.get("group_name") or message.group_id
+        sender_label = message.sender_name or (payload_dict.get("sender") or {}).get("name") or message.sender_id
+        orig_name = f"zalo_{message.zalo_message_id}.{ext}"
+
+        object_key = minio_storage.build_object_key(
+            group_name=str(group_label),
+            sender_name=str(sender_label),
+            original_filename=orig_name,
+            mime_type=mime,
+            timestamp=message.received_at,
+        )
+
+        storage_status = StorageStatus.PENDING.value
+        size_bytes = len(raw_bytes)
+        bucket_name = settings.MINIO_BUCKET_NAME or "vsico-zalo-files"
+        meta_payload: dict[str, Any] = {
+            "group_id": message.group_id,
+            "group_name": str(group_label),
+            "sender_id": message.sender_id,
+            "sender_name": str(sender_label),
+            "ocr": ocr_meta or {},
+        }
+
+        img_bytes = cls._decode_or_fetch_image_bytes(raw_str)
+        if img_bytes:
+            if img_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+                mime = "image/png"
+            elif img_bytes[:3] == b"\xff\xd8\xff":
+                mime = "image/jpeg"
+            try:
+                uploaded = minio_storage.upload_bytes(
+                    object_key=object_key,
+                    data=img_bytes,
+                    content_type=mime,
+                    bucket_name=bucket_name,
+                )
+                bucket_name = uploaded.bucket
+                object_key = uploaded.object_key
+                size_bytes = uploaded.size_bytes
+                sha = uploaded.sha256
+                storage_status = StorageStatus.STORED.value
+                meta_payload["etag"] = uploaded.etag
+            except Exception:
+                # MinIO tạm thời ngoại tuyến trong môi trường kiểm thử: giữ PENDING không chặn luồng
+                pass
 
         record = FileRecord(
             id=snowflake.generate(),
             file_key=f"zalo_img_{message.id}_{sha[:12]}",
-            bucket=settings.MINIO_BUCKET_NAME or "vsico-zalo-files",
-            object_key=f"inbound/{message.group_id}/{message.id}.jpg",
-            original_name=f"zalo_{message.zalo_message_id}.jpg",
+            bucket=bucket_name,
+            object_key=object_key,
+            original_name=orig_name[:255],
             mime_type=mime,
-            size_bytes=len(raw_bytes),
+            size_bytes=size_bytes,
             sha256=sha,
             source_type="ZALO_IMAGE",
             source_url=None if is_data_uri else raw_str[:1000],
             message_id=message.id,
-            storage_status=StorageStatus.PENDING.value,
-            meta={
-                "group_id": message.group_id,
-                "sender_id": message.sender_id,
-                "ocr": ocr_meta or {},
-            },
+            storage_status=storage_status,
+            meta=meta_payload,
         )
         db.add(record)
         db.flush()
@@ -1394,6 +1471,9 @@ class CarrierFlowService:
                 MessageDraft.status.in_([MessageDraftStatus.OPEN.value, MessageDraftStatus.WAITING_REPLY.value]),
             )
         ).all():
+            # Nháp xác nhận đổi xe thuộc luồng riêng, không đóng khi bổ sung tin khác.
+            if (draft.entities or {}).get("kind") == "assistant_vehicle_change":
+                continue
             draft.status = MessageDraftStatus.FLUSHED.value
             draft.flushed_at = now
 

@@ -102,3 +102,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
+
+## API intent trợ lý vận tải
+
+`POST /api/v1/assistant-intent`, xác thực `X-Internal-Token`, nhận `message_text`, `allowed_tools` (tập tên công cụ đọc do backend xác định), `reference_date` (ngày Việt Nam của tin gốc). Service che SĐT lần nữa trước provider và trả `call: {intent, confidence, entities, needs_clarification}`, `model_name`, `prompt_version=assistant-intent-v1`, `latency_ms`. Schema từ chối SQL, carrier_id hay trường quyền; intent ngoài tập cho phép trả UNKNOWN. Backend vẫn kiểm quyền và phạm vi khi thực thi. Dịch vụ không kết nối DB và không thực hiện thay đổi nghiệp vụ.

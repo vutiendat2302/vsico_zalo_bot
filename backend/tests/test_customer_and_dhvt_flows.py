@@ -28,6 +28,8 @@ from src.infrastructure.models import (
     ContainerJob,
     Customer,
     OutboundMessage,
+    MessageDraft,
+    Vehicle,
     ReviewCase,
     RouteMap,
     TransportPlan,
@@ -239,6 +241,20 @@ def test_local_plan_empty_container_slot_fill_update_and_conflict(
         },
     )
     assert m2.processing_status == MessageStatus.PROCESSED.value
+    # Yêu cầu mới: phải xác nhận nhà xe; có tin chờ gửi thì ĐHVT duyệt trên Web.
+    draft = db_session.scalar(select(MessageDraft).where(MessageDraft.first_message_id == m2.id))
+    assert draft is not None and plan.version == 2
+    db_session.add(Vehicle(id=snowflake.generate(), tms_vehicle_id=snowflake.generate(),
+        carrier_id=env["carrier"].id, plate_no="15C-999.88", vehicle_type=1, is_active=True))
+    db_session.flush()
+    confirmation = _post_and_process(api_client, db_session, {
+        "msg_id": f"confirm_{uuid4().hex}", "group_id": src_grp.zalo_group_id,
+        "sender_id": "test_car_sender", "message_text": f"xác nhận #{draft.id}", "is_test": True})
+    review = db_session.scalar(select(ReviewCase).where(ReviewCase.message_id == confirmation.id))
+    assert review is not None and plan.version == 2
+    _, headers = _create_user_headers(db_session, env["dhvt_grp"], f"review_{uuid4().hex}", f"z_{uuid4().hex}")
+    approved = api_client.post(f"/api/reviews/{review.id}/approve", headers=headers)
+    assert approved.status_code == 200
     db_session.refresh(plan)
     assert plan.driver_name == "Phạm Văn Dũng"
     assert plan.driver_phone == "0988777666"
@@ -400,7 +416,7 @@ def test_customer_outbound_manual_edit_approve_and_cancel_workflow(
     )
     assert m_cancel.processing_status == MessageStatus.NEEDS_REVIEW.value
     rc_cancel = db_session.scalar(
-        select(ReviewCase).where(ReviewCase.message_id == m_cancel.id, ReviewCase.case_type == "CANCEL_REQUEST")
+        select(ReviewCase).where(ReviewCase.message_id == m_cancel.id, ReviewCase.case_type == "CARRIER_CANCEL_OR_ISSUE")
     )
     assert rc_cancel is not None
 
@@ -529,10 +545,8 @@ def test_customer_inbound_qa_routemap_isolation_masking_and_change_request(
     assert ans_miss is not None
     assert ans_oob.content == ans_miss.content
 
-    # Nhật ký audit phân biệt nội bộ rõ out_of_scope vs not_found và tự leo thang khi hỏi lại >= 2 lần
-    assert db_session.scalar(select(ActivityLog).where(ActivityLog.action == "CUSTOMER_QA_OUT_OF_SCOPE")) is not None
-    assert db_session.scalar(select(ActivityLog).where(ActivityLog.action == "CUSTOMER_QA_NOT_FOUND")) is not None
-    assert db_session.scalar(select(ReviewCase).where(ReviewCase.case_type == "CUSTOMER_REPEATED_INQUIRY")) is not None
+    # Trợ lý chỉ truy vấn trong scope và ghi audit chung, không dò tồn tại ngoài tuyến.
+    assert db_session.scalar(select(ActivityLog).where(ActivityLog.action == "ASSISTANT_EXECUTED")) is not None
 
     # 3. Khách nhắn "ok em" -> không tạo ca thay đổi
     m_ack = _post_and_process(
