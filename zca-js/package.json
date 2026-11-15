@@ -1,0 +1,17 @@
+{
+  "name": "vsico-zalo-bridge",
+  "version": "1.0.0",
+  "description": "Cầu nối Zalo (ZCA Bridge & HTTP REST API Server) cho hệ thống VSICO Zalo Bot",
+  "main": "bot_api_server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot_api_server.js",
+    "bridge": "node bridge.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "zca-js": "^2.2.0"
+  }
+}

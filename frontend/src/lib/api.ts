@@ -53,7 +53,7 @@ export interface DashboardSummary {
     ignored: number;
   }>;
   recent_messages: Array<{
-    id: number;
+    id: string;
     zalo_message_id: string;
     group_id: string;
     sender_name: string;
@@ -66,8 +66,21 @@ export interface DashboardSummary {
   }>;
 }
 
+export interface TransportPlanPoint {
+  sequence?: number;
+  warehouse_id?: number | null;
+  warehouse_name?: string | null;
+  province_name?: string | null;
+  ward_name?: string | null;
+  address?: string | null;
+  required_time?: string | null;
+  end_time?: string | null;
+  gross_weight?: number | string | null;
+  is_pairing_point?: boolean;
+}
+
 export interface TransportPlanItem {
-  id: number;
+  id: string;
   plan_date: string;
   stt?: number | null;
   route_name?: string | null;
@@ -79,8 +92,8 @@ export interface TransportPlanItem {
   cargo_weight?: number | string | null;
   required_time?: string | null;
   customer_name?: string | null;
-  customer_id?: number | null;
-  warehouse_id?: number | null;
+  customer_id?: number | string | null;
+  warehouse_id?: number | string | null;
   cargo_type?: string | null;
   vessel_voyage?: string | null;
   empty_depot?: string | null;
@@ -88,11 +101,35 @@ export interface TransportPlanItem {
   estimated_drop_time?: string | null;
   fleet_partner?: string | null;
   planned_truck_plate?: string | null;
+  driver_name?: string | null;
+  driver_phone?: string | null;
   delivery_address?: string | null;
   group_id?: string | null;
+  group_name?: string | null;
   operator_staff?: string | null;
   notes?: string | null;
   extra_fee_notes?: string | null;
+  tms_order_id?: string | null;
+  order_code?: string | null;
+  region?: number | null;
+  forwarder_id?: string | null;
+  forwarder_name?: string | null;
+  province_id?: number | null;
+  province_name?: string | null;
+  ward_name?: string | null;
+  warehouse_name?: string | null;
+  booking_no?: string | null;
+  bill_of_lading_no?: string | null;
+  container_type?: string | null;
+  container_grade?: string | null;
+  container_ownership?: number | null;
+  delivery_term?: number | null;
+  container_warning?: string | null;
+  container_status_message?: string | null;
+  dispatch_state?: number | null;
+  eta?: string | null;
+  carrier_name?: string | null;
+  points_json?: TransportPlanPoint[] | null;
   created_at: string;
   updated_at?: string | null;
 }
@@ -107,9 +144,10 @@ export interface TransportPlansResponse {
 }
 
 export interface ZaloMessageItem {
-  id: number;
+  id: string;
   zalo_message_id: string;
   group_id: string;
+  group_name?: string | null;
   sender_id: string;
   sender_name?: string | null;
   message_type: string;
@@ -119,7 +157,7 @@ export interface ZaloMessageItem {
   processing_status: string;
   taxonomy?: any;
   trucks: Array<{
-    id: number;
+    id: string | number;
     truck_plate?: string | null;
     trailer_plate?: string | null;
     driver_name?: string | null;
@@ -130,8 +168,8 @@ export interface ZaloMessageItem {
     status: string;
   }>;
   containers: Array<{
-    id: number;
-    truck_record_id?: number | null;
+    id: string | number;
+    truck_record_id?: string | number | null;
     line_no: number;
     source_format?: string | null;
     plan_date?: string | null;
@@ -163,13 +201,30 @@ export interface MessagesResponse {
   messages: ZaloMessageItem[];
 }
 
+export interface ReviewCandidatePlan {
+  plan_id: string;
+  order_code?: string | null;
+  order_type?: string | null;
+  customer_name?: string | null;
+  warehouse_name?: string | null;
+  container_no?: string | null;
+  version?: number | null;
+  score?: number;
+  evidences?: string[];
+  exclusions?: string[];
+}
+
 export interface ReviewCaseItem {
-  id: number;
-  message_id: number;
-  container_job_id?: number | null;
+  id: string;
+  message_id: string;
+  container_job_id?: string | null;
   case_type: string;
   reason: string;
   status: string;
+  assigned_to?: string | null;
+  priority?: string | null;
+  candidate_plans?: ReviewCandidatePlan[];
+  details?: Record<string, any>;
   created_at: string;
   resolved_at?: string | null;
   resolved_by?: string | null;
@@ -187,6 +242,9 @@ export interface ReviewCaseItem {
     order_type?: string | null;
     customer_hint?: string | null;
     warehouse_hint?: string | null;
+    truck_plate?: string | null;
+    driver_name?: string | null;
+    driver_phone?: string | null;
     validation_status?: string | null;
     warnings: string[];
   };
@@ -211,13 +269,15 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
   }
   return res.json();
 }
-
 export async function getTransportPlans(params?: {
   plan_date?: string;
   container_no?: string;
   customer_name?: string;
   order_type?: string;
+  truck_plate?: string;
+  driver_name?: string;
   group_id?: string;
+  q?: string;
   limit?: number;
   offset?: number;
 }): Promise<TransportPlansResponse> {
@@ -226,7 +286,10 @@ export async function getTransportPlans(params?: {
   if (params?.container_no) query.set("container_no", params.container_no);
   if (params?.customer_name) query.set("customer_name", params.customer_name);
   if (params?.order_type) query.set("order_type", params.order_type);
+  if (params?.truck_plate) query.set("truck_plate", params.truck_plate);
+  if (params?.driver_name) query.set("driver_name", params.driver_name);
   if (params?.group_id) query.set("group_id", params.group_id);
+  if (params?.q) query.set("q", params.q);
   if (params?.limit) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
 
@@ -237,7 +300,6 @@ export async function getTransportPlans(params?: {
   }
   return res.json();
 }
-
 export async function createTransportPlan(data: Partial<TransportPlanItem>): Promise<TransportPlanItem> {
   const res = await fetch(`${API_BASE_URL}/api/plans`, {
     method: "POST",
@@ -250,9 +312,8 @@ export async function createTransportPlan(data: Partial<TransportPlanItem>): Pro
   }
   return res.json();
 }
-
 export async function updateTransportPlan(
-  id: number,
+  id: string | number,
   data: Partial<TransportPlanItem>
 ): Promise<TransportPlanItem> {
   const res = await fetch(`${API_BASE_URL}/api/plans/${id}`, {
@@ -266,8 +327,7 @@ export async function updateTransportPlan(
   }
   return res.json();
 }
-
-export async function deleteTransportPlan(id: number): Promise<{ ok: boolean }> {
+export async function deleteTransportPlan(id: string | number): Promise<{ ok: boolean }> {
   const res = await fetch(`${API_BASE_URL}/api/plans/${id}`, {
     method: "DELETE",
   });
@@ -276,7 +336,6 @@ export async function deleteTransportPlan(id: number): Promise<{ ok: boolean }> 
   }
   return res.json();
 }
-
 export async function deletePlansByDate(dateStr: string): Promise<{ ok: boolean; deleted_count: number }> {
   const res = await fetch(`${API_BASE_URL}/api/plans/by-date/${dateStr}`, {
     method: "DELETE",
@@ -286,7 +345,6 @@ export async function deletePlansByDate(dateStr: string): Promise<{ ok: boolean;
   }
   return res.json();
 }
-
 export async function importPlanFile(
   file: File,
   replaceExisting = true,
@@ -309,7 +367,6 @@ export async function importPlanFile(
   }
   return res.json();
 }
-
 export interface RandomizePlanGroupsResponse {
   ok: boolean;
   status: string;
@@ -344,8 +401,21 @@ export async function randomizePlanGroups(
   }
   return res.json();
 }
-
+export async function setAllPlansGroup(
+  groupId: string = "6469608867469758994"
+): Promise<{ ok: boolean; message: string; updated_count: number; group_id: string }> {
+  const query = new URLSearchParams({ group_id: groupId });
+  const res = await fetch(`${API_BASE_URL}/api/plans/set-default-group?${query.toString()}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Lỗi khi cập nhật nhóm: HTTP ${res.status}`);
+  }
+  return res.json();
+}
 export async function getMessages(params?: {
+  search?: string;
   from_time?: string;
   to_time?: string;
   status?: string;
@@ -355,6 +425,7 @@ export async function getMessages(params?: {
   offset?: number;
 }): Promise<MessagesResponse> {
   const query = new URLSearchParams();
+  if (params?.search) query.set("search", params.search);
   if (params?.from_time) query.set("from_time", params.from_time);
   if (params?.to_time) query.set("to_time", params.to_time);
   if (params?.status) query.set("status", params.status);
@@ -370,17 +441,23 @@ export async function getMessages(params?: {
   }
   return res.json();
 }
-
 export async function getMessageDetail(idOrMsgId: string | number): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/messages/detail/${idOrMsgId}`, {
+  const safeId = String(idOrMsgId).trim();
+  const res = await fetch(`${API_BASE_URL}/api/messages/detail/${encodeURIComponent(safeId)}`, {
     cache: "no-store",
   });
   if (!res.ok) {
-    throw new Error(`Lỗi khi lấy chi tiết tin nhắn: HTTP ${res.status}`);
+    let errMsg = `HTTP ${res.status}`;
+    try {
+      const errData = await res.json();
+      errMsg = errData.detail || errData.message || errMsg;
+    } catch {
+      // ignore
+    }
+    throw new Error(`Lỗi khi lấy chi tiết tin nhắn: ${errMsg}`);
   }
   return res.json();
 }
-
 export async function getReviewCases(params?: {
   status?: string;
   case_type?: string;
@@ -400,10 +477,39 @@ export async function getReviewCases(params?: {
   }
   return res.json();
 }
-
-export async function approveReviewCase(reviewId: number): Promise<any> {
+export async function claimReviewCase(reviewId: string | number, operatorName?: string): Promise<any> {
+  const res = await fetch(`${API_BASE_URL}/api/reviews/${reviewId}/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operator_name: operatorName || "admin" }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Lỗi khi nhận xử lý ca ${reviewId}`);
+  }
+  return res.json();
+}
+export async function approveReviewCase(
+  reviewId: string | number,
+  payload?: {
+    operator_name?: string;
+    selected_plan_id?: number | string;
+    secondary_plan_id?: number | string;
+    expected_version?: number;
+    save_warehouse_habit?: boolean;
+    container_no?: string;
+    seal_no?: string;
+    order_type?: string;
+    truck_plate?: string;
+    driver_name?: string;
+    driver_phone?: string;
+    cancel_reason?: string;
+  }
+): Promise<any> {
   const res = await fetch(`${API_BASE_URL}/api/reviews/${reviewId}/approve`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || { operator_name: "admin" }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -411,12 +517,15 @@ export async function approveReviewCase(reviewId: number): Promise<any> {
   }
   return res.json();
 }
-
-export async function rejectReviewCase(reviewId: number, reason: string): Promise<any> {
+export async function rejectReviewCase(
+  reviewId: string | number,
+  reason: string,
+  operatorName?: string
+): Promise<any> {
   const res = await fetch(`${API_BASE_URL}/api/reviews/${reviewId}/reject`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({ reason, operator_name: operatorName || "admin" }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -424,7 +533,6 @@ export async function rejectReviewCase(reviewId: number, reason: string): Promis
   }
   return res.json();
 }
-
 export async function getTaxonomyStatistics(params?: {
   from_time?: string;
   to_time?: string;
@@ -442,7 +550,6 @@ export async function getTaxonomyStatistics(params?: {
   }
   return res.json();
 }
-
 export async function triggerFifoQueue(): Promise<any> {
   const res = await fetch(`${API_BASE_URL}/api/messages/process-fifo`, {
     method: "POST",
@@ -452,7 +559,6 @@ export async function triggerFifoQueue(): Promise<any> {
   }
   return res.json();
 }
-
 // ==========================================
 // OUTBOUND & KẾT QUẢ TIN NHẮN (MESSAGE RESULTS)
 // ==========================================
@@ -467,8 +573,8 @@ export interface OutboundContainerInfo {
 }
 
 export interface OutboundMessageItem {
-  id: number;
-  target_group_id: number;
+  id: string;
+  target_group_id: string;
   target_group_name?: string;
   target_zalo_group_id?: string;
   order_type: string;
@@ -478,7 +584,19 @@ export interface OutboundMessageItem {
   review_zalo_msg_id?: string;
   approved_by?: string;
   approved_at?: string;
-  status: "cho_duyet" | "da_gui" | "huy" | "that_bai" | string;
+  status:
+    | "SENT"
+    | "PENDING_APPROVAL"
+    | "PENDING_SEND"
+    | "SENDING"
+    | "CANCELLED"
+    | "FAILED"
+    | "IGNORED_DUPLICATE"
+    | "cho_duyet"
+    | "da_gui"
+    | "huy"
+    | "that_bai"
+    | string;
   attempt_count: number;
   zalo_message_id?: string;
   last_error?: string;
@@ -505,7 +623,6 @@ export async function getOutboundSummary(): Promise<OutboundSummary> {
   }
   return res.json();
 }
-
 export async function getOutboundMessages(params?: {
   status?: string;
   order_type?: string;
@@ -531,19 +648,30 @@ export async function getOutboundMessages(params?: {
   }
   return res.json();
 }
-
-export async function approveOutboundMessage(id: number, operatorName?: string): Promise<any> {
+export async function approveOutboundMessage(
+  id: string | number,
+  operatorName?: string,
+  content?: string
+): Promise<any> {
   const url = `${API_BASE_URL}/api/outbound/messages/${id}/approve?operator_name=${encodeURIComponent(
     operatorName || "Điều độ viên"
   )}`;
-  const res = await fetch(url, { method: "POST" });
+  const hasBody = Boolean(content && content.trim());
+  const res = await fetch(url, {
+    method: "POST",
+    ...(hasBody
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: content?.trim(), operator_name: operatorName || "Điều độ viên" }),
+        }
+      : {}),
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Lỗi khi duyệt tin #${id}`);
   }
   return res.json();
 }
-
 export async function approveMessageByDHVT(messageId: number, operatorName?: string): Promise<any> {
   const url = `${API_BASE_URL}/api/messages/${messageId}/approve?operator_name=${encodeURIComponent(
     operatorName || "Điều độ viên ĐHVT"
@@ -555,7 +683,6 @@ export async function approveMessageByDHVT(messageId: number, operatorName?: str
   }
   return res.json();
 }
-
 export async function rejectMessageByDHVT(messageId: number, reason?: string, operatorName?: string): Promise<any> {
   const url = `${API_BASE_URL}/api/messages/${messageId}/reject?operator_name=${encodeURIComponent(
     operatorName || "Điều độ viên ĐHVT"
@@ -571,8 +698,7 @@ export async function rejectMessageByDHVT(messageId: number, reason?: string, op
   }
   return res.json();
 }
-
-export async function cancelOutboundMessage(id: number, reason?: string): Promise<any> {
+export async function cancelOutboundMessage(id: string | number, reason?: string): Promise<any> {
   const url = `${API_BASE_URL}/api/outbound/messages/${id}/cancel`;
   const res = await fetch(url, {
     method: "POST",
@@ -585,8 +711,7 @@ export async function cancelOutboundMessage(id: number, reason?: string): Promis
   }
   return res.json();
 }
-
-export async function resendOutboundMessage(id: number): Promise<any> {
+export async function resendOutboundMessage(id: string | number): Promise<any> {
   const url = `${API_BASE_URL}/api/outbound/messages/${id}/resend`;
   const res = await fetch(url, { method: "POST" });
   if (!res.ok) {
@@ -595,7 +720,6 @@ export async function resendOutboundMessage(id: number): Promise<any> {
   }
   return res.json();
 }
-
 export async function seedOutboundSamples(): Promise<any> {
   const url = `${API_BASE_URL}/api/outbound/seed-samples`;
   const res = await fetch(url, { method: "POST" });
@@ -604,17 +728,16 @@ export async function seedOutboundSamples(): Promise<any> {
   }
   return res.json();
 }
-
 // ======================= GROUPS MANAGEMENT API =======================
 
 export interface ZaloGroupItem {
-  id: number;
+  id: string;
   zalo_group_id: string;
   name?: string | null;
   group_role: string;
   carrier_id?: string | null;
   carrier_name?: string | null;
-  send_mode: string; // 'tu_dong' | 'cho_duyet'
+  send_mode: string; // 'AUTO' | 'MANUAL'
   send_mode_label: string; // 'Tự động' | 'Chờ duyệt'
   is_active: boolean;
   is_test: boolean;
@@ -652,11 +775,10 @@ export async function getGroups(params?: {
   }
   return res.json();
 }
-
 export async function updateGroupSendMode(
-  groupId: number,
-  sendMode: "tu_dong" | "cho_duyet"
-): Promise<{ ok: boolean; message: string; group_id: number; zalo_group_id: string; send_mode: string; send_mode_label: string }> {
+  groupId: string | number,
+  sendMode: "AUTO" | "MANUAL" | "tu_dong" | "cho_duyet"
+): Promise<{ ok: boolean; message: string; group_id: string; zalo_group_id: string; send_mode: string; send_mode_label: string }> {
   const url = `${API_BASE_URL}/api/groups/${groupId}/send-mode`;
   const res = await fetch(url, {
     method: "PUT",
@@ -669,9 +791,8 @@ export async function updateGroupSendMode(
   }
   return res.json();
 }
-
 export async function updateRealGroupStatus(
-  groupId: number,
+  groupId: string | number,
   payload: {
     send_mode?: string;
     is_active?: boolean;
@@ -694,7 +815,6 @@ export async function updateRealGroupStatus(
   }
   return res.json();
 }
-
 export async function updateRealGroupStatusByZaloId(
   zaloGroupId: string,
   payload: {
@@ -718,7 +838,6 @@ export async function updateRealGroupStatusByZaloId(
   }
   return res.json();
 }
-
 export async function deleteAllTestGroups(): Promise<{
   ok: boolean;
   message: string;
@@ -736,10 +855,9 @@ export async function deleteAllTestGroups(): Promise<{
   }
   return res.json();
 }
-
 export async function deleteGroup(
-  groupId: number
-): Promise<{ ok: boolean; message: string; deleted_id: number }> {
+  groupId: string | number
+): Promise<{ ok: boolean; message: string; deleted_id: string }> {
   const url = `${API_BASE_URL}/api/groups/${groupId}`;
   const res = await fetch(url, {
     method: "DELETE",
@@ -750,7 +868,6 @@ export async function deleteGroup(
   }
   return res.json();
 }
-
 export async function createGroup(payload: Partial<ZaloGroupItem>): Promise<{ ok: boolean; message: string; group: ZaloGroupItem }> {
   const url = `${API_BASE_URL}/api/groups`;
   const res = await fetch(url, {
@@ -764,6 +881,73 @@ export async function createGroup(payload: Partial<ZaloGroupItem>): Promise<{ ok
   }
   return res.json();
 }
+export async function getGroupDetail(
+  groupId: string | number
+): Promise<{ ok: boolean; group: ZaloGroupItem & { zalo_live_info?: any } }> {
+  const url = `${API_BASE_URL}/api/groups/${groupId}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Lỗi khi lấy chi tiết nhóm #${groupId}`);
+  }
+  return res.json();
+}
 
+export async function downloadTransportPlansExcel(params?: {
+  plan_date?: string;
+  region?: number;
+  order_type?: string;
+  q?: string;
+}): Promise<void> {
+  const qs = new URLSearchParams();
+  if (params?.plan_date) qs.set("plan_date", params.plan_date);
+  if (params?.region !== undefined) qs.set("region", String(params.region));
+  if (params?.order_type) qs.set("order_type", params.order_type);
+  if (params?.q) qs.set("q", params.q);
 
+  const url = `${API_BASE_URL}/api/plans/export-excel${qs.toString() ? `?${qs.toString()}` : ""}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Lỗi khi xuất tệp Excel kế hoạch vận chuyển");
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = `ke_hoach_van_chuyen_${params?.plan_date || "all"}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+export async function syncTransportPlansFromTms(params: {
+  plan_date: string;
+  region?: number;
+  replace_existing?: boolean;
+}): Promise<{
+  ok: boolean;
+  message: string;
+  plan_date: string;
+  region: number;
+  total_synced: number;
+  return_orders_count: number;
+  loading_orders_count: number;
+}> {
+  const qs = new URLSearchParams();
+  qs.set("plan_date", params.plan_date);
+  qs.set("region", String(params.region ?? 1));
+  if (params.replace_existing !== undefined) {
+    qs.set("replace_existing", String(params.replace_existing));
+  }
+  const res = await fetch(`${API_BASE_URL}/api/plans/sync-tms?${qs.toString()}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Không thể đồng bộ kế hoạch từ TMS");
+  }
+  return res.json();
+}
 

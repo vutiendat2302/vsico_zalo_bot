@@ -1,4 +1,0 @@
-TEST_ID: TC-16
-
-EXPECTED:
-Tin hội thoại thông thường: không tạo bản ghi xe, bot im lặng.

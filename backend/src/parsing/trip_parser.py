@@ -24,12 +24,14 @@ class TripParser:
     """Bộ bóc tách dữ liệu chuyến xe và container chuẩn hóa F1, F2, F3 và Tự do."""
 
     _PLATE_REGEX = re.compile(
-        r"\b(\d{2}[A-Za-z]{1,2}(?:[\s.\-]+\d{3}[\s.\-]+\d{1,2}|[\s.\-]*\d{4,5}))\b"
+        r"\b(\d{2}[A-Za-z]{1,2}(?:[\s.\-/]+\d{3}[\s.\-]+\d{1,3}|[\s.\-/]*\d{4,6}))\b"
     )
-    _CONTAINER_STD_REGEX = re.compile(r"\b([A-Za-z]{3}[UJuZujz][\s.\-]*\d{6,7})\b")
-    _CONTAINER_MALFORMED_REGEX = re.compile(r"\b([A-Za-z]{3}[UJuZujz][\s.\-]*\d{4,8})\b")
+    _CONTAINER_STD_REGEX = re.compile(
+        r"\b([A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d{3}[\s.\-]*\d{3}[\s.\-]?\d|[\s.\-]*\d{6,7}))\b"
+    )
+    _CONTAINER_MALFORMED_REGEX = re.compile(r"\b([A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d){4,8})\b")
     _PHONE_REGEX = re.compile(
-        r"(?:\+?84|0)\d(?:[\s.\-]?\d){6,10}\b|(?:\+?84|0)\d{1,3}[\s.\-]*[\*xX]{3,7}[\d\*xX]*"
+        r"(?:\+?84[\s.\-]?|0)\d(?:[\s.\-]?\d){6,10}\b|(?:\+?84[\s.\-]?|0)\d{1,3}[\s.\-]*[\*xX]{3,7}[\d\*xX]*"
     )
     _SIZE_REGEX = re.compile(
         r"\b(?:\d+\s*[xX]\s*(20|40|45)(?:DC|GP|RF|OT|FR|HC|HQ)?|(20\s*(?:DC|GP|RF|OT|FR|HC|HQ|FT|')|40\s*(?:HC|HQ|DC|GP|RF|OT|FR|FT|')|45\s*(?:HC|HQ|DC|FT|'))|(?:cont|loại|loai|size|cỡ|co)\s*(20|40|45)|\b(20DC|40HC|40HQ|40RF|20RF|20GP|40GP)\b)",
@@ -145,7 +147,7 @@ class TripParser:
         customer_hint = cls._extract_customer_hint(block_text)
         eta_text, eta_time, estimated_at, is_time_vague = cls._extract_eta(block_text, effective_ref_time)
         is_container_pending = cls._check_container_pending(block_text)
-        driver_name = cls._extract_driver_name(
+        driver_name, driver_name_certain = cls._extract_driver_name_with_certainty(
             block_text,
             raw_truck_plate=raw_truck_plate,
             driver_phone=driver_phone,
@@ -153,6 +155,24 @@ class TripParser:
             seal_no=seal_no,
         )
 
+        # Khối có nhãn tường minh, bảng/dấu phân cách rõ hoặc mã lệnh kèm thực thể chính -> tin cậy cao (tránh gọi AI thừa)
+        has_structured_cues = source_format in ("F1", "F2", "F3") or bool(
+            re.search(
+                r"[|｜\t;·•→—:/]|(?:^|[\s(\[])(?:xe|bks|biển(?:\s*số)?|bien(?:\s*so)?|cont|container|số\s*công|so\s*cong|tài\s*xế|tai\s*xe|tài|tx|lx|sđt|sdt|đt|seal|chì|booking|\bbk\b|lệnh|lenh|\b(?:ro|lo)\d{3,6})\b",
+                block_text,
+                flags=re.IGNORECASE,
+            )
+        )
+        has_any_primary = bool(truck_plate or containers or driver_phone or booking_no or seal_no or eta_time)
+        line_confidence = (
+            0.92
+            if (has_structured_cues and has_any_primary and (driver_name_certain or not driver_name))
+            else (
+                0.55
+                if (source_format == "tu_do" and (not driver_name or not driver_name_certain))
+                else 0.95
+            )
+        )
         has_conflict = len(multiple_tractors) >= 2 and len(containers) >= 2
 
         if containers:
@@ -184,6 +204,7 @@ class TripParser:
                         is_container_pending=is_container_pending,
                         is_seal_pending=is_seal_pending,
                         has_conflicting_mapping=has_conflict,
+                        confidence=line_confidence,
                     )
                 )
             return lines
@@ -214,6 +235,7 @@ class TripParser:
                 is_container_pending=is_container_pending,
                 is_seal_pending=is_seal_pending,
                 has_conflicting_mapping=has_conflict,
+                confidence=line_confidence,
             )
         ]
 
@@ -301,6 +323,19 @@ class TripParser:
                     truck_plate = normalized
                     raw_truck_plate = raw_candidate
 
+        # Xử lý câu đổi xe từ <cũ> sang <mới> khi chỉ có tối đa 1 chuyến để lấy biển số xe mới làm chuẩn
+        swap_match = re.search(
+            r"(?:đổi|doi|thay)\s+(?:xe\s+|từ\s+|tu\s+)?(\d{2}[A-Za-z]{1,2}[\s.\-/]*\d{3,6}(?:\.\d{2,3})?)\s+(?:sang|qua|thành|thanh|bằng|bang)\s+(?:xe\s+)?(\d{2}[A-Za-z]{1,2}[\s.\-/]*\d{3,6}(?:\.\d{2,3})?)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if swap_match:
+            new_norm = clean_plate(swap_match.group(2))
+            if new_norm and not re.search(r"R[M]?$", new_norm.split("-")[0], flags=re.IGNORECASE):
+                truck_plate = new_norm
+                raw_truck_plate = swap_match.group(2).strip()
+                tractor_list = [new_norm]
+
         return truck_plate, raw_truck_plate, trailer_plate, tractor_list
 
     @classmethod
@@ -323,7 +358,7 @@ class TripParser:
                 containers.append(cleaned)
 
         label_matches = re.finditer(
-            r"(?:số\s*container|so\s*container|số\s*cont|so\s*cont|container|\bcntr\b|\bcont\b)[ \t]*[:\-]?[ \t]*([A-Za-z]{3,4}[ \t.\-]*\d{4,8})",
+            r"(?:số\s*container|so\s*container|số\s*cont|so\s*cont|container|\bcntr\b|\bcont\b)[ \t]*[:\-]?[ \t]*([A-Za-z]{4}(?:[ \t.\-]?\d){4,7}|[A-Za-z]{4}\d{8})\b",
             text,
             flags=re.IGNORECASE,
         )
@@ -332,7 +367,11 @@ class TripParser:
             if re.match(r"^(?:20|40|45)", token):
                 continue
             cleaned = clean_container(token)
-            if cleaned and cleaned not in containers:
+            if (
+                cleaned
+                and cleaned not in containers
+                and not any(ex.startswith(cleaned) or cleaned.startswith(ex) for ex in containers)
+            ):
                 containers.append(cleaned)
 
         if not containers:
@@ -365,81 +404,173 @@ class TripParser:
         containers: list[str],
         seal_no: Optional[str],
     ) -> Optional[str]:
-        """Trích xuất họ tên tài xế trên cả F1 (kể cả khi SĐT dính liền trong cùng dấu `/`), F2, F3 và Tự do."""
+        """Trích xuất họ tên tài xế trên cả F1, F2, F3 và Tự do."""
+        name, _ = cls._extract_driver_name_with_certainty(
+            text=text,
+            raw_truck_plate=raw_truck_plate,
+            driver_phone=driver_phone,
+            containers=containers,
+            seal_no=seal_no,
+        )
+        return name
+
+    @classmethod
+    def _extract_driver_name_with_certainty(
+        cls,
+        text: str,
+        raw_truck_plate: Optional[str],
+        driver_phone: Optional[str],
+        containers: list[str],
+        seal_no: Optional[str],
+    ) -> tuple[Optional[str], bool]:
+        """Trích xuất họ tên tài xế kèm mức độ chắc chắn (`certain=True` với nhãn/F1/bảng, `False` với đoán từ văn xuôi tự do)."""
         stop_words_regex = re.compile(
             r"\b(?:đóng|dong|trả|tra|hạ|ha|kho|nhà\s*máy|nha\s*may|khách|khach|cont|container|cntr|"
             r"seal|chì|chi|booking|lệnh|lenh|hàng|hang|xuất|xuat|nhập|nhap|cảng|cang|kcn|bãi|bai|"
             r"biển\s*số|bien\s*so|bks|mooc|dự\s*kiến|du\s*kien|eta|thông\s*báo|thong\s*bao|"
-            r"danh\s*sách|danh\s*sach|kế\s*hoạch|ke\s*hoach|điều\s*xe|dieu\s*xe|chưa|chua|chờ|cho|kính\s*gửi)\b",
+            r"danh\s*sách|danh\s*sach|kế\s*hoạch|ke\s*hoach|điều\s*xe|dieu\s*xe|chưa|chua|chờ|cho|kính\s*gửi|"
+            r"stt|điện\s*thoại|dien\s*thoai|thông\s*tin\s*chuyến|chuyến|chuyen|báo\s*chuyến|bao\s*chuyen|"
+            r"hôm\s*nay|hom\s*nay|cảm\s*ơn|cam\s*on|xác\s*nhận|xac\s*nhan|nhờ|nho|"
+            r"nhé|nhe|nha|ơi|oi|ạ|giúp|giup|xong|rồi|roi|đã|sắp|sap|xếp|xep|đổi|doi|vẫn|van|"
+            r"nữa|nua|bận|ban|kẹt|ket|chạy|chay|thấy|thay|giữ|giu|vâng|vang|dạ|ok|không|khong|"
+            r"nx|báo|bao|xe|tại|lúc|hẹn|mới|cũ|bên|liệu|kiểm|check)\b",
+            re.IGNORECASE,
+        )
+        table_header_re = re.compile(
+            r"^(?:\|\s*)?(?:stt|tt)\s*[|\t]|^(?:biển\s*số|bien\s*so)\s*[|\t]\s*(?:container|cont)",
             re.IGNORECASE,
         )
 
-        # Kiểu 1: Có nhãn rõ ràng hoặc emoji đại diện trên dòng (F2, F3: "- Tên lái xe: Nguyên Thanh Phong", "TX: ...", "👤 Trần Hữu Dũng")
-        labeled = re.search(
-            r"(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
-            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b)(?:\s*[:\-]\s*|\s*)([^\n/|;\t,\d*📞📱☎️]+)",
-            text,
+        # Tiền làm sạch ký tự định dạng markdown / JSON nhẹ và chuẩn hóa dấu gạch nối đặc biệt
+        sanitized_text = re.sub(r"[`*_~]+", "", text)
+        sanitized_text = re.sub(r"[🚛🚚🚗🏎️🚜📞📱☎️]", " | ", sanitized_text)
+
+        # Hàm cắt phần đuôi trường khác đi liền sau tên tài xế trên cùng một dòng (SĐT, cont, biển số, đóng/trả, hẹn giờ...)
+        def _clip_inline_driver_tail(raw_cand: str) -> str:
+            if not raw_cand:
+                return ""
+            m_tail = re.search(
+                r"(?:\(\s*)?(?:(?:\+?84[\s.\-]?|0)\d[\d\s.\-*xX]{5,12}|"
+                r"\b[A-Za-z]{4}[\s.\-]?\d{7}\b|"
+                r"\b\d{2}[A-Za-z]{1,2}[\s.\-]?\d{3,6}(?:\.\d{1,3})?\b|"
+                r"\b(?:sđt|sdt|đt|dt|tel|chưa\s*có\s*số|chua\s*co\s*so|chưa\s*có\s*sđt|chua\s*co\s*sdt|"
+                r"nhận\s*chuyến|làm\s*hàng|giao\s*hàng|giao\s*cont|giữ\s*nguyên|rơ\s*moóc|"
+                r"trả\s*hàng|tra\s*hang|trả\s*cont|tra\s*cont|trả\s*rỗng|tra\s*rong|hạ\s*cont|ha\s*cont|hạ\s*bãi|ha\s*bai|"
+                r"tới\s*\d|đến\s*\d|sang\s*xe|đổi\s*sang|vào\s*kho|ra\s*cảng|"
+                r"đóng|dong|trả|tra|cont|container|cntr|seal|chì|chi|booking|lệnh|lenh|"
+                r"mooc|kcn|bks|eta|size|hẹn|hen|lúc|luc|tại|tai|kho|cảng|cang|bãi|bai|xe|"
+                r"(?:20|40|45)\s*(?:dc|hc|gp|rf|hq))\b)",
+                raw_cand,
+                flags=re.IGNORECASE,
+            )
+            if m_tail and m_tail.start() > 0:
+                prefix = raw_cand[:m_tail.start()].strip(" -:/,.;*|\t[]()\"'{}—–·•→#")
+                if prefix:
+                    return prefix
+            return raw_cand
+
+        # Hàm dọn ứng viên tên tài xế: bỏ SĐT, ngoặc, cụm hậu tố nghiệp vụ, giữ tối đa hậu tố 2 chữ số (VD "Lê Văn Duy 88")
+        def _finalize_name(raw_cand: str) -> Optional[str]:
+            if not raw_cand:
+                return None
+            # Cắt cụm hậu tố nghiệp vụ/báo thiếu đứng sau tên
+            s = re.split(
+                r"\b(?:sđt|sdt|đt|dt|chưa\s*có\s*số|chua\s*co\s*so|chưa\s*có\s*sđt|chua\s*co\s*sdt|nhận\s*chuyến|làm\s*hàng|giao\s*hàng|giữ\s*nguyên)\b",
+                raw_cand,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+            # Xóa SĐT lồng trong ngoặc hoặc cuối chuỗi
+            s = re.sub(
+                r"\(?\s*(?:sđt|sdt|đt|dt|tel|số)?\s*[:\-]?\s*(?:\+?84[\s.\-]?|0)\d[\d\s.\-*xX]{5,12}\)?",
+                " ",
+                s,
+                flags=re.IGNORECASE,
+            )
+            s = re.sub(r"\s+(?:số|so)\s*$", "", s, flags=re.IGNORECASE)
+            s = s.strip(" -:/,.;*|\t[]()\"'{}—–·•→#")
+            if not s or len(s) < 2 or re.search(r"[:;|]", s):
+                return None
+            if cls._PLATE_REGEX.search(s) or cls._CONTAINER_STD_REGEX.search(s):
+                return None
+            if stop_words_regex.search(s):
+                return None
+            # Chấp nhận tên chuẩn không chứa số, hoặc họ tên 2+ từ có biệt danh 1-2 số ở cuối (VD: "Lê Văn Duy 88")
+            if re.search(r"\d|\*", s) and not re.match(r"^[A-Za-zÀ-ỹ]+(?:\s+[A-Za-zÀ-ỹ]+){1,4}\s+\d{1,2}$", s):
+                return None
+            cand = clean_driver_name(s)
+            if cand and 1 <= len(cand.split()) <= 6 and len(cand) >= 2:
+                return cand
+            return None
+
+        # Kiểu 1: Có nhãn rõ ràng trên dòng ("Tên lái xe:", "Tài xế:", "Tài ...", "TX ...", "👤 ...")
+        # Ưu tiên cụm cập nhật tường minh ("tài ... đổi thành <Tên>", "tài xế mới: <Tên>") trước khi quét nhãn chung
+        update_drv_m = re.search(
+            r"(?:tài(?:\s*xế)?|lái\s*xe)\b[^\n/|｜;]{0,45}?\b(?:đổi\s*(?:thành|sang|qua)|doi\s*(?:thanh|sang|qua)|mới\s*[:\-]?)\s+([^\n/|｜;\t,\[\]()\"'*#—–·•→]+)",
+            sanitized_text,
             flags=re.IGNORECASE,
         )
-        if labeled:
-            candidate = clean_driver_name(labeled.group(1))
-            if candidate and len(candidate) >= 2 and not stop_words_regex.search(candidate):
-                return candidate
+        if update_drv_m:
+            candidate = _finalize_name(_clip_inline_driver_tail(update_drv_m.group(1)))
+            if candidate and 2 <= len(candidate.split()) <= 6:
+                return candidate, True
+
+        # Duyệt tuần tự tất cả các nhãn để tránh cụm sai như "tài liệu" che khuất nhãn "tài xế ..." đứng sau
+        labeled_re = re.compile(
+            r"(?:^|[\s/|｜;\t,\[\(—–·•→#])(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
+            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b|\btài\b|\btai\b)(?:\s*[:\-]\s*|\s+)([^\n/|｜;\t,\]\)\"*#—–·•→]+)",
+            flags=re.IGNORECASE,
+        )
+        for labeled in labeled_re.finditer(sanitized_text):
+            candidate = _finalize_name(_clip_inline_driver_tail(labeled.group(1)))
+            if candidate and not stop_words_regex.search(candidate):
+                raw_matched_all = labeled.group(0).lower()
+                if re.search(r"\btài\b|\btai\b", raw_matched_all) and "tài xế" not in raw_matched_all and "tai xe" not in raw_matched_all and ":" not in raw_matched_all:
+                    if len(candidate.split()) >= 2:
+                        return candidate, True
+                else:
+                    return candidate, True
 
         stop_prefix = re.compile(
-            r"^(?:kh|khách\s*hàng|khach\s*hang|khách|khach|kho|cảng|cang|điểm\s*đóng|diem\s*dong|đóng\s*tại|lệnh|lenh|trả\s*về|tra\s*ve)\s*[:\-]",
+            r"^(?:kh|khách\s*hàng|khach\s*hang|khách|khach|kho|cảng|cang|điểm\s*đóng|diem\s*dong|đóng\s*tại|lệnh|lenh|trả\s*về|tra\s*ve|xe|bks|cont|container|sđt|sdt|đt|stt)\s*[:\-]?",
             re.IGNORECASE,
         )
 
-        # Kiểu 2: Định dạng F1 phân cách bởi dấu '/', '|', '\t', '-'
-        # Hỗ trợ trường hợp SĐT dính liền cùng phần với tên tài xế: "Phạm Văn Huynh đt: 0986713346" hoặc "Đoàn Văn Biên 0984457785"
-        # Ưu tiên các dòng chứa biển số xe trước
-        all_lines = text.split("\n")
+        # Kiểu 2: Định dạng F1 / Bảng / Đa phân cách ('/', '|', '｜', '\t', '—', '–', '·', '•', '→', '#', ';', ',', ' - ')
+        all_lines = [ln for ln in sanitized_text.split("\n") if ln.strip() and not table_header_re.search(ln.strip())]
         ordered_lines = sorted(all_lines, key=lambda ln: 0 if (raw_truck_plate and raw_truck_plate.lower() in ln.lower()) else 1)
 
         for line in ordered_lines:
-            if any(sep in line for sep in ("/", "|", "\t", " - ")):
+            if re.search(r"[/|｜\t;·•→—–#]|(?:\s+-\s+)|,", line):
                 parts = [
                     p.strip()
-                    for p in re.split(r"\s*[/|\t]\s*|\s+-\s+", line)
+                    for p in re.split(r"\s*[/|｜\t;·•→—–#]+\s*|\s+-\s+|\s*,\s*", line)
                     if p.strip()
                 ]
                 for part in parts:
+                    # Bóc bỏ nhãn nếu part còn tiền tố "tài ...", "tx ..."
+                    part_clean = re.sub(r"^(?:tên\s*lái\s*xe|tài\s*xế|tai\s*xe|lái\s*xe|tx|lx|tài|tai)\s*[:\-]?\s+", "", part, flags=re.IGNORECASE).strip()
+                    if re.match(r"^\d{1,3}$", part_clean):
+                        continue
                     if stop_prefix.search(part):
                         continue
-                    # Bỏ qua phần chứa biển số xe hoặc số container
                     if raw_truck_plate and raw_truck_plate.lower() in part.lower():
                         continue
-                    if any(c.lower() in part.lower() for c in containers):
+                    if any(c.lower() in re.sub(r"[^a-zA-Z0-9]", "", part).lower() for c in containers):
                         continue
-                    if cls._PLATE_REGEX.search(part) or cls._CONTAINER_STD_REGEX.search(part):
-                        continue
+                    candidate = _finalize_name(part_clean)
+                    if candidate and 2 <= len(candidate.split()) <= 6:
+                        return candidate, True
 
-                    # Nếu phần này chứa SĐT dính kèm tên tài xế ("Phạm Văn Huynh đt: 0986713346" hoặc 9 số "098457785"), cắt bỏ SĐT và nhãn "đt:"
-                    part_without_phone = re.sub(
-                        r"(?:sđt|sdt|đt|dt|điện\s*thoại|lh|tel)?\s*[:\-]?\s*(?:\+?84|0)\d[\d\s.\-*xX]{5,11}[\d*xX]",
-                        "",
-                        part,
-                        flags=re.IGNORECASE,
-                    ).strip()
-
-                    if not part_without_phone or re.search(r"\d|\*", part_without_phone):
-                        continue
-                    if stop_words_regex.search(part_without_phone):
-                        continue
-                    cleaned = clean_driver_name(part_without_phone)
-                    if cleaned and 1 <= len(cleaned.split()) <= 5 and len(cleaned) >= 2:
-                        return cleaned
-
-        # Kiểu 3: Tin một dòng không có dấu phân cách / không có nhãn trường (T37)
-        for line in text.split("\n"):
+        # Kiểu 3: Tin một dòng tự do không có dấu phân cách / nhãn (heuristic, không chắc chắn -> để AI tinh chỉnh nếu cần)
+        for line in all_lines:
             if not (raw_truck_plate and raw_truck_plate in line):
                 continue
             rem = line
             if raw_truck_plate:
                 rem = rem.replace(raw_truck_plate, " | ")
             rem = re.sub(r"(?:rơ\s*moóc|mooc|rm)\s*[:\-]?\s*[0-9A-Za-z.\-]+", " | ", rem, flags=re.IGNORECASE)
-            rem = re.sub(r"(?:sđt|sdt|đt|dt)?\s*[:\-]?\s*(?:\+?84|0)\d[\d\s.\-*xX]{7,11}[\d*xX]", " | ", rem, flags=re.IGNORECASE)
+            rem = re.sub(r"(?:sđt|sdt|đt|dt)?\s*[:\-]?\s*(?:\+?84[\s.\-]?|0)\d[\d\s.\-*xX]{7,11}[\d*xX]", " | ", rem, flags=re.IGNORECASE)
             for c in containers:
                 rem = re.sub(re.escape(c), " | ", rem, flags=re.IGNORECASE)
             if seal_no:
@@ -448,27 +579,26 @@ class TripParser:
             rem = re.sub(r"^(?:\d+[\.\)]?\s*)?(?:xe\s*\d*\s*[:\-]?\s*)?", "", rem, flags=re.IGNORECASE)
 
             for chunk in rem.split("|"):
-                chunk_clean = chunk.strip(" -:/,.*#\t")
-                if not chunk_clean or re.search(r"\d|\*", chunk_clean):
-                    continue
-                if stop_words_regex.search(chunk_clean):
-                    continue
-                candidate = clean_driver_name(chunk_clean)
+                candidate = _finalize_name(chunk)
                 if candidate and 2 <= len(candidate.split()) <= 5:
-                    return candidate
+                    return candidate, False
 
-        # Kiểu 4: Tìm dòng độc lập chỉ chứa tên lái xe trong tin nhiều dòng
-        for line in text.splitlines():
+        # Kiểu 4: Dòng độc lập không có nhãn/dấu phân cách (chỉ nhận khi trong khối có thực thể chuyến khác hoặc dòng viết hoa đầu từ đúng quy cách họ tên)
+        has_other_entity = bool(raw_truck_plate or containers or driver_phone or seal_no)
+        for line in all_lines:
             line_clean = line.strip()
-            if not line_clean or re.search(r"\d|\*", line_clean):
+            if stop_prefix.search(line_clean):
                 continue
-            if stop_words_regex.search(line_clean) or stop_prefix.search(line_clean):
+            words_raw = [w for w in line_clean.split() if w.isalpha()]
+            if not words_raw or not any(w[0].isupper() for w in words_raw):
                 continue
-            candidate = clean_driver_name(line_clean)
+            if not has_other_entity and not all(w[0].isupper() for w in words_raw):
+                continue
+            candidate = _finalize_name(line_clean)
             if candidate and 2 <= len(candidate.split()) <= 5 and len(candidate) >= 3:
-                return candidate
+                return candidate, False
 
-        return None
+        return None, False
 
     @classmethod
     def _extract_container_size(cls, text: str) -> Optional[str]:
@@ -497,6 +627,15 @@ class TripParser:
             raw_sz = match.group(0).upper().replace("'", "")
             raw_sz = re.sub(r"^(?:\d+\s*X\s*|CONT|LOẠI|LOAI|SIZE|CỠ|CO)\s*", "", raw_sz).replace(" ", "")
             return raw_sz
+
+        # 4. Mẫu số kích thước đứng độc lập (20, 40, 45) cạnh mã cont hoặc từ khóa chì/seal/xe
+        bare_sz = re.search(
+            r"(?:\b[A-Za-z]{4}[\s.\-]*\d{7}\s+(20|40|45)\b|\b(20|40|45)\b(?=\s*(?:chì|chi|seal|xe|cont|dc|hc|gp|rf)\b))",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if bare_sz:
+            return bare_sz.group(1) or bare_sz.group(2)
         return None
 
     @classmethod
@@ -543,7 +682,8 @@ class TripParser:
         """Trích xuất mã lệnh / số lệnh / mã booking / số vận đơn."""
         match = re.search(
             r"(?:mã\s*booking|ma\s*booking|số\s*booking|so\s*booking|booking|\bbk\b|"
-            r"mã\s*lệnh|ma\s*lenh|số\s*lệnh|so\s*lenh|số\s*vận\s*đơn|so\s*van\s*don|vận\s*đơn|van\s*don|\bbill\b|\bb/l\b)[ \t]*[:\-]?[ \t]*([A-Za-z0-9\-_/]{4,25})",
+            r"mã\s*lệnh|ma\s*lenh|số\s*lệnh|so\s*lenh|số\s*vận\s*đơn|so\s*van\s*don|vận\s*đơn|van\s*don|\bbill\b|\bb/l\b)"
+            r"(?:\s+(?:mới|moi|cũ|cu))?[ \t]*[:\-]?[ \t]*([A-Za-z0-9\-_/]{4,25})",
             text,
             flags=re.IGNORECASE,
         )
@@ -563,8 +703,8 @@ class TripParser:
         if line_prefix_match:
             prefix_choice = line_prefix_match.group(1).lower()
             if prefix_choice in ("đóng", "dong"):
-                return OrderType.DONG.value, False
-            return OrderType.TRA.value, False
+                return OrderType.LOAD.value, False
+            return OrderType.RETURN.value, False
 
         # 1. Xử lý ưu tiên nhãn lựa chọn của F2 ("Đóng , Trả hàng: Tra 1x20...") và F3 ("Lệnh: Trả")
         explicit_choice = re.search(
@@ -575,8 +715,8 @@ class TripParser:
         if explicit_choice:
             choice = explicit_choice.group(1).lower()
             if choice in ("đóng", "dong"):
-                return OrderType.DONG.value, False
-            return OrderType.TRA.value, False
+                return OrderType.LOAD.value, False
+            return OrderType.RETURN.value, False
 
         # Loại bỏ cụm nhãn "Đóng , Trả hàng:" hoặc "Điểm đóng/trả:" trước khi quét từ khóa tự do để không bị nhiễu
         cleaned_for_order = re.sub(
@@ -590,18 +730,18 @@ class TripParser:
         # 2. Từ khóa nhận diện trực tiếp Lệnh Đóng (T01)
         if re.search(
             r"\b(?:đóng\s*hàng|dong\s*hang|lệnh\s*đóng|lenh\s*dong|đóng\s*cont|dong\s*cont|"
-            r"lấy\s*cont\s*rỗng|lay\s*cont\s*rong|lấy\s*rỗng|lay\s*rong|kéo\s*rỗng|keo\s*rong|đóng)\b",
+            r"lấy\s*cont\s*rỗng|lay\s*cont\s*rong|lấy\s*rỗng|lay\s*rong|kéo\s*rỗng|keo\s*rong|đóng|dong)\b",
             lower,
         ):
-            return OrderType.DONG.value, False
+            return OrderType.LOAD.value, False
 
         # 3. Từ khóa nhận diện trực tiếp Lệnh Trả (T02)
         if re.search(
             r"\b(?:trả\s*hàng|tra\s*hang|lệnh\s*trả|lenh\s*tra|trả\s*cont|tra\s*cont|"
-            r"hạ\s*cont|ha\s*cont|hạ\s*bãi|ha\s*bai|trả\s*rỗng|tra\s*rong|trả)\b",
+            r"hạ\s*cont|ha\s*cont|hạ\s*bãi|ha\s*bai|trả\s*rỗng|tra\s*rong|trả|tra(?!\s*(?:cuu|cứu)))\b",
             lower,
         ):
-            return OrderType.TRA.value, False
+            return OrderType.RETURN.value, False
 
         # 4. Suy luận Lệnh Đóng từ ngữ cảnh xuất hàng / điểm đóng (T03)
         if re.search(
@@ -609,7 +749,7 @@ class TripParser:
             r"nơi\s*đóng|noi\s*dong|kho\s*đóng|kho\s*dong|booking\s*xuất)\b",
             lower,
         ):
-            return OrderType.DONG.value, True
+            return OrderType.LOAD.value, True
 
         # 5. Suy luận Lệnh Trả từ ngữ cảnh nhập hàng / dỡ hàng / nơi hạ (T04)
         if re.search(
@@ -617,7 +757,7 @@ class TripParser:
             r"giao\s*hàng|giao\s*hang|điểm\s*trả|diem\s*tra|kho\s*trả|kho\s*tra|nơi\s*hạ|noi\s*ha|điểm\s*hạ|diem\s*ha)\b",
             lower,
         ):
-            return OrderType.TRA.value, True
+            return OrderType.RETURN.value, True
 
         return None, False
 
@@ -762,9 +902,9 @@ class TripParser:
             except ValueError:
                 return eta_raw, eta_hhmm, None, True
 
-        # 3b. Mẫu giờ rút gọn có tiền tố liên kết: "- 8h", "đến 8h", "vào 8h30", "lúc 14h"
+        # 3b. Mẫu giờ rút gọn có tiền tố liên kết: "- 8h", "đến 8h", "tới 19:40", "vào 8h30", "lúc 14h", "tam 8h30"
         short_eta = re.search(
-            r"(?:(?:đến|vào|lúc|tầm|khoảng)\s*|[-–—]\s*)(\d{1,2})(?:[:hH](\d{2})?|\s*giờ(?:\s*(\d{1,2}))?)\b",
+            r"(?:(?:đến|den|tới|toi|vào|vao|lúc|luc|tầm|tam|khoảng|khoang|hẹn|hen)\s*|[-–—]\s*)(\d{1,2})(?:[:hH](\d{2})?|\s*giờ(?:\s*(\d{1,2}))?)\s*(sáng|sang|chiều|chieu|tối(?:\s*nay)?|toi\s*nay|đêm|dem)?\b",
             text,
             flags=re.IGNORECASE,
         )
@@ -772,12 +912,26 @@ class TripParser:
             eta_raw = short_eta.group(0).strip()
             hour = int(short_eta.group(1))
             minute = int(short_eta.group(2) or short_eta.group(3) or 0)
+            period = (short_eta.group(4) or "").lower()
+            if period and any(p in period for p in ("chiều", "chieu", "tối", "toi", "đêm", "dem")) and hour < 12:
+                hour += 12
             if 0 <= hour <= 23 and 0 <= minute <= 59:
                 eta_hhmm = f"{hour:02d}:{minute:02d}"
                 try:
                     return eta_raw, eta_hhmm, datetime(ref.year, ref.month, ref.day, hour, minute), False
                 except ValueError:
                     return eta_raw, eta_hhmm, None, False
+
+        # 3c. Mẫu giờ HH:MM tường minh đứng độc lập (VD: "08:00", "(11:00)", "19:40")
+        colon_eta = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b(?![\-.\d])", text)
+        if colon_eta:
+            hour = int(colon_eta.group(1))
+            minute = int(colon_eta.group(2))
+            eta_hhmm = f"{hour:02d}:{minute:02d}"
+            try:
+                return colon_eta.group(0), eta_hhmm, datetime(ref.year, ref.month, ref.day, hour, minute), False
+            except ValueError:
+                return colon_eta.group(0), eta_hhmm, None, False
 
         # 4. Mẫu thời gian tương đối ("Sáng nay", "Chiều nay", "Tối nay", "Ngày mai") -> T39
         relative_match = re.search(

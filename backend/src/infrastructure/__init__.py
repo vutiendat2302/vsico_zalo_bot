@@ -20,6 +20,7 @@ from src.infrastructure.models import (
     TmsSyncLog,
     TransportPlan,
     TruckRecord,
+    User,
     Warehouse,
     WarehouseAlias,
     ZaloGroup,
@@ -50,4 +51,5 @@ __all__ = [
     "OutboundMessageItem",
     "TmsSyncLog",
     "ActivityLog",
+    "User",
 ]

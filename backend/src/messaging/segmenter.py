@@ -8,6 +8,7 @@ Hỗ trợ phân tách toàn bộ các bố cục tin nhắn thực tế trong B
 - T31: Tin nhắn trích dẫn / chuyển tiếp (tách phần nội dung mới khỏi phần trích dẫn cũ).
 """
 
+import json
 import re
 
 
@@ -15,12 +16,217 @@ class MessageSegmenter:
     """Bộ phân tách tin nhắn phức hợp thành danh sách các khối văn bản độc lập kèm ngữ cảnh lệnh/kho/khách."""
 
     _PLATE_REGEX = re.compile(
-        r"\b\d{2}[A-Za-z]{1,2}(?:[\s.\-]*\d{3}[\s.\-]*\d{1,2}|[\s.\-]*\d{4,5})\b"
+        r"\b\d{2}[A-Za-z]{1,2}(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6})\b"
     )
-    _CONT_REGEX = re.compile(
-        r"\b[A-Za-z]{3}[UJuZujz][\s.\-]*\d{5,8}\b|(?:số\s*cont|so\s*cont|container|cntr)\s*[:\-]?\s*[A-Za-z0-9\-]{5,15}",
+    _TRAILER_PLATE_REGEX = re.compile(
+        r"\b\d{2}[A-Za-z]?R[M]?(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6})\b",
         re.IGNORECASE,
     )
+    _SWAP_PLATE_REGEX = re.compile(
+        r"(?:đổi|doi|thay)\s+(?:xe\s+|từ\s+|tu\s+)?\d{2}[A-Za-z]{1,2}[\s.\-/]*\d{3,6}(?:\.\d{2,3})?\s+(?:sang|qua|thành|thanh|bằng|bang)\s+(?:xe\s+)?\d{2}[A-Za-z]{1,2}[\s.\-/]*\d{3,6}(?:\.\d{2,3})?",
+        re.IGNORECASE,
+    )
+    _CONT_REGEX = re.compile(
+        r"\b(?:[A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d){7}|[A-Za-z]{4}[\.\-]?\d(?:[\s.\-]*\d){6})\b",
+        re.IGNORECASE,
+    )
+    _TABLE_HEADER_REGEX = re.compile(
+        r"^(?:\|\s*)?(?:stt|tt)\s*[|\t].*(?:biển\s*số|bien\s*so|\bxe\b|\bcont|container|tài\s*xế|tai\s*xe|sđt|sdt|điện\s*thoại)"
+        r"|^(?:biển\s*số|bien\s*so)\s*[|\t]\s*(?:container|cont)\s*[|\t]\s*(?:tài\s*xế|tai\s*xe)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_table_header_line(cls, line: str) -> bool:
+        """Nhận diện dòng tiêu đề cột bảng để loại bỏ khỏi quá trình ghép tên tài xế/chuyến."""
+        stripped = (line or "").strip()
+        if not stripped or any(ch.isdigit() for ch in stripped):
+            return False
+        return bool(cls._TABLE_HEADER_REGEX.search(stripped))
+
+    @classmethod
+    def _try_segment_json(cls, text: str) -> list[str]:
+        """Chuyển đổi payload JSON đơn hoặc mảng JSON nhiều chuyến thành các khối chuẩn hóa."""
+        stripped = (text or "").strip()
+        if not (stripped.startswith("{") or stripped.startswith("[")):
+            return []
+        try:
+            payload = json.loads(stripped)
+        except (ValueError, TypeError):
+            return []
+
+        items = payload if isinstance(payload, list) else ([payload] if isinstance(payload, dict) else [])
+        if not items or not all(isinstance(x, dict) for x in items):
+            return []
+
+        blocks: list[str] = []
+        for obj in items:
+            norm_map = {str(k).strip().lower(): v for k, v in obj.items() if v is not None and str(v).strip() not in ("", "—", "-", "null", "None")}
+            lines: list[str] = []
+            plate = norm_map.get("xe") or norm_map.get("plate") or norm_map.get("truck_plate") or norm_map.get("bks") or norm_map.get("bien_so")
+            cont = norm_map.get("cont") or norm_map.get("container") or norm_map.get("container_no")
+            driver = norm_map.get("tai") or norm_map.get("tx") or norm_map.get("driver") or norm_map.get("driver_name") or norm_map.get("tai_xe")
+            phone = norm_map.get("sdt") or norm_map.get("dt") or norm_map.get("phone") or norm_map.get("driver_phone")
+            if plate:
+                lines.append(f"Xe: {plate}")
+            if cont:
+                lines.append(f"Cont: {cont}")
+            if driver:
+                lines.append(f"Tài xế: {driver}")
+            if phone:
+                lines.append(f"SĐT: {phone}")
+            if lines:
+                blocks.append("\n".join(lines))
+        return blocks
+
+    @classmethod
+    def _try_segment_indexed_fragments(cls, text: str) -> list[str]:
+        """Gom các dòng rời rạc hoặc phân tách theo phần (`--- XE ---`, `#k xe:`, `#k tài`) về đúng từng chuyến `#k`."""
+        raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        idx_line_re = re.compile(r"^#(\d{1,3})\b\s*[:\-]?\s*(.+)$")
+        section_re = re.compile(r"^-{2,}\s*(.+?)\s*-{2,}$")
+
+        indexed_count = sum(1 for ln in raw_lines if idx_line_re.match(ln))
+        has_sections = any(section_re.match(ln) for ln in raw_lines)
+        if indexed_count < 2:
+            return []
+        # Cần ít nhất dấu hiệu đa phần/đa dòng theo cùng index #k hoặc tiêu đề section
+        seen_indices: list[int] = []
+        grouped: dict[int, list[str]] = {}
+        current_section_label = ""
+        duplicate_index = False
+
+        for ln in raw_lines:
+            sec_m = section_re.match(ln)
+            if sec_m:
+                sec_name = sec_m.group(1).strip().upper()
+                if "XE" in sec_name:
+                    current_section_label = "Xe"
+                elif "CONT" in sec_name:
+                    current_section_label = "Cont"
+                elif "TÀI" in sec_name or "TAI" in sec_name:
+                    current_section_label = "Tài xế"
+                elif "SĐT" in sec_name or "SDT" in sec_name or "ĐIỆN THOẠI" in sec_name:
+                    current_section_label = "SĐT"
+                else:
+                    current_section_label = ""
+                continue
+
+            m = idx_line_re.match(ln)
+            if not m:
+                continue
+            trip_idx = int(m.group(1))
+            body = m.group(2).strip()
+            if not body:
+                continue
+            if trip_idx in grouped:
+                duplicate_index = True
+            else:
+                grouped[trip_idx] = []
+                seen_indices.append(trip_idx)
+
+            if current_section_label and not re.match(r"^(?:xe|cont|container|tài|tai|tx|sđt|sdt|đt)\b", body, flags=re.IGNORECASE):
+                if current_section_label == "Tài xế" and (cls._PLATE_REGEX.search(body) or cls._CONT_REGEX.search(body)):
+                    grouped[trip_idx].append(body)
+                else:
+                    grouped[trip_idx].append(f"{current_section_label}: {body}")
+            else:
+                # Chuẩn hóa "#1 xe: 72H00704" hoặc "#1 tài LÂM ÚT ĐẠI, số 0396..." thành dòng sạch
+                grouped[trip_idx].append(body)
+
+        if not (duplicate_index or has_sections):
+            return []
+        return ["\n".join(grouped[idx]) for idx in seen_indices if grouped.get(idx)]
+
+    @classmethod
+    def _non_trailer_plates(cls, text: str) -> list[str]:
+        """Lọc danh sách biển số đầu kéo (loại bỏ biển rơ-moóc có hậu tố R/RM)."""
+        plates: list[str] = []
+        for m in cls._PLATE_REGEX.finditer(text):
+            val = m.group(0).strip()
+            if cls._TRAILER_PLATE_REGEX.fullmatch(val):
+                continue
+            plates.append(val)
+        return plates
+
+    @classmethod
+    def _split_inline_multi_trips(cls, text: str) -> list[str]:
+        """Tách nhiều chuyến xe viết dồn trên cùng một hàng (`///`, `||`, `[CHUYẾN k]`, `;`, `...`, `,`, đánh số, hoặc lặp biển số)."""
+        if "\n" in text.strip():
+            return []
+        non_trailer = cls._non_trailer_plates(text)
+        if len(non_trailer) < 2:
+            return []
+
+        # 1. Ngăn cách rõ bằng dấu `///`, `||`, `;` hoặc dấu ba chấm `...` / `…`
+        for delim_pat in (r"\s*///\s*", r"\s*\|\|\s*", r"\s*;\s*", r"\s*(?:\.{3,}|…+)\s*"):
+            parts = [p.strip() for p in re.split(delim_pat, text) if p.strip()]
+            valid_parts = [
+                p for p in parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)
+            ]
+            if (
+                len(parts) >= 2
+                and len(valid_parts) == len(parts)
+                and len([p for p in valid_parts if cls._non_trailer_plates(p)]) >= 2
+            ):
+                return valid_parts
+
+        # 2. Nhãn thẻ chuyến liên tiếp trên cùng hàng: `[CHUYẾN 1] ... [CHUYẾN 2] ...` hoặc `Chuyến 1: ... Chuyến 2: ...`
+        tag_split = re.split(
+            r"(?:(?<=^)|(?<=[\s,|/]))(?=(?:\[CHUYẾN\s*\d+\]|\[CHUYEN\s*\d+\]|chuyến\s*\d+\s*[:\-]|chuyen\s*\d+\s*[:\-]))",
+            text,
+            flags=re.IGNORECASE,
+        )
+        tag_parts = [p.strip(" ,;|/") for p in tag_split if p.strip(" ,;|/")]
+        if len([p for p in tag_parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)]) >= 2:
+            return [p for p in tag_parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)]
+
+        # 3. Đánh số thứ tự hoặc nhãn xe trên cùng một hàng: `1) ... 2) ...`, `1. ... 2. ...`, `Xe 1: ... Xe 2: ...`
+        inline_numbered = re.split(
+            r"(?:(?<=^)|(?<=[\s,|/]))(?=(?:xe\s*\d+\s*[:\-]|\d{1,2}[\.\)]\s+(?=[A-Za-z0-9À-ỹ])))",
+            text,
+            flags=re.IGNORECASE,
+        )
+        num_parts = [p.strip(" ,|/") for p in inline_numbered if p.strip(" ,|/")]
+        if len([p for p in num_parts if cls._non_trailer_plates(p)]) >= 2:
+            return [p for p in num_parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)]
+
+        # 4. Ngăn cách bằng dấu phẩy `,` hoặc dấu `|` khi mỗi đoạn đều có biển số đầu kéo riêng
+        for delim_pat in (r"\s*\|\s*", r"\s*,\s*"):
+            parts = [p.strip() for p in re.split(delim_pat, text) if p.strip()]
+            if len([p for p in parts if cls._non_trailer_plates(p)]) >= 2 and all(
+                cls._non_trailer_plates(p) for p in parts
+            ):
+                return parts
+
+        # 5. Nhiều chuyến viết liền chỉ bằng khoảng trắng (tách trước từng biển số đầu kéo / tiền tố "xe ")
+        tractor_matches = [
+            m for m in cls._PLATE_REGEX.finditer(text) if not cls._TRAILER_PLATE_REGEX.fullmatch(m.group(0).strip())
+        ]
+        if len(tractor_matches) >= 2:
+            split_indices: list[int] = [0]
+            for m in tractor_matches[1:]:
+                prefix_window = text[max(0, m.start() - 12) : m.start()]
+                xe_m = re.search(r"(?:^|\s)(?:xe|bks|biển(?:\s*số)?)\s*[:\-]?\s*$", prefix_window, flags=re.IGNORECASE)
+                if xe_m:
+                    idx = max(0, m.start() - 12) + xe_m.start()
+                    if text[idx].isspace():
+                        idx += 1
+                else:
+                    idx = m.start()
+                if idx > split_indices[-1]:
+                    split_indices.append(idx)
+            if len(split_indices) >= 2:
+                chunks: list[str] = []
+                for i, start in enumerate(split_indices):
+                    end = split_indices[i + 1] if i + 1 < len(split_indices) else len(text)
+                    chunk = text[start:end].strip(" ,;|\t")
+                    if chunk:
+                        chunks.append(chunk)
+                if len([c for c in chunks if cls._non_trailer_plates(c)]) >= 2:
+                    return chunks
+
+        return []
     _CONTEXT_HEADER_REGEX = re.compile(
         r"(?:lệnh\s*đóng|lenh\s*dong|đóng\s*hàng|dong\s*hang|đóng\s*cont|dong\s*cont|lấy\s*cont\s*rỗng|lay\s*cont\s*rong|"
         r"lệnh\s*trả|lenh\s*tra|trả\s*hàng|tra\s*hang|trả\s*cont|tra\s*cont|hạ\s*cont|ha\s*cont|hạ\s*bãi|ha\s*bai|"
@@ -90,41 +296,75 @@ class MessageSegmenter:
 
         main_text, quoted_text = cls.strip_quoted_block(raw_text)
         cleaned_text = main_text.strip()
-        lines = [ln.strip() for ln in cleaned_text.split("\n") if ln.strip()]
+
+        # Tiền xử lý JSON payload (1 object hoặc json_array nhiều chuyến)
+        json_blocks = cls._try_segment_json(cleaned_text)
+        if json_blocks:
+            return json_blocks
+
+        # Gom các dòng phân mảnh hoặc đan xen theo chỉ số `#1`, `#2`, ... + section header (`--- XE ---`)
+        indexed_blocks = cls._try_segment_indexed_fragments(cleaned_text)
+        if indexed_blocks:
+            return indexed_blocks
+
+        # Loại bỏ dòng tiêu đề bảng cột (STT | BIỂN SỐ | ...) để tránh nhiễu nhận diện nhãn/F1
+        lines = [
+            ln.strip()
+            for ln in cleaned_text.split("\n")
+            if ln.strip() and not cls._is_table_header_line(ln)
+        ]
         if not lines:
             return []
+        cleaned_no_header = "\n".join(lines)
 
-        # Trường hợp 1: Phân đoạn theo ranh giới xe rõ ràng (Emoji xe 🚛🚚🚗, "Xe 1:", "Xe 2:", "1.", "2.", "Biển số:", "BKS:")
+        # Nếu toàn bộ tin nhắn chỉ có tối đa 1 biển số đầu kéo (không tính rơ-moóc) và 1 số container -> chắc chắn là 1 khối duy nhất (F2/F3 nhiều dòng)
+        non_trailer_plates = cls._non_trailer_plates(cleaned_no_header)
+        all_conts = cls._CONT_REGEX.findall(cleaned_no_header)
+        if len(non_trailer_plates) <= 1 and len(all_conts) <= 1:
+            return [cleaned_no_header]
+        # Trường hợp câu đổi xe A sang B (2 biển số đều thuộc 1 chuyến duy nhất)
+        if len(non_trailer_plates) == 2 and len(all_conts) <= 1 and cls._SWAP_PLATE_REGEX.search(cleaned_no_header):
+            return [cleaned_no_header]
+
+        # Trường hợp 0: Tin nhắn viết dồn nhiều chuyến trên cùng 1 hàng (hỗ trợ cả >10 chuyến/tin)
+        inline_trips = cls._split_inline_multi_trips(cleaned_no_header)
+        if len(inline_trips) >= 2:
+            return inline_trips
+
+        # Trường hợp 1: Phân đoạn theo ranh giới xe/chuyến rõ ràng (Chuyến k:, [CHUYẾN k], #k, 1., 2., 🚛, Biển số:, BKS:)
+        # Lưu ý: Không tách theo nhãn "Cont:" đơn lẻ vì F2 nhiều dòng có "Xe: ..." ở trên và "Cont: ..." ở dưới thuộc cùng 1 xe.
         vehicle_split = re.split(
-            r"(?m)(?=^[ \t]*(?:[🚛🚚🚗🏎️🚜]|\d+[\.\)]\s*(?:xe|cont|bks|biển)?|(?:xe\s*\d*|cont\s*\d*|biển\s*số|bien\s*so|bks|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo)\s*[:\-])\s*)",
-            cleaned_text,
+            r"(?m)(?=^[ \t]*(?:[🚛🚚🚗🏎️🚜]|\[?chuyến\s*\d+\]?\s*[:\-]?|\[?chuyen\s*\d+\]?\s*[:\-]?|#\d{1,3}\b|\d{1,2}[\.\)]\s+(?=[A-Za-z0-9À-ỹ])|(?:xe\s*\d+|biển\s*số|bien\s*so|bks|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo)\s*[:\-])\s*)",
+            cleaned_no_header,
             flags=re.IGNORECASE,
         )
         vehicle_parts = [p.strip() for p in vehicle_split if p.strip()]
         vehicle_candidates = [
-            p for p in vehicle_parts if cls._PLATE_REGEX.search(p) or cls._CONT_REGEX.search(p)
+            p for p in vehicle_parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)
         ]
         if len(vehicle_candidates) >= 2:
             first_has_vehicle = bool(
-                cls._PLATE_REGEX.search(vehicle_parts[0]) or cls._CONT_REGEX.search(vehicle_parts[0])
+                cls._non_trailer_plates(vehicle_parts[0]) or cls._CONT_REGEX.search(vehicle_parts[0])
             )
             if not first_has_vehicle and len(vehicle_parts) >= 3:
                 header = vehicle_parts[0]
                 return [
                     f"{header}\n{b}".strip()
                     for b in vehicle_parts[1:]
-                    if cls._PLATE_REGEX.search(b) or cls._CONT_REGEX.search(b)
+                    if cls._non_trailer_plates(b) or cls._CONT_REGEX.search(b)
                 ]
             if first_has_vehicle:
                 return vehicle_candidates
 
-        # Trường hợp 2: Kiểm tra F1 - Nhiều dòng mà mỗi dòng tự thân là 1 xe (ngăn cách bằng '/', '|', '\t')
-        lines_with_plate = [ln for ln in lines if cls._PLATE_REGEX.search(ln)]
+        # Trường hợp 2: Kiểm tra F1 / Bảng dòng - Mỗi dòng tự thân là 1 chuyến (`/` , `|`, `\t`, `—`, `,`)
+        lines_with_plate = [ln for ln in lines if cls._non_trailer_plates(ln)]
         if len(lines_with_plate) >= 2:
-            # Nhận diện dòng có nhãn trường hoặc biểu tượng đại diện trường để phân biệt F1 và tin nhiều dòng
+            # Nhận diện dòng chỉ là nhãn trường F2 (không chứa đủ cặp bảng phân cột)
             labeled_field_lines = [
                 ln for ln in lines
-                if re.match(
+                if "|" not in ln
+                and "\t" not in ln
+                and re.match(
                     r"^(?:[👤👨🧑🪪📞📱☎️📦🏷️🧰🚛🚚🚗]|tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|sđt|sdt|đt|số\s*cont|so\s*cont|cont|seal|số\s*chì|bks|biển\s*số)\b|^[👤👨🧑🪪📞📱☎️📦🏷️🧰🚛🚚🚗]",
                     ln,
                     flags=re.IGNORECASE,
@@ -134,7 +374,7 @@ class MessageSegmenter:
                 results: list[str] = []
                 active_headers: list[str] = []
                 for ln in lines:
-                    has_plate = bool(cls._PLATE_REGEX.search(ln))
+                    has_plate = bool(cls._non_trailer_plates(ln))
                     has_cont = bool(cls._CONT_REGEX.search(ln))
                     if has_plate or has_cont:
                         prefix = "\n".join(active_headers).strip()
@@ -153,13 +393,13 @@ class MessageSegmenter:
         raw_blocks = [
             blk.strip()
             for blk in re.split(r"\n\s*\n+", cleaned_text)
-            if blk.strip()
+            if blk.strip() and not cls._is_table_header_line(blk)
         ]
         if len(raw_blocks) >= 2:
             vehicle_blocks: list[str] = []
             current_context_headers: list[str] = []
             for blk in raw_blocks:
-                if cls._PLATE_REGEX.search(blk) or cls._CONT_REGEX.search(blk):
+                if cls._non_trailer_plates(blk) or cls._CONT_REGEX.search(blk):
                     prefix = "\n".join(current_context_headers).strip()
                     vehicle_blocks.append(f"{prefix}\n{blk}".strip() if prefix else blk)
                 else:
@@ -179,7 +419,7 @@ class MessageSegmenter:
         numbered_blocks = [b.strip() for b in numbered_split if b.strip()]
         if len(numbered_blocks) >= 2:
             first_has_vehicle = bool(
-                cls._PLATE_REGEX.search(numbered_blocks[0])
+                cls._non_trailer_plates(numbered_blocks[0])
                 or cls._CONT_REGEX.search(numbered_blocks[0])
             )
             if not first_has_vehicle and len(numbered_blocks) >= 3:
@@ -188,7 +428,7 @@ class MessageSegmenter:
             if first_has_vehicle:
                 return numbered_blocks
 
-        # Trường hợp 4: Nhiều khối nhiều dòng liên tiếp không có dòng trống, mỗi khối bắt đầu bằng "Biển số:" / "BKS:" / "Số xe:"
+        # Trường hợp 5: Nhiều khối nhiều dòng liên tiếp không có dòng trống, mỗi khối bắt đầu bằng "Biển số:" / "BKS:" / "Số xe:"
         bks_split = re.split(
             r"(?m)(?=^(?:biển\s*số|bien\s*so|bks|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo)\s*[:\-])",
             cleaned_text,
@@ -196,7 +436,7 @@ class MessageSegmenter:
         )
         bks_blocks = [b.strip() for b in bks_split if b.strip()]
         if len(bks_blocks) >= 2:
-            first_has_plate = bool(cls._PLATE_REGEX.search(bks_blocks[0]))
+            first_has_plate = bool(cls._non_trailer_plates(bks_blocks[0]))
             if not first_has_plate and len(bks_blocks) >= 3:
                 header = bks_blocks[0]
                 return [f"{header}\n{b}".strip() for b in bks_blocks[1:]]

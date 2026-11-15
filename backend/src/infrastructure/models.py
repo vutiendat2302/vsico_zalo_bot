@@ -43,13 +43,57 @@ class ZaloGroup(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     zalo_group_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    group_role: Mapped[str] = mapped_column(String(32), nullable=False, default="source")
+    group_role: Mapped[str] = mapped_column(String(32), nullable=False, default="SOURCE")
     carrier_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     carrier_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    send_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="tu_dong")
+    send_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="AUTO")
     is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class User(Base):
+    """Bảng 3: `users` — Quản lý tài khoản nhân viên nội bộ (ĐHVT và Admin)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="DHVT", index=True)
+    zalo_user_id: Mapped[Optional[str]] = mapped_column(String(128), unique=False, nullable=True, index=True)
+    zalo_info_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("zalo_groups.id"), nullable=True, index=True)
+    tms_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, nullable=True, index=True)
+    forwarder_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, onupdate=utc_now
+    )
+
+
+class Carrier(Base):
+    """Bảng 4: `carriers` — Danh mục Nhà xe / Đội xe chuẩn đồng bộ từ phần mềm TMS."""
+
+    __tablename__ = "carriers"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tms_carrier_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, nullable=True, index=True)
+    code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    short_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    normalized_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    tax_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -69,7 +113,7 @@ class Customer(Base):
 
 
 class Warehouse(Base):
-    """Bảng 6: `warehouses` — Danh mục kho đóng/trả hàng đồng bộ từ PM TMS."""
+    """Bảng 6: `warehouses` — Danh mục kho đóng/trả hàng, cảng và depot đồng bộ từ PM TMS."""
 
     __tablename__ = "warehouses"
 
@@ -78,6 +122,9 @@ class Warehouse(Base):
     customer_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("customers.id"), nullable=True, index=True
     )
+    location_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="warehouse", index=True
+    )  # 'warehouse' | 'port' | 'depot'
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -85,6 +132,51 @@ class Warehouse(Base):
     longitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 7), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Vehicle(Base):
+    """Danh mục Xe đầu kéo và Rơ-mooc đồng bộ từ PM TMS."""
+
+    __tablename__ = "vehicles"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    tms_vehicle_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
+    tms_carrier_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
+    carrier_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("carriers.id"), nullable=True, index=True
+    )
+    plate_no: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    vehicle_type: Mapped[int] = mapped_column(Integer, nullable=False, default=1)  # 1: đầu kéo, 2: rơ-mooc
+    payload_capacity: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    driver_hint_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class Driver(Base):
+    """Danh mục Tài xế chuẩn đồng bộ từ PM TMS."""
+
+    __tablename__ = "drivers"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    tms_driver_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
+    tms_carrier_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
+    carrier_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("carriers.id"), nullable=True, index=True
+    )
+    full_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    normalized_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    identity_no: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    license_no: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
 
 class CustomerAlias(Base):
@@ -125,6 +217,11 @@ class TransportPlan(Base):
     __tablename__ = "transport_plans"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    carrier_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("carriers.id"), nullable=True, index=True)
+    driver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    driver_phone: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    tms_sync_status: Mapped[str] = mapped_column(String(32), nullable=False, default="NOT_STARTED", server_default="NOT_STARTED")
     plan_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     stt: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     route_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -159,11 +256,32 @@ class TransportPlan(Base):
     planned_truck_plate: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="Số xe kế hoạch: 29C-445.41...")
     delivery_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="Địa chỉ đóng/ trả hàng")
     group_id: Mapped[Optional[str]] = mapped_column(
-        String(64), nullable=True, index=True, default="6469608867469758994", comment="Group ID Zalo nhận thông báo"
+        String(64), nullable=True, index=True, default="b0301d81c0ee29b070ff", comment="Group ID Zalo nhận thông báo"
     )
     operator_staff: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="Cán bộ giao nhận")
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="Ghi chú / Chi chú")
     extra_fee_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="Phát sinh")
+
+    # Các trường bổ sung đồng bộ từ API /transport-plan của be-tms:
+    tms_order_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True, comment="ID lệnh gốc trên TMS")
+    order_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True, comment="Mã lệnh TMS (RO.../LO...)")
+    region: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True, default=1, comment="Mã miền TMS (1=Bắc, 2=Trung, 3=Nam)")
+    forwarder_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="ID Forwarder TMS")
+    forwarder_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True, comment="Đơn vị Forwarder (VSICO Log, VEX...)")
+    province_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="ID tỉnh/thành phố TMS")
+    province_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True, comment="Tên tỉnh/thành phố")
+    ward_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, comment="Phường/Xã điểm đóng trả")
+    warehouse_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Tên kho ngắn gọn theo kế hoạch")
+    booking_no: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True, comment="Số Booking (lệnh đóng)")
+    bill_of_lading_no: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True, comment="Số B/L vận đơn (lệnh trả)")
+    container_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, comment="Loại cont (DC, HC...)")
+    container_grade: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, comment="Phân loại vỏ (Loại 1, Loại 2, Loại 3)")
+    container_ownership: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="Chủ vỏ (1=COC VSICO, 2=SOC)")
+    delivery_term: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="Phương thức giao nhận (1=Nguyên cont, 2=Kiểm đếm)")
+    container_warning: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True, comment="Mã cảnh báo vỏ (normal, over_combined, empty_drop...)")
+    container_status_message: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, comment="Trạng thái vỏ lệnh trả")
+    dispatch_state: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True, comment="Trạng thái điều phối TMS")
+    points_json: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON, nullable=True, comment="Danh sách điểm đóng/trả chi tiết từ TMS")
 
     # Các trường tương thích ngược với code cũ:
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -194,7 +312,7 @@ class ZaloMessage(Base):
     message_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     processing_status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="received", index=True
+        String(32), nullable=False, default="RECEIVED", index=True
     )
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -305,10 +423,10 @@ class ContainerJob(Base):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     container_check_digit_valid: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
-    validation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
-    routing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    routing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
     tms_sync_status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="not_started"
+        String(32), nullable=False, default="NOT_STARTED"
     )
 
     raw_fields: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
@@ -363,7 +481,7 @@ class ReviewCase(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     details: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="pending", index=True
+        String(32), nullable=False, default="PENDING", index=True
     )
     assigned_to: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     resolved_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -374,8 +492,6 @@ class ReviewCase(Base):
     resolved_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    message: Mapped["ZaloMessage"] = relationship(back_populates="review_cases")
-
     message: Mapped["ZaloMessage"] = relationship(back_populates="review_cases")
 
 
@@ -390,9 +506,9 @@ class BotReply(Base):
     )
     sender_id: Mapped[str] = mapped_column(String(128), nullable=False)
     zalo_msg_id: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
-    reply_text: Mapped[str] = mapped_column(Text, nullable=False)
+    reply_text: Mapped[Text] = mapped_column(Text, nullable=False)
     fix_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="cho_sua")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -421,7 +537,7 @@ class OutboundMessage(Base):
         DateTime(timezone=True), nullable=True
     )
     status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="cho_duyet", index=True
+        String(32), nullable=False, default="PENDING_APPROVAL", index=True
     )
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     zalo_message_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -486,4 +602,63 @@ class ActivityLog(Base):
     details: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class FileRecord(Base):
+    """Bảng 17: `files` — Lưu thông tin metadata file và đường dẫn đối tượng trong MinIO S3."""
+
+    __tablename__ = "files"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    file_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    bucket: Mapped[str] = mapped_column(String(63), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    original_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    message_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("zalo_messages.id"), nullable=True, index=True
+    )
+    storage_status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    meta: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MessageDraft(Base):
+    """Bảng 18: `message_drafts` — Bản nháp gom các tin rời rạc của cùng một người gửi trong một nhóm."""
+
+    __tablename__ = "message_drafts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    zalo_info_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("zalo_groups.id"), nullable=False, index=True
+    )
+    carrier_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("carriers.id"), nullable=True, index=True
+    )
+    group_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    sender_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN", index=True)
+    entities: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    first_message_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("zalo_messages.id"), nullable=False
+    )
+    last_message_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("zalo_messages.id"), nullable=False
+    )
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    flushed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )

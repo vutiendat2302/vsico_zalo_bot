@@ -9,14 +9,18 @@ và cấu hình 2 trạng thái phát hành tin nhắn (`send_mode`):
    - Kể cả tin nhắn có thỏa mãn đầy đủ 100% thì VẪN đưa vào danh sách để Điều độ viên (DVDH) duyệt trước khi phát hành.
 """
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional
+import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from src.config.settings import settings
+from src.domain.enums import GroupRole, SendMode
 from src.infrastructure.database import get_db
 from src.infrastructure.models import ZaloGroup
 
@@ -27,10 +31,10 @@ class GroupCreatePayload(BaseModel):
     """Schema tạo mới hoặc đăng ký nhóm Zalo."""
     zalo_group_id: str = Field(..., description="ID định danh nhóm Zalo (threadId)")
     name: Optional[str] = Field(None, description="Tên hiển thị của nhóm")
-    group_role: str = Field("source", description="Vai trò: source (nhà xe), destination (khách), internal (ĐHVT)")
+    group_role: str = Field(GroupRole.SOURCE.value, description="Vai trò: SOURCE (nhà xe), DESTINATION (khách), DHVT (nội bộ)")
     carrier_id: Optional[str] = Field(None, description="Mã nhà xe nếu là nhóm nhà xe")
     carrier_name: Optional[str] = Field(None, description="Tên nhà xe liên kết")
-    send_mode: str = Field("tu_dong", description="Chế độ gửi: tu_dong (Tự động) hoặc cho_duyet (Chờ duyệt)")
+    send_mode: str = Field(SendMode.AUTO.value, description="Chế độ gửi: AUTO (Tự động) hoặc MANUAL (Chờ duyệt)")
     is_active: bool = Field(True, description="Trạng thái kích hoạt")
     is_test: bool = Field(False, description="Nhóm thử nghiệm nội bộ")
 
@@ -39,7 +43,7 @@ class GroupUpdateSendModePayload(BaseModel):
     """Schema cập nhật trạng thái gửi của nhóm."""
     send_mode: str = Field(
         ...,
-        description="Trạng thái gửi mới: 'tu_dong' (Tự động) hoặc 'cho_duyet' (Chờ duyệt)"
+        description="Trạng thái gửi mới: 'AUTO' (Tự động) hoặc 'MANUAL' (Chờ duyệt)"
     )
 
 
@@ -83,9 +87,103 @@ class GroupResponse(BaseModel):
     created_at: Optional[str] = None
 
 
+def _safe_group_role(raw_role: Optional[str]) -> str:
+    """Chuẩn hóa giá trị vai trò nhóm Zalo an toàn, không ném ValueError khi gặp giá trị lạ."""
+    if not raw_role:
+        return GroupRole.SOURCE.value
+    try:
+        return GroupRole(raw_role).value
+    except ValueError:
+        return raw_role.strip().upper() or GroupRole.SOURCE.value
+
+
+def _safe_send_mode(raw_mode: Optional[str]) -> str:
+    """Chuẩn hóa giá trị chế độ gửi an toàn, mặc định AUTO nếu giá trị không hợp lệ."""
+    if not raw_mode:
+        return SendMode.AUTO.value
+    try:
+        return SendMode(raw_mode).value
+    except ValueError:
+        return SendMode.AUTO.value
+
+
+def _infer_group_role_from_bridge(group_id: str, group_name: str, group_type: str) -> str:
+    """Suy luận vai trò mặc định từ thông tin nhóm thật trên Zalo OA / Bridge."""
+    gtype = (group_type or "").strip().lower()
+    if gtype == "oa_direct" or group_id.startswith("direct_"):
+        return GroupRole.DIRECT_CHAT.value
+    default_carrier_gid = (settings.DEFAULT_CARRIER_GROUP_ID or "").strip()
+    if default_carrier_gid and group_id.strip() == default_carrier_gid:
+        return GroupRole.SOURCE.value
+    low_name = (group_name or "").lower()
+    if any(k in low_name for k in ("điều hành", "dieu hanh", "đhvt", "dhvt", "nội bộ", "noi bo")):
+        return GroupRole.DHVT.value
+    if any(k in low_name for k in ("nhà xe", "nha xe", "thầu phụ", "thau phu", "vận tải", "van tai", "đội xe", "doi xe")):
+        return GroupRole.SOURCE.value
+    return GroupRole.DESTINATION.value
+
+
+def sync_live_groups_from_bridge(db: Session) -> int:
+    """Đồng bộ danh sách nhóm thật và hội thoại từ Zalo Bridge (`/api/bot/groups`) vào bảng `zalo_groups`."""
+    bridge_base = (settings.ZALO_BRIDGE_URL or "http://localhost:3000").rstrip("/")
+    url = f"{bridge_base}/api/bot/groups"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Backend-VSICO"})
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return 0
+
+    live_groups = payload.get("groups")
+    if not isinstance(live_groups, list):
+        return 0
+
+    synced_count = 0
+    for item in live_groups:
+        if not isinstance(item, dict):
+            continue
+        gid = str(item.get("group_id") or item.get("groupId") or "").strip()
+        if not gid:
+            continue
+        gname = str(item.get("name") or "").strip()
+        gtype = str(item.get("type") or "").strip()
+        inferred_role = _infer_group_role_from_bridge(gid, gname, gtype)
+
+        existing = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == gid))
+        if existing is None:
+            db.add(
+                ZaloGroup(
+                    zalo_group_id=gid,
+                    name=gname or gid,
+                    group_role=inferred_role,
+                    send_mode=SendMode.AUTO.value,
+                    is_active=True,
+                    is_test=False,
+                )
+            )
+            synced_count += 1
+        else:
+            changed = False
+            if gname and existing.name != gname:
+                existing.name = gname
+                changed = True
+            if existing.is_test:
+                existing.is_test = False
+                changed = True
+            if gtype == "oa_direct" and existing.group_role != GroupRole.DIRECT_CHAT.value:
+                existing.group_role = GroupRole.DIRECT_CHAT.value
+                changed = True
+            if changed:
+                synced_count += 1
+
+    if synced_count > 0:
+        db.commit()
+    return synced_count
+
+
 @router.get("", response_model=dict[str, Any])
 def list_groups(
-    role: Optional[str] = Query(None, description="Lọc theo vai trò: source, destination, customer, internal"),
+    role: Optional[str] = Query(None, description="Lọc theo vai trò: source, destination, customer, internal, direct_chat"),
     send_mode: Optional[str] = Query(None, description="Lọc theo chế độ: tu_dong, cho_duyet"),
     is_active: Optional[bool] = Query(None, description="Lọc theo trạng thái kích hoạt"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo tên nhóm hoặc Zalo Group ID"),
@@ -93,14 +191,23 @@ def list_groups(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Lấy danh sách các nhóm Zalo kèm cấu hình chế độ gửi (`send_mode`)."""
+    """Lấy danh sách các nhóm Zalo kèm tự động đồng bộ nhóm thật từ Zalo Bridge."""
+    sync_live_groups_from_bridge(db)
     stmt = select(ZaloGroup)
 
     if role:
-        stmt = stmt.where(ZaloGroup.group_role == role)
+        norm_role = _safe_group_role(role)
+        role_variants = {norm_role, role.lower(), role.upper()}
+        if norm_role in (GroupRole.SOURCE.value, GroupRole.CARRIER.value):
+            role_variants.update({"SOURCE", "CARRIER", "source", "carrier", "car"})
+        elif norm_role in (GroupRole.DESTINATION.value, GroupRole.CUSTOMER.value):
+            role_variants.update({"DESTINATION", "CUSTOMER", "destination", "customer"})
+        elif norm_role == GroupRole.DHVT.value:
+            role_variants.update({"DHVT", "dhvt", "internal", "INTERNAL"})
+        stmt = stmt.where(ZaloGroup.group_role.in_(list(role_variants)))
     if send_mode:
-        clean_mode = "tu_dong" if send_mode in ("tu_dong", "auto") else "cho_duyet"
-        stmt = stmt.where(ZaloGroup.send_mode == clean_mode)
+        clean_mode = _safe_send_mode(send_mode)
+        stmt = stmt.where(ZaloGroup.send_mode.in_([clean_mode, send_mode.lower(), send_mode.upper()]))
     if is_active is not None:
         stmt = stmt.where(ZaloGroup.is_active == is_active)
     if search:
@@ -112,13 +219,13 @@ def list_groups(
 
     items = []
     for g in groups:
-        mode_val = (g.send_mode or "cho_duyet").lower()
-        mode_label = "Tự động" if mode_val in ("tu_dong", "auto") else "Chờ duyệt"
+        mode_val = _safe_send_mode(g.send_mode)
+        mode_label = "Tự động" if mode_val == SendMode.AUTO.value else "Chờ duyệt"
         items.append({
-            "id": g.id,
+            "id": str(g.id),
             "zalo_group_id": g.zalo_group_id,
             "name": g.name or f"Nhóm {g.zalo_group_id}",
-            "group_role": g.group_role,
+            "group_role": _safe_group_role(g.group_role),
             "carrier_id": g.carrier_id,
             "carrier_name": g.carrier_name,
             "send_mode": mode_val,
@@ -169,7 +276,7 @@ def delete_all_test_groups(db: Session = Depends(get_db)) -> dict[str, Any]:
     remaining_real_groups = list(db.scalars(select(ZaloGroup).order_by(ZaloGroup.id.asc())).all())
     remaining_out = [
         {
-            "id": rg.id,
+            "id": str(rg.id),
             "zalo_group_id": rg.zalo_group_id,
             "name": rg.name,
             "send_mode": rg.send_mode,
@@ -201,13 +308,14 @@ def update_real_group_status_by_zalo_id(
         raise HTTPException(status_code=404, detail=f"Không tìm thấy nhóm có Zalo ID '{clean_id}'.")
 
     if payload.send_mode is not None:
-        clean_mode = payload.send_mode.strip().lower()
-        if clean_mode not in ("tu_dong", "auto", "cho_duyet", "manual"):
+        try:
+            clean_mode = SendMode(payload.send_mode).value
+        except Exception:
             raise HTTPException(
                 status_code=400,
-                detail="Giá trị send_mode không hợp lệ. Chỉ chấp nhận 'tu_dong' (Tự động) hoặc 'cho_duyet' (Chờ duyệt)."
+                detail="Giá trị send_mode không hợp lệ. Chỉ chấp nhận 'AUTO' (Tự động) hoặc 'MANUAL' (Chờ duyệt)."
             )
-        g.send_mode = "tu_dong" if clean_mode in ("tu_dong", "auto") else "cho_duyet"
+        g.send_mode = clean_mode
 
     if payload.is_active is not None:
         g.is_active = payload.is_active
@@ -216,7 +324,10 @@ def update_real_group_status_by_zalo_id(
         g.name = payload.name.strip()
 
     if payload.group_role is not None:
-        g.group_role = payload.group_role
+        try:
+            g.group_role = GroupRole(payload.group_role).value
+        except Exception:
+            g.group_role = payload.group_role.strip().upper()
 
     if payload.carrier_id is not None:
         g.carrier_id = payload.carrier_id
@@ -228,12 +339,12 @@ def update_real_group_status_by_zalo_id(
     db.commit()
     db.refresh(g)
 
-    mode_label = "Tự động" if g.send_mode == "tu_dong" else "Chờ duyệt"
+    mode_label = "Tự động" if g.send_mode == SendMode.AUTO.value else "Chờ duyệt"
     return {
         "ok": True,
         "message": f"Đã cập nhật trạng thái nhóm '{g.name or g.zalo_group_id}' thành công.",
         "group": {
-            "id": g.id,
+            "id": str(g.id),
             "zalo_group_id": g.zalo_group_id,
             "name": g.name,
             "group_role": g.group_role,
@@ -257,13 +368,14 @@ def update_real_group_status(
         raise HTTPException(status_code=404, detail=f"Không tìm thấy nhóm Zalo ID={group_id}.")
 
     if payload.send_mode is not None:
-        clean_mode = payload.send_mode.strip().lower()
-        if clean_mode not in ("tu_dong", "auto", "cho_duyet", "manual"):
+        try:
+            clean_mode = SendMode(payload.send_mode).value
+        except Exception:
             raise HTTPException(
                 status_code=400,
-                detail="Giá trị send_mode không hợp lệ. Chỉ chấp nhận 'tu_dong' (Tự động) hoặc 'cho_duyet' (Chờ duyệt)."
+                detail="Giá trị send_mode không hợp lệ. Chỉ chấp nhận 'AUTO' (Tự động) hoặc 'MANUAL' (Chờ duyệt)."
             )
-        g.send_mode = "tu_dong" if clean_mode in ("tu_dong", "auto") else "cho_duyet"
+        g.send_mode = clean_mode
 
     if payload.is_active is not None:
         g.is_active = payload.is_active
@@ -272,7 +384,10 @@ def update_real_group_status(
         g.name = payload.name.strip()
 
     if payload.group_role is not None:
-        g.group_role = payload.group_role
+        try:
+            g.group_role = GroupRole(payload.group_role).value
+        except Exception:
+            g.group_role = payload.group_role.strip().upper()
 
     if payload.carrier_id is not None:
         g.carrier_id = payload.carrier_id
@@ -284,12 +399,12 @@ def update_real_group_status(
     db.commit()
     db.refresh(g)
 
-    mode_label = "Tự động" if g.send_mode == "tu_dong" else "Chờ duyệt"
+    mode_label = "Tự động" if g.send_mode == SendMode.AUTO.value else "Chờ duyệt"
     return {
         "ok": True,
         "message": f"Đã cập nhật trạng thái nhóm '{g.name or g.zalo_group_id}' thành công.",
         "group": {
-            "id": g.id,
+            "id": str(g.id),
             "zalo_group_id": g.zalo_group_id,
             "name": g.name,
             "group_role": g.group_role,
@@ -327,27 +442,103 @@ def delete_group(group_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
     return {
         "ok": True,
         "message": f"Đã xóa nhóm '{name_holder}' thành công.",
-        "deleted_id": group_id,
+        "deleted_id": str(group_id),
     }
 
 
 @router.get("/{group_id}", response_model=dict[str, Any])
 def get_group_detail(group_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Xem chi tiết một nhóm Zalo theo ID."""
+    """Xem chi tiết một nhóm Zalo theo ID kèm thông tin thành viên thật từ Zalo Bridge."""
     g = db.get(ZaloGroup, group_id)
     if not g:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy nhóm Zalo ID={group_id}.")
 
-    mode_val = (g.send_mode or "cho_duyet").lower()
-    mode_label = "Tự động" if mode_val in ("tu_dong", "auto") else "Chờ duyệt"
+    mode_val = _safe_send_mode(g.send_mode)
+    mode_label = "Tự động" if mode_val == SendMode.AUTO.value else "Chờ duyệt"
+
+    zalo_live_info: Optional[dict[str, Any]] = None
+    bridge_base = (settings.ZALO_BRIDGE_URL or "http://localhost:3000").rstrip("/")
+    try:
+        url = f"{bridge_base}/api/bot/groups/{g.zalo_group_id}/info"
+        req = urllib.request.Request(url, headers={"User-Agent": "Backend-VSICO"})
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            live_data = json.loads(resp.read().decode("utf-8"))
+            if live_data.get("ok"):
+                raw_members = live_data.get("members")
+                members_list: list[dict[str, Any]] = []
+                if isinstance(raw_members, list):
+                    for m in raw_members:
+                        if isinstance(m, dict):
+                            mid = str(
+                                m.get("user_id")
+                                or m.get("oa_id")
+                                or m.get("id")
+                                or ""
+                            )
+                            mname = (
+                                m.get("display_name")
+                                or m.get("name")
+                                or m.get("user_alias")
+                                or mid
+                            )
+                            members_list.append(
+                                {
+                                    "id": mid,
+                                    "display_name": mname,
+                                    "avatar": m.get("avatar"),
+                                }
+                            )
+                elif isinstance(live_data.get("members_profiles"), dict):
+                    for uid, prof in live_data.get("members_profiles", {}).items():
+                        members_list.append(
+                            {
+                                "id": str(uid),
+                                "display_name": prof.get("displayName")
+                                or prof.get("zaloName")
+                                or str(uid),
+                                "avatar": prof.get("avatar"),
+                            }
+                        )
+
+                grp_wrapper = live_data.get("group") or {}
+                grp_info = (
+                    grp_wrapper.get("group_info")
+                    if isinstance(grp_wrapper, dict) and isinstance(grp_wrapper.get("group_info"), dict)
+                    else (grp_wrapper if isinstance(grp_wrapper, dict) else {})
+                )
+                live_name = (
+                    grp_info.get("name")
+                    or live_data.get("name")
+                    or (live_data.get("data") or {}).get("name")
+                )
+                if live_name and g.name != live_name:
+                    g.name = str(live_name).strip()
+                    db.commit()
+                    db.refresh(g)
+
+                total_members = (
+                    live_data.get("totalMembers")
+                    or live_data.get("total_members")
+                    or grp_info.get("total_member")
+                    or len(members_list)
+                )
+                zalo_live_info = {
+                    "total_members": total_members,
+                    "creator_id": (live_data.get("data") or {}).get("creatorId"),
+                    "group_link": grp_info.get("group_link"),
+                    "avatar": grp_info.get("avatar"),
+                    "members": members_list,
+                }
+    except Exception:
+        zalo_live_info = None
 
     return {
         "ok": True,
         "group": {
-            "id": g.id,
+            "id": str(g.id),
             "zalo_group_id": g.zalo_group_id,
             "name": g.name or f"Nhóm {g.zalo_group_id}",
-            "group_role": g.group_role,
+            "group_role": _safe_group_role(g.group_role),
             "carrier_id": g.carrier_id,
             "carrier_name": g.carrier_name,
             "send_mode": mode_val,
@@ -355,7 +546,8 @@ def get_group_detail(group_id: int, db: Session = Depends(get_db)) -> dict[str, 
             "is_active": g.is_active,
             "is_test": g.is_test,
             "created_at": g.created_at.isoformat() if g.created_at else None,
-        }
+            "zalo_live_info": zalo_live_info,
+        },
     }
 
 
@@ -367,29 +559,30 @@ def update_group_send_mode(
 ) -> dict[str, Any]:
     """Cập nhật trạng thái phát hành tin nhắn của nhóm giữa `tu_dong` (Tự động) và `cho_duyet` (Chờ duyệt).
 
-    - `tu_dong`: Tin nhắn thỏa mãn đầy đủ 8 trường chính sẽ được gửi tự động vào nhóm. Tin sai/thiếu vẫn chờ duyệt.
-    - `cho_duyet`: Mọi tin nhắn (kể cả thỏa mãn 100%) đều được giữ lại trong danh sách chờ duyệt để DVDH duyệt trước.
+    - `AUTO`: Tin nhắn thỏa mãn đầy đủ 8 trường chính sẽ được gửi tự động vào nhóm. Tin sai/thiếu vẫn chờ duyệt.
+    - `MANUAL`: Mọi tin nhắn (kể cả thỏa mãn 100%) đều được giữ lại trong danh sách chờ duyệt để DVDH duyệt trước.
     """
     g = db.get(ZaloGroup, group_id)
     if not g:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy nhóm Zalo ID={group_id}.")
 
-    clean_mode = payload.send_mode.strip().lower()
-    if clean_mode not in ("tu_dong", "auto", "cho_duyet", "manual"):
+    try:
+        clean_mode = SendMode(payload.send_mode).value
+    except Exception:
         raise HTTPException(
             status_code=400,
-            detail="Giá trị send_mode không hợp lệ. Chỉ chấp nhận 'tu_dong' (Tự động) hoặc 'cho_duyet' (Chờ duyệt)."
+            detail="Giá trị send_mode không hợp lệ. Chỉ chấp nhận 'AUTO' (Tự động) hoặc 'MANUAL' (Chờ duyệt)."
         )
 
-    g.send_mode = "tu_dong" if clean_mode in ("tu_dong", "auto") else "cho_duyet"
+    g.send_mode = clean_mode
     db.commit()
     db.refresh(g)
 
-    mode_label = "Tự động" if g.send_mode == "tu_dong" else "Chờ duyệt"
+    mode_label = "Tự động" if g.send_mode == SendMode.AUTO.value else "Chờ duyệt"
     return {
         "ok": True,
         "message": f"Đã chuyển trạng thái nhóm '{g.name or g.zalo_group_id}' sang '{mode_label}'.",
-        "group_id": g.id,
+        "group_id": str(g.id),
         "zalo_group_id": g.zalo_group_id,
         "send_mode": g.send_mode,
         "send_mode_label": mode_label,
@@ -403,11 +596,12 @@ def create_group(payload: GroupCreatePayload, db: Session = Depends(get_db)) -> 
     if existing:
         raise HTTPException(status_code=400, detail=f"Nhóm có Zalo ID '{payload.zalo_group_id}' đã tồn tại.")
 
-    clean_mode = "tu_dong" if payload.send_mode.strip().lower() in ("tu_dong", "auto") else "cho_duyet"
+    clean_mode = _safe_send_mode(payload.send_mode)
+    clean_role = _safe_group_role(payload.group_role)
     grp = ZaloGroup(
         zalo_group_id=payload.zalo_group_id.strip(),
         name=payload.name,
-        group_role=payload.group_role,
+        group_role=clean_role,
         carrier_id=payload.carrier_id,
         carrier_name=payload.carrier_name,
         send_mode=clean_mode,
@@ -418,12 +612,12 @@ def create_group(payload: GroupCreatePayload, db: Session = Depends(get_db)) -> 
     db.commit()
     db.refresh(grp)
 
-    mode_label = "Tự động" if grp.send_mode == "tu_dong" else "Chờ duyệt"
+    mode_label = "Tự động" if grp.send_mode == SendMode.AUTO.value else "Chờ duyệt"
     return {
         "ok": True,
         "message": f"Đã tạo nhóm Zalo '{grp.name or grp.zalo_group_id}' thành công.",
         "group": {
-            "id": grp.id,
+            "id": str(grp.id),
             "zalo_group_id": grp.zalo_group_id,
             "name": grp.name,
             "send_mode": grp.send_mode,

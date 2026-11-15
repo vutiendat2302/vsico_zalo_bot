@@ -1,9 +1,8 @@
 """Module Tiếp Nhận, Chuẩn Hóa & Chống Trùng Lặp Tin Nhắn (Ingestion & Normalization Layer).
 
-Xử lý sự kiện Webhook đẩy sang từ `zca-js/bridge.js` (hỗ trợ cả tin nhắn trực tiếp 1-1
+Xử lý sự kiện Webhook đẩy sang từ `zca-js` (hỗ trợ cả tin nhắn trực tiếp 1-1
 và tin nhắn trong Group Zalo, cũng như cả 2 định dạng payload lồng và phẳng):
 1. Chuẩn hóa dữ liệu đầu vào (`zalo_message_id`, `group_id`, `sender_id`, `zalo_sent_at`).
-2. Kiểm tra chống trùng lặp (Idempotent Deduplication) theo `zalo_message_id`.
 3. Tự động khởi tạo/cập nhật thông tin nhóm hoặc hội thoại trực tiếp trong `zalo_groups`.
 4. Lưu ngay lập tức bản ghi thô vào `zalo_messages` và đẩy vào hàng đợi `FIFOExtractionQueue`
    để bóc tách tuần tự theo nguyên tắc Vào Trước - Ra Trước (FIFO) thời gian thực.
@@ -16,7 +15,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.domain.enums import MessageStatus
+from src.domain.enums import GroupRole, MessageStatus, SendMode
 from src.infrastructure.fifo_queue import fifo_queue
 from src.infrastructure.models import ZaloGroup, ZaloMessage
 from src.observability.logging import get_logger
@@ -62,7 +61,7 @@ class WebhookIngestor:
         """Tiếp nhận payload từ `zca-js`, lưu thô vào MySQL và thực thi bóc tách FIFO ngay lập tức.
 
         Hỗ trợ đồng thời:
-        - Cấu trúc lồng từ `zca-js/bridge.js`: `sender: {id, name}`, `message: {msg_id, text}`
+        - Cấu trúc lồng từ `zca-js`: `sender: {id, name}`, `message: {msg_id, text}`
         - Cấu trúc phẳng từ API/Postman: `msg_id`, `sender_id`, `sender_name`, `text`
 
         Args:
@@ -93,7 +92,30 @@ class WebhookIngestor:
             or ""
         ).strip() or None
 
-        raw_group_id = str(payload_dict.get("group_id") or "").strip()
+        raw_payload = (
+            payload_dict.get("raw_payload")
+            if isinstance(payload_dict.get("raw_payload"), dict)
+            else {}
+        )
+        raw_event_name = str(
+            payload_dict.get("event_name") or raw_payload.get("event_name") or ""
+        ).strip()
+        raw_recipient = (
+            raw_payload.get("recipient")
+            if isinstance(raw_payload.get("recipient"), dict)
+            else {}
+        )
+        raw_recipient_id = str(raw_recipient.get("id") or "").strip()
+        raw_oa_id = str(raw_payload.get("oa_id") or "").strip()
+        raw_group_id = str(
+            payload_dict.get("group_id")
+            or raw_payload.get("group_id")
+            or (
+                raw_recipient_id
+                if "_group_" in raw_event_name and raw_recipient_id and raw_recipient_id != raw_oa_id
+                else ""
+            )
+        ).strip()
         group_name = (payload_dict.get("group_name") or "").strip() or None
         quote_msg_id = (
             payload_dict.get("quote_msg_id")
@@ -103,20 +125,22 @@ class WebhookIngestor:
 
         text = payload_dict.get("text")
         if text is None:
-            text = nested_msg.get("text") or ""
+            text = payload_dict.get("message_text")
+        if text is None:
+            text = nested_msg.get("text") or nested_msg.get("message_text") or ""
 
         # Phân biệt tin nhắn nhắn trực tiếp (Direct 1-1) và tin nhắn nhắn trong Group Zalo
         if not raw_group_id:
             group_id = f"direct_{sender_id}"
-            effective_group_name = group_name or f"Direct Chat - {sender_name or sender_id}"
-            group_role = "direct_chat"
+            effective_group_name = group_name or sender_name or f"User {sender_id}"
+            group_role = "DIRECT_CHAT"
         else:
             group_id = raw_group_id
             effective_group_name = group_name or f"Zalo Group {group_id}"
             group_role = (
-                "direct_chat"
+                "DIRECT_CHAT"
                 if group_id.startswith("direct_")
-                else "source"
+                else GroupRole.SOURCE.value
             )
 
         # 1. Kiểm tra chống trùng lặp (Deduplication) theo `zalo_message_id`
@@ -128,7 +152,7 @@ class WebhookIngestor:
                 MessageStatus.RECEIVED.value,
                 MessageStatus.QUEUED.value,
             ):
-                fifo_queue.enqueue_and_drain(db, existing_msg.id)
+                fifo_queue.enqueue(existing_msg.id)
                 db.refresh(existing_msg)
             return existing_msg, True
 
@@ -149,7 +173,7 @@ class WebhookIngestor:
                 zalo_group_id=group_id,
                 name=effective_group_name,
                 group_role=group_role,
-                send_mode="tu_dong",
+                send_mode=SendMode.AUTO.value,
                 is_active=True,
                 is_test=is_mock_group,
             )
@@ -197,7 +221,7 @@ class WebhookIngestor:
 
         # 4. Đưa vào hàng đợi FIFO (Vào Trước - Ra Trước) và bóc tách ngay lập tức (Real-time)
         if has_text or has_image:
-            fifo_queue.enqueue_and_drain(db, new_msg.id)
+            fifo_queue.enqueue(new_msg.id)
             db.refresh(new_msg)
 
         return new_msg, False

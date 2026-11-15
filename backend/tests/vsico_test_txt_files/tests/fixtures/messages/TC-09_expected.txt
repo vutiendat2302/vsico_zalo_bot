@@ -1,4 +1,0 @@
-TEST_ID: TC-09
-
-EXPECTED:
-Alias khách 'Nhựa XYZ' chưa có trong bảng: đưa vào hàng chờ ĐHVT để xác minh. Không báo nhà xe và không gửi tới nhóm khách trước khi xác định.

@@ -1,5 +1,0 @@
-TEST_ID: TC-20
-FORMAT: ROUTE_MAP
-
-INPUT:
-Cont Cheng Loong trả về nhiều điểm trong cùng ngày: Đồ Sơn, An Dương, Quang Châu, Ninh Bình

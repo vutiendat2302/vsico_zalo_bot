@@ -1,5 +1,0 @@
-TEST_ID: TC-02
-FORMAT: F1
-
-INPUT:
-2 Xe 15h00642 / Đoàn Văn Biên 0984******/ VSIU2321938 chì 23333310

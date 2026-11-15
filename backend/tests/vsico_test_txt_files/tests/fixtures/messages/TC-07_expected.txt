@@ -1,4 +1,0 @@
-TEST_ID: TC-07
-
-EXPECTED:
-Phát hiện SĐT không đủ 10 chữ số (dữ liệu gốc đã được che trong fixture). Đánh dấu lỗi/thiếu SĐT và yêu cầu bổ sung; không tự đoán số còn thiếu.

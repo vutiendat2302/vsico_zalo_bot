@@ -1,5 +1,0 @@
-TEST_ID: TC-03
-FORMAT: F1
-
-INPUT:
-3 xe: 15H06722/ Đào Đức Thoại đt: 0364******/ VSIU2323000 chì 23333330

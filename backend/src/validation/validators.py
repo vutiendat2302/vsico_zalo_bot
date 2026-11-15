@@ -90,15 +90,18 @@ class ContainerValidator:
         line.warnings = warnings
 
         # 6. Quyết định trạng thái thẩm định tổng thể (validation_status) và độ tin cậy (confidence)
+        # Bảo toàn mức confidence thấp nếu Parser đã đánh dấu định dạng tự do không chắc chắn
+        parser_conf = line.confidence
         if has_hard_error:
             line.validation_status = ValidationStatus.INVALID.value
-            line.confidence = 0.40
+            line.confidence = min(parser_conf, 0.40)
         elif warnings:
             line.validation_status = ValidationStatus.NEEDS_REVIEW.value
-            line.confidence = max(0.65, round(0.95 - 0.08 * len(warnings), 2))
+            score = max(0.65, round(0.95 - 0.08 * len(warnings), 2))
+            line.confidence = min(parser_conf, score)
         else:
             line.validation_status = ValidationStatus.VALID.value
-            line.confidence = 0.98
+            line.confidence = parser_conf if parser_conf < 0.65 else 0.98
 
         return line
 

@@ -118,7 +118,7 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
         customers = [c.customer_hint for c in m.container_jobs if c.customer_hint]
         recent_out.append(
             {
-                "id": m.id,
+                "id": str(m.id),
                 "zalo_message_id": m.zalo_message_id,
                 "group_id": m.group_id,
                 "sender_name": m.sender_name or m.sender_id,

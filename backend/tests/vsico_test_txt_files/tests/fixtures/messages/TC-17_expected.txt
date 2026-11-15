@@ -1,4 +1,0 @@
-TEST_ID: TC-17
-
-EXPECTED:
-Không gửi nhóm khách. Gửi tin chuẩn cho sales phụ trách để sales tự liên hệ; route_map phải xác định duy nhất.

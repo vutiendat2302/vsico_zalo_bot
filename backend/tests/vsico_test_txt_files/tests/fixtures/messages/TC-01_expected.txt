@@ -1,4 +1,0 @@
-TEST_ID: TC-01
-
-EXPECTED:
-Tách được: plate=15C17066; driver_name=Phạm Văn Huynh; driver_phone=0986******; cont_no=VSIU2621051; seal_no=23333878. Container phải qua kiểm tra ISO 6346.

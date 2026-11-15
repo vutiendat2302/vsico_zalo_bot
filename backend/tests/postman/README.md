@@ -1,51 +1,56 @@
-# 📮 TỔNG HỢP BỘ KIỂM THỬ POSTMAN - VSICO ZALO BOT & BACKEND TMS
-### HỆ THỐNG XỬ LÝ & ĐIỀU PHỐI TIN NHẮN NHÀ XE (TASK 2 - PM TMS VSICO)
+# TỔNG HỢP BỘ KIỂM THỬ POSTMAN - VSICO ZALO BOT & BACKEND TMS
+### HỆ THỐNG XỬ LÝ & ĐIỀU PHỐI THÔNG BÁO VẬN TẢI CONTAINER ĐA KÊNH
 
-Thư mục này chứa toàn bộ tài liệu đặc tả kiểm thử trên phần mềm **Postman** bằng định dạng Markdown (`.md`) và tệp **Postman Collection (`.json`)** có thể import trực tiếp.
-
----
-
-## 1. Danh Mục Các Tài Liệu Kiểm Thử
-
-| Tệp tài liệu | Nội dung kiểm thử | Cổng dịch vụ |
-| :--- | :--- | :---: |
-| 📘 [**`HUONG_DAN_KIEM_THU_POSTMAN_DAY_DU.md`**](./HUONG_DAN_KIEM_THU_POSTMAN_DAY_DU.md) | **Tài liệu tổng hợp toàn diện**: Hướng dẫn cấu hình môi trường, cURL, body và kết quả kỳ vọng cho tất cả các phần. | **Port 3000 & 8000** |
-| 📑 [**`01_step1_webhook_va_luu_mysql.md`**](./01_step1_webhook_va_luu_mysql.md) | **Bước 1**: Tiếp nhận Webhook `POST /webhook`, kiểm tra chữ ký, chống trùng lặp và lưu MySQL. | **Port 8000** |
-| 📑 [**`02_kiem_thu_bot_zca_chi_tiet.md`**](./02_kiem_thu_bot_zca_chi_tiet.md) | **Các API Bot ZCA**: Lấy tất cả `groupId`, `userId`, lịch sử tin nhắn nhóm/user, gửi tin cá nhân/nhóm và lấy tin realtime. | **Port 3000** |
-| 📑 [**`03_kiem_thu_webhook_gateway_full.md`**](./03_kiem_thu_webhook_gateway_full.md) | **Cổng Webhook Gateway**: Happy Path 1 xe, nhiều xe gạch chéo `/`, thiếu seal bổ sung, ĐHVT quote duyệt `ok`/`sửa`/`huỷ`. | **Port 8000** |
-| 📑 [**`04_kiem_thu_truy_van_tin_nhan_va_xu_ly.md`**](./04_kiem_thu_truy_van_tin_nhan_va_xu_ly.md) | **Truy vấn tin nhắn & Bóc tách**: Lấy tin nhắn theo group, user, user in group, messageId và lọc tin đã xử lý. | **Port 8000** |
-| 📑 [**`05_ke_hoach_test_bai1_bai2_va_tc01_tc20.md`**](./05_ke_hoach_test_bai1_bai2_va_tc01_tc20.md) | **Kế hoạch kiểm thử Bài 1, Bài 2 & TC-01..TC-20**: Đặc tả kiểm thử 3 định dạng F1, F2, F3 theo Jira ZALO ngày 27/10. | **Port 3000 & 8000** |
-| 📑 [**`06_kiem_thu_batch_txt_fixtures.md`**](./06_kiem_thu_batch_txt_fixtures.md) | **Runner tự động bộ tệp TXT**: Chạy test toàn bộ 20 tệp input txt hoặc từng tệp lẻ và sinh file output. | **CLI / Python** |
-| 📑 [**`07_kiem_thu_module_doc_hieu_f1_f2_f3_tc01_tc16.md`**](./07_kiem_thu_module_doc_hieu_f1_f2_f3_tc01_tc16.md) | **Module Đọc hiểu F1/F2/F3**: Kiểm thử bộ nhận diện quy chuẩn và trích xuất dữ liệu xe/cont. | **Port 8000** |
-| 📑 [**`08_kiem_thu_ke_hoach_van_chuyen_crud_va_import.md`**](./08_kiem_thu_ke_hoach_van_chuyen_crud_va_import.md) | **Kế hoạch vận chuyển**: CRUD, Import Excel `ketnoi.xlsx`, Import CSV và tự động matching. | **Port 8000** |
-| 📑 [**`09_kiem_thu_quan_ly_va_don_dep_db.md`**](./09_kiem_thu_quan_ly_va_don_dep_db.md) | **Quản lý & Dọn dẹp DB**: Health check kết nối MySQL, xóa kế hoạch theo ngày, dọn dẹp DB qua CLI/API. | **Port 8000 & CLI** |
-| 📑 [**`10_kiem_thu_ket_qua_tin_nhan_outbound_messages.md`**](./10_kiem_thu_ket_qua_tin_nhan_outbound_messages.md) | **Kết quả tin nhắn (Outbound Messages)**: Quản lý 4 trạng thái (Đã gửi, Chờ duyệt, Hủy, Thất bại), duyệt gửi lại. | **Port 8000** |
-| 📑 [**`11_kiem_thu_tung_tin_nhan_webhook_va_gui_zalo.md`**](./11_kiem_thu_tung_tin_nhan_webhook_va_gui_zalo.md) | **Kiểm thử từng tin nhắn Webhook**: Bóc tách thời gian thực, đối chiếu cont và gửi tin Zalo với SĐT thật. | **Port 8000** |
-| 📑 [**`12_kiem_thu_che_do_nhom_duyet_dhvt_va_form_gui_zalo.md`**](./12_kiem_thu_che_do_nhom_duyet_dhvt_va_form_gui_zalo.md) | **Chế độ nhóm & Duyệt ĐHVT**: Nhóm Tự động vs Chờ duyệt, quy trình duyệt ĐHVT và hiển thị Form gửi Zalo. | **Port 8000** |
-| 📑 [**`13_kiem_thu_tach_text_tu_anh_paddleocr.md`**](./13_kiem_thu_tach_text_tu_anh_paddleocr.md) | **Bóc tách văn bản từ ảnh (PaddleOCR)**: Tách text từ ảnh, bỏ qua ảnh không có chữ, xử lý ảnh có chữ như tin text. | **Port 8000 & 8866** |
-| 📑 [**`14_kiem_thu_tin_nhan_da_xe_emoji_va_khop_lenh_dong.md`**](./14_kiem_thu_tin_nhan_da_xe_emoji_va_khop_lenh_dong.md) | **Tin nhắn đa xe & Emoji**: Bóc tách nhiều xe, icon xe tải, ghép lệnh đóng/trả động theo kế hoạch vận chuyển. | **Port 8000** |
-| 📑 [**`15_kiem_thu_random_nhom_zalo_ke_hoach_van_chuyen.md`**](./15_kiem_thu_random_nhom_zalo_ke_hoach_van_chuyen.md) | **Random nhóm Zalo**: Khảo sát phân bổ nhóm khách hàng ngẫu nhiên theo kế hoạch vận chuyển. | **Port 8000** |
-| 📑 [**`16_kiem_thu_thong_bao_loi_nha_xe_va_bot_reply.md`**](./16_kiem_thu_thong_bao_loi_nha_xe_va_bot_reply.md) | **Thông báo lỗi nhà xe (Bot Reply)**: Tự động nhắc nhở khi thiếu chì, thiếu size, sai số cont, sai biển số xe. | **Port 8000** |
-| 📑 [**`17_kiem_thu_tu_choi_ca_va_tin_nhan_cho_duyet.md`**](./17_kiem_thu_tu_choi_ca_va_tin_nhan_cho_duyet.md) | **Từ chối ca rà soát & Tin nhắn chờ duyệt**: Hủy thông báo gửi khách, cập nhật trạng thái Bị Hủy (cancelled/huy). | **Port 8000** |
-| 📦 [**`vsico_zalo_bot_dhvt_approval_and_send_modes.postman_collection.json`**](./vsico_zalo_bot_dhvt_approval_and_send_modes.postman_collection.json) | **Postman Collection Chế độ nhóm & ĐHVT Duyệt**: Import trực tiếp vào Postman để chạy 8 kịch bản tự động. | **Port 8000** |
-| 📦 [**`vsico_zalo_bot_postman_collection.json`**](./vsico_zalo_bot_postman_collection.json) | **Tệp Postman Collection v2.1**: Import trực tiếp vào Postman để chạy tự động 18 test cases. | **Tất cả** |
-| 📦 [**`vsico_zalo_bot_full_20_test_cases.json`**](./vsico_zalo_bot_full_20_test_cases.json) | **Collection đầy đủ Bài 1, 2 và TC-01..TC-20**: Import trực tiếp chạy 20 kịch bản dữ liệu thực tế. | **Tất cả** |
+Thư mục này chứa toàn bộ tài liệu đặc tả kiểm thử API qua Postman định dạng Markdown (`.md`) phục vụ kiểm thử đơn vị, tích hợp và kiểm tra luồng nghiệp vụ hệ thống.
 
 ---
 
-## 2. Cách Chạy Kiểm Thử Nhanh
+## 1. Cấu Trúc Danh Mục Tài Liệu Kiểm Thử
 
-### Bước 1: Khởi động 2 máy chủ
-1. **Khởi động Bot ZCA API Server (Port 3000)**:
-   ```bash
-   cd zca-js && node bot_api_server.js
-   ```
-2. **Khởi động Backend Webhook Server (Port 8000)**:
-   ```bash
-   cd backend && .venv/bin/python run.py
-   ```
+| STT | Tệp tài liệu | Phân hệ / Nội dung kiểm thử | Cổng dịch vụ |
+| :---: | :--- | :--- | :---: |
+| 01 | [`01_check_bot_zca.md`](./01_check_bot_zca.md) | **Cầu nối Zalo (ZCA Bridge)**: Kiểm tra trạng thái Bot, kết nối WebSocket, lấy danh sách nhóm, thành viên, lịch sử chat và tin nhắn realtime. | Port 3000 |
+| 02 | [`02_check_be_connect.md`](./02_check_be_connect.md) | **Cổng Webhook Gateway (Backend)**: Kiểm tra kết nối Backend và quy trình tiếp nhận tin nhắn báo xe cơ bản qua `POST /webhook`. | Port 8000 |
+| 03 | [`03_check_db.md`](./03_check_db.md) | **Cơ sở dữ liệu MySQL 8.4**: Kiểm tra sức khỏe kết nối DB (`GET /api/health`), dọn dẹp kế hoạch theo ngày và quản trị DB. | Port 8000 |
+| 04 | [`04_kiem_thu_truy_van_tin_nhan_va_xu_ly.md`](./04_kiem_thu_truy_van_tin_nhan_va_xu_ly.md) | **Truy vấn Tin nhắn & Xử lý (FIFO Extractor)**: Truy vấn tin nhắn theo nhóm, người gửi, lọc tin đã xử lý và test tự động bóc tách xe, tài xế, cont, seal, ISO 6346. | Port 8000 |
+| 05 | [`05_kiem_thu_thongbao_loi.md`](./05_kiem_thu_thongbao_loi.md) | **Cảnh báo Lỗi & Phản hồi Nhà xe (`BotReply`)**: Tự động phát hiện tin nhắn thiếu/sai trường nghiệp vụ và sinh cảnh báo nhắc nhà xe bổ sung. | Port 8000 |
+| 06 | [`06_user.md`](./06_user.md) | **Xác thực (Auth) & Quản lý Tài khoản (Users)**: Đăng nhập cấp JWT cookie/token, phân quyền RBAC (`admin`, `dhvt`), CRUD tài khoản người dùng theo Snowflake ID. | Port 8000 |
+| 07 | [`07_luong_bot_nha_xe_ocr_llm.md`](./07_luong_bot_nha_xe_ocr_llm.md) | **Luồng Bot <-> Nhà xe, OCR & LLM Extraction**: Toàn trình báo xe, thiếu trường nhắc quote, đổi/hủy xe, lỗi gửi Zalo 3 lần, OCR ảnh (`files`) và AI Microservice (`/extract`, `/ocr`, `/match-warehouse`). | Port 8000 & 8001 |
+| 08 | [`08_cap_nhat_xe_ke_hoach.md`](./08_cap_nhat_xe_ke_hoach.md) | **Cập nhật Xe trên Kế hoạch (Optimistic Lock)**: Kiểm thử `PATCH /api/plans/{plan_id}/vehicle`, kiểm soát `expected_version` (`409 Conflict`) và trạng thái `tms_sync_status`. | Port 8000 |
+| 09 | [`09_luong_bot_khach_hang_va_dhvt.md`](./09_luong_bot_khach_hang_va_dhvt.md) | **Luồng Bot <-> Khách hàng, Bot <-> ĐHVT & Đồng bộ `transport_plans` Cục bộ**: Điền slot trống J2, cập nhật/xung đột plan, chế độ `MANUAL` duyệt sửa outbound, hỏi đáp khách hàng giới hạn `RouteMap` che SĐT, tra cứu chỉ đọc ĐHVT, cấm duyệt trên Zalo, `claim`/`transfer`/`approve`/`reject` và `check-overdue`. | Port 8000 |
+| 10 | [`10_kiem_thu_ocr_minio_va_qdrant.md`](./10_kiem_thu_ocr_minio_va_qdrant.md) | **OCR, MinIO Storage, Bảng `files`, Sandbox & Qdrant**: Kiểm thử PaddleOCR (`8866`), `ai-service` `/api/v1/ocr` (`paddleocr` -> `gemini_vision`), MinIO (`9000`/`9001`, Presigned URL, `file_key`), webhook ảnh (`POST /webhook`), metadata bảng `files`, Sandbox OCR (`/api/sandbox/simulate`) và Qdrant (`6333`). | Port 8000, 8001, 8866, 9000, 6333 |
+| 11 | [`11_kiem_thu_zalo_oa_bridge.md`](./11_kiem_thu_zalo_oa_bridge.md) | **Cầu nối Zalo Official Account (`oa-bridge`)**: Kiểm tra trạng thái Bot OA, quản lý nhóm GMF, người theo dõi, gửi tin nhắn và webhook OA. | Port 3000 |
+| 12 | [`12_dong_bo_master_data_tms.md`](./12_dong_bo_master_data_tms.md) | **Đồng bộ Master Data TMS (`be-tms`)**: Kiểm thử endpoint kéo danh mục Nhà xe, Khách hàng, Kho, Cảng, Depot và cập nhật MySQL. | Port 8000 & TMS |
+| 13 | [`13_keo_ke_hoach_van_chuyen_tms.md`](./13_keo_ke_hoach_van_chuyen_tms.md) | **Kéo Kế Hoạch Vận Chuyển Theo Ngày & Miền Từ TMS**: Kiểm thử đồng bộ kế hoạch đóng/trả, cân đối vỏ và cảnh báo vỏ từ `be-tms`. | Port 8000 & TMS |
+| 14 | [`14_tro_ly_van_tai_phase1.md`](./14_tro_ly_van_tai_phase1.md) | **Trợ Lý Vận Tải Đa Vai Trò (Phase 1)**: Kiểm thử hội thoại trợ lý cho Khách hàng, Nhà xe và ĐHVT. | Port 8000 & 8001 |
+| 15 | [`15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md`](./15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md) | **NLP Nội Bộ (`RapidFuzz + Từ Điển Danh Mục + PhoBERT`), Đối Chiếu 6 Nhánh & Thống Kê Vùng/Tỉnh ĐHVT**: Đồng bộ nhóm thật OA Bridge, tách từ ghép PhoBERT, NER `PER`/`LOC`, đồng tham chiếu, ghép `RO -> LO` và thống kê lệnh đóng/trả theo vùng/tỉnh trên Postman. | Port 8000, 8001, 3000 |
+| 16 | [`16_kiem_thu_bo_25000_proxy_tung_sheet.md`](./16_kiem_thu_bo_25000_proxy_tung_sheet.md) | **Kiểm Thử Proxy 25.000 Kịch Bản Theo Từng Sheet, Family & Postman Sandbox**: Hướng dẫn chạy toàn bộ 25.000 test (`run_proxy_25000_eval.py`), chạy lọc từng sheet / family / `Test ID` / `--only-fail`, đọc 26 chỉ số CSV/Excel và test mẫu 1–12+ chuyến trên `POST /api/sandbox/simulate`. | CLI Proxy & Port 8000 |
 
-### Bước 2: Import vào Postman
-1. Mở Postman -> Chọn **Import** -> Chọn file [`vsico_zalo_bot_postman_collection.json`](./vsico_zalo_bot_postman_collection.json).
-2. Tạo Environment với `bot_url = http://localhost:3000` và `backend_url = http://localhost:8000`.
-3. Bấm **Run Collection** để chạy toàn bộ các bài test tự động.
+---
+
+## 2. Thiết Lập Môi Trường Kiểm Thử (Postman Environment)
+
+Tạo một môi trường trên Postman với các biến môi trường chuẩn sau:
+
+| Tên biến (Variable) | Giá trị khởi tạo đề xuất | Ý nghĩa nghiệp vụ |
+| :--- | :--- | :--- |
+| `baseUrl` / `backend_url` | `http://localhost:8000` | Địa chỉ máy chủ FastAPI Backend |
+| `bot_url` | `http://localhost:3000` | Địa chỉ máy chủ ZCA Zalo Bridge / OA Bridge |
+| `ai_url` | `http://localhost:8001` | Địa chỉ máy chủ AI & OCR Microservice |
+| `groupId` | `6469608867469758994` | Mã nhóm Zalo nhà xe / khách hàng mẫu |
+| `userId` / `senderId` | `6691387223255581446` | Mã định danh tài xế / người gửi tin |
+| `adminUsername` | `admin` | Tên đăng nhập tài khoản quản trị mặc định |
+| `adminPassword` | `123456` | Mật khẩu tài khoản quản trị mặc định |
+| `authToken` | *(tự động cập nhật sau đăng nhập)* | JWT Access Token nhận được sau khi đăng nhập |
+| `webhook_secret` | `secret123` | Mã bí mật Webhook cấu hình tại ZALO_SECRET_KEY |
+
+Headers chung cho các request `POST` / `PUT` / `PATCH`:
+- `Content-Type`: `application/json; charset=utf-8`
+
+---
+
+## 3. Hướng Dẫn Thực Thi Trên Postman
+
+1. Nhập cấu hình biến môi trường vào Postman Environment.
+2. Thiết lập Method, URL, Headers và Params/Body tương ứng từng kịch bản kiểm thử trong các tài liệu từ `01_check_bot_zca.md` đến `12_dong_bo_master_data_tms.md`.
+3. Kiểm tra kết quả HTTP Status và định dạng JSON trả về đối chiếu với kết quả kỳ vọng được mô tả trong từng tài liệu.
