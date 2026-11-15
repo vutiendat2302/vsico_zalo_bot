@@ -28,6 +28,18 @@ const PORT = process.env.BOT_API_PORT || 3000;
 const BACKEND_URL = process.env.BACKEND_WEBHOOK_URL || 'http://localhost:8000/webhook';
 const CREDENTIALS_FILE = path.resolve('./credentials.json');
 
+function getWebhookSecret() {
+    if (process.env.ZALO_SECRET_KEY) return process.env.ZALO_SECRET_KEY.trim();
+    const rootEnv = path.resolve('../.env');
+    if (fs.existsSync(rootEnv)) {
+        const line = fs.readFileSync(rootEnv, 'utf-8')
+            .split(/\r?\n/)
+            .find((l) => l.trim().startsWith('ZALO_SECRET_KEY='));
+        if (line) return line.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '');
+    }
+    return '';
+}
+
 const zalo = new Zalo({
     selfListen: false,
     checkUpdate: true,
@@ -88,14 +100,19 @@ function saveCredentials(api) {
 
 async function forwardToBackend(payload) {
     const dataString = JSON.stringify(payload);
+    const headers = {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(dataString),
+        'X-Request-Id': 'zalo-live-' + Date.now()
+    };
+    const webhookSecret = getWebhookSecret();
+    if (webhookSecret) {
+        headers['x-webhook-secret'] = webhookSecret;
+    }
     return new Promise((resolve) => {
         const req = http.request(BACKEND_URL, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json; charset=utf-8',
-                'Content-Length': Buffer.byteLength(dataString),
-                'X-Request-Id': 'zalo-live-' + Date.now()
-            }
+            headers
         }, (res) => {
             let body = '';
             res.on('data', chunk => body += chunk);

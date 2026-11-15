@@ -1,4 +1,3 @@
-
 # I. Luồng tổng quát
 
 ## 1. Flow Diagram
@@ -97,7 +96,9 @@ sequenceDiagram
 Xem chi tiết tại mục [II.1.1 Bot với nhà xe](#11-bot-với-nhà-xe).
 
 # II. Chi tiết nghiệp vụ
+
 ## 1. Sơ đồ luồng (flowchart)
+
 ### 1.1 Bot với nhà xe
 
 ```mermaid
@@ -173,8 +174,8 @@ flowchart TD
     SOK -- "Không, sau 3 lần retry" --> DHVT2["Báo ĐHVT"] --> Z
 ```
 
-
 ### 1.2 Bot với khách hàng
+
 #### 1.2a Bot gửi thông tin chuyến cho khách hàng
 
 ```mermaid
@@ -215,6 +216,7 @@ flowchart TD
 ```
 
 #### 1.2b Khách hỏi, bot trả lời
+
 ```mermaid
 flowchart TD
     A(["Khách nhắn vào nhóm Zalo khách hoặc chat riêng"]) --> B["Webhook, kiểm chữ ký, khử trùng<br/>Lưu zalo_messages"]
@@ -245,7 +247,6 @@ flowchart TD
     SEND --> LOG["Ghi outbound_messages kind answer<br/>Ghi log câu hỏi và tool đã gọi"] --> Z
 
 ```
-
 
 ### 1.3 Bot với ĐHVT
 
@@ -360,7 +361,6 @@ flowchart TD
     UN --> Z
     SEND --> LOG["Ghi outbound_messages (message_kind = 'answer')<br/>Ghi log câu hỏi và tool đã gọi"] --> Z
 ```
-
 
 ## 2. Sơ đồ tuần tự (sequence)
 
@@ -820,9 +820,7 @@ sequenceDiagram
     end
 ```
 
-
 ### 2.3 Bot với ĐHVT
-
 
 #### 2.3a Tạo ca, đưa lên hàng đợi Web và thông báo vào nhóm Zalo ĐHVT
 
@@ -1051,7 +1049,6 @@ sequenceDiagram
     end
 ```
 
-
 # III. Kiến trúc bảo mật và phân quyền
 
 ## 1. Mô hình phân quyền tổng thể (RBAC & Phân định phạm vi)
@@ -1088,58 +1085,65 @@ flowchart TD
 
 ### 1.2 Ma trận phân quyền theo đối tượng (RBAC Matrix)
 
-| Đối tượng | Kênh tương tác | Cơ chế định danh | Quyền hạn đối với hệ thống | Giới hạn và Ràng buộc an toàn |
-| :-- | :-- | :-- | :-- | :-- |
-| **Nhà xe** | Nhóm Zalo `role = car` | `zalo_info.carrier_id` liên kết `carriers.id` | Báo xe mới, bổ sung thông tin, sửa xe, đề nghị hủy chuyến; tra cứu tiến độ chuyến xe của chính nhà xe mình | Chỉ truy cập dữ liệu chuyến thuộc `carrier_id` của nhóm. Hủy chuyến hoặc đổi xe sau khi đã gửi khách luôn chuyển thành ca chờ ĐHVT xác nhận trên Web |
-| **Khách hàng** | Nhóm Zalo hoặc chat riêng `role = customer` | `zalo_info` kết hợp ma trận `route_maps` | Chỉ đọc: tra cứu thông tin chuyến xe, số container, số chì, giờ dự kiến đến kho của lô hàng mình | Chỉ hiển thị dữ liệu thuộc khách hàng và kho được cấu hình trong `route_maps`. Đề nghị đổi/hủy của khách chỉ ghi nhận thành ca chờ cho ĐHVT, Bot không tự ý sửa đổi dữ liệu |
-| **Điều hành vận tải (ĐHVT)** | Web quản lý (Dashboard) | Bảng `users` (`role = dhvt`), phiên xác thực qua `httpOnly` cookie | Xem danh sách tin nhắn, bóc tách thực thể, quản lý kế hoạch vận chuyển, duyệt/sửa/từ chối ca chờ duyệt, phát hành thông báo gửi khách, kích hoạt gửi lại khi lỗi | Thao tác duyệt và chỉnh sửa dữ liệu bắt buộc thực hiện trên Web quản lý; không nhận lệnh duyệt qua tin nhắn Zalo |
-| **Điều hành vận tải (ĐHVT)** | Nhóm Zalo ĐHVT nội bộ, chat riêng | `zalo_info.role = dhvt` hoặc `users.zalo_user_id` khớp `zalo_messages.sender_id` | Nhận thông báo nghiệp vụ một chiều từ Bot; hỏi tra cứu dữ liệu nội bộ (chỉ đọc) qua ngôn ngữ tự nhiên | Bot không nhận lệnh duyệt, sửa, hủy qua chat Zalo; khi phát hiện lệnh duyệt trên Zalo, Bot gửi phản hồi nhắc nhở kèm liên kết dẫn tới ca xử lý trên Web |
-| **Quản trị viên (Admin)** | Web quản lý (Dashboard) | Bảng `users` (`role = admin`), phiên xác thực qua `httpOnly` cookie | Toàn quyền của ĐHVT, quản lý danh mục tài khoản người dùng, cấu hình chế độ gửi của nhóm Zalo (`send_mode`), tiếp nhận cảnh báo leo thang khi ca quá hạn lần hai | Riêng màn hình quản lý người dùng (`/admin/users`) và phân quyền hệ thống chỉ dành cho vai trò Admin |
+| Đối tượng                            | Kênh tương tác                               | Cơ chế định danh                                                                     | Quyền hạn đối với hệ thống                                                                                                                                                             | Giới hạn và Ràng buộc an toàn                                                                                                                                                                              |
+| :--------------------------------------- | :----------------------------------------------- | :--------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Nhà xe**                        | Nhóm Zalo `role = car`                        | `zalo_info.carrier_id` liên kết `carriers.id`                                      | Báo xe mới, bổ sung thông tin, sửa xe, đề nghị hủy chuyến; tra cứu tiến độ chuyến xe của chính nhà xe mình                                                                 | Chỉ truy cập dữ liệu chuyến thuộc `carrier_id` của nhóm. Hủy chuyến hoặc đổi xe sau khi đã gửi khách luôn chuyển thành ca chờ ĐHVT xác nhận trên Web                                  |
+| **Khách hàng**                   | Nhóm Zalo hoặc chat riêng `role = customer` | `zalo_info` kết hợp ma trận `route_maps`                                          | Chỉ đọc: tra cứu thông tin chuyến xe, số container, số chì, giờ dự kiến đến kho của lô hàng mình                                                                            | Chỉ hiển thị dữ liệu thuộc khách hàng và kho được cấu hình trong `route_maps`. Đề nghị đổi/hủy của khách chỉ ghi nhận thành ca chờ cho ĐHVT, Bot không tự ý sửa đổi dữ liệu |
+| **Điều hành vận tải (ĐHVT)** | Web quản lý (Dashboard)                        | Bảng `users` (`role = dhvt`), phiên xác thực qua `httpOnly` cookie             | Xem danh sách tin nhắn, bóc tách thực thể, quản lý kế hoạch vận chuyển, duyệt/sửa/từ chối ca chờ duyệt, phát hành thông báo gửi khách, kích hoạt gửi lại khi lỗi | Thao tác duyệt và chỉnh sửa dữ liệu bắt buộc thực hiện trên Web quản lý; không nhận lệnh duyệt qua tin nhắn Zalo                                                                              |
+| **Điều hành vận tải (ĐHVT)** | Nhóm Zalo ĐHVT nội bộ, chat riêng           | `zalo_info.role = dhvt` hoặc `users.zalo_user_id` khớp `zalo_messages.sender_id` | Nhận thông báo nghiệp vụ một chiều từ Bot; hỏi tra cứu dữ liệu nội bộ (chỉ đọc) qua ngôn ngữ tự nhiên                                                                    | Bot không nhận lệnh duyệt, sửa, hủy qua chat Zalo; khi phát hiện lệnh duyệt trên Zalo, Bot gửi phản hồi nhắc nhở kèm liên kết dẫn tới ca xử lý trên Web                                  |
+| **Quản trị viên (Admin)**       | Web quản lý (Dashboard)                        | Bảng `users` (`role = admin`), phiên xác thực qua `httpOnly` cookie            | Toàn quyền của ĐHVT, quản lý danh mục tài khoản người dùng, cấu hình chế độ gửi của nhóm Zalo (`send_mode`), tiếp nhận cảnh báo leo thang khi ca quá hạn lần hai | Riêng màn hình quản lý người dùng (`/admin/users`) và phân quyền hệ thống chỉ dành cho vai trò Admin                                                                                           |
 
 ## 2. Nguyên tắc bảo mật hệ thống
 
 ### 2.1 Xác thực đầu vào từ Zalo và Chống tấn công Replay
+
 - Mọi sự kiện Webhook từ Zalo OA hoặc cầu nối `zca-js` gửi tới `POST /webhook` bắt buộc phải được kiểm tra chữ ký bí mật trong HTTP Header (`X-Webhook-Secret` khớp với `ZALO_SECRET_KEY` trong `.env`). Nếu không khớp, từ chối ngay với mã lỗi `401 Unauthorized`.
 - Khử trùng lặp tuyệt đối (Idempotency) dựa trên `zalo_messages.zalo_message_id`: Khi máy chủ Zalo gửi lại sự kiện do timeout mạng, hệ thống phát hiện trùng lặp, bỏ qua không đẩy vào hàng đợi xử lý để ngăn chặn việc nhân bản dữ liệu.
 - Nhóm Zalo hoặc tài khoản gửi tin chưa đăng ký trong `zalo_info` bị đánh dấu `ignored`; trường hợp nội dung tin chứa thực thể vận tải (biển số, số cont), hệ thống tự động tạo ca `group_mismatch` cho ĐHVT xác minh, tuyệt đối không tự xử lý dữ liệu từ nguồn lạ.
 
 ### 2.2 Cô lập dữ liệu giữa các đối tác (Multi-tenant Data Isolation)
+
 - Phạm vi dữ liệu (Scope) của mọi truy vấn luôn được xác định từ `group_id` của Webhook (thông qua bảng `zalo_info`, `carrier_id`, `route_maps`), tuyệt đối không dựa vào chuỗi văn bản do người dùng tự nhập trong tin nhắn.
 - Mô hình ngôn ngữ (LLM) chỉ đề xuất tên công cụ tra cứu và tham số trích xuất; tầng Worker của Backend kiểm tra quyền hạn, ép chặt tham số truy vấn theo phạm vi đối tác đã xác định trước khi thực thi truy vấn cơ sở dữ liệu.
 - Đối với khách hàng, thông điệp phản hồi khi không tìm thấy container và khi container nằm ngoài phạm vi phân quyền sử dụng cùng một nội dung thông báo chung, nhằm bảo mật tuyệt đối thông tin, không để lộ việc container đang phục vụ khách hàng khác. Hai trường hợp này được ghi nhận mã riêng trong log kiểm toán nội bộ.
 - Chỉ hiển thị cho khách hàng các trường thông tin được phép (biển số, tài xế, cont, chì, giờ đến, điểm trả); toàn bộ thông tin nhạy cảm nội bộ (trạng thái đồng bộ TMS, lịch sử ca duyệt, ghi chú điều hành) bị ẩn hoàn toàn.
 
 ### 2.3 Giao tiếp nội bộ giữa các dịch vụ (Microservices Security)
+
 - Backend gọi sang `ai-service` bắt buộc gửi kèm header xác thực nội bộ `X-Internal-Token` (khớp với `INTERNAL_SECRET`); dịch vụ `ai-service` chạy trong mạng nội bộ, không mở cổng ra Internet công cộng và không nhận lưu lượng trực tiếp từ Frontend.
 - Backend giao tiếp với hệ thống phần mềm lõi `be-tms` qua client chuyên dụng, gửi Bearer Token định danh Trưởng phòng Forwarder và đính kèm `Idempotency-Key` cho mọi thao tác ghi (tạo mới, cập nhật, hủy chuyến xe) để tránh tạo trùng chuyến khi mạng chập chờn.
 - Frontend Web chỉ giao tiếp duy nhất với REST API của Backend (`NEXT_PUBLIC_API_URL`); không bao giờ gọi trực tiếp tới `ai-service`, `zca-js`, cơ sở dữ liệu MySQL, MinIO hay API `be-tms`.
 
 ### 2.4 Bảo vệ dữ liệu cá nhân (PII Protection)
+
 - Số điện thoại của lái xe được tự động che giấu (mã hóa một phần dạng `0903xxxx59` hoặc `0903******`) trước khi gửi văn bản lên các mô hình LLM đám mây và được khôi phục sau khi nhận kết quả bóc tách.
 - Tuyệt đối không ghi thông tin nhạy cảm (mật khẩu, token, SĐT đầy đủ) vào log ứng dụng; bảng `extraction_runs` chỉ ghi nhận `model_name`, `prompt_version`, độ trễ và số lượng bản ghi bóc tách.
 - Tệp đính kèm và hình ảnh phiếu điều xe được lưu trữ tập trung tại MinIO S3; cơ sở dữ liệu bảng `files` chỉ quản lý `bucket`, `object_key` và mã băm `sha256`. Khi người dùng xem ảnh trên Web, hệ thống sinh đường dẫn Presigned URL có thời hạn ngắn (15 đến 30 phút).
 - Tuyệt đối không đưa khóa bí mật, API key, mật khẩu cơ sở dữ liệu hay phiên đăng nhập Zalo vào mã nguồn hoặc kho lưu trữ Git; toàn bộ được nạp từ tệp biến môi trường `.env` duy nhất tại thư mục gốc.
 
 ### 2.5 Xác thực phiên làm việc trên Web Dashboard (Secure Cookie & Stateless RBAC)
+
 - Phiên đăng nhập trên Web quản trị sử dụng JWT (JSON Web Token) lưu trữ trong **`httpOnly` cookie** với các cờ bảo mật bắt buộc: `HttpOnly` (ngăn chặn tấn công XSS đánh cắp token), `Secure` (chỉ truyền tải qua kết nối HTTPS bảo mật), và `SameSite=Lax` (ngăn chặn tấn công CSRF). Không lưu trữ token trong `localStorage` hoặc `sessionStorage`.
 - Tầng Middleware của Next.js kiểm tra phiên đăng nhập và vai trò (`role`) trước khi cho phép render giao diện. Đồng thời, Backend FastAPI kiểm tra lại tính hợp lệ của token và quyền hạn (`role = 'admin'` hoặc `role = 'dhvt'`) độc lập tại từng endpoint REST API thông qua FastAPI Dependency Injection (`Depends(get_current_user)`).
 - Thao tác duyệt ca, chỉnh sửa hoặc từ chối bắt buộc phải thỏa mãn đồng thời 3 điều kiện: ca duyệt đang ở trạng thái `pending`, phiên bản dữ liệu chưa bị thay đổi kể từ lúc mở ca (đối soát trường `version` để chống ghi đè do chạy đua phiên làm việc), và tài khoản thực hiện có trạng thái `is_active = True`.
 
 ### 2.6 Cơ chế Chống ghi đè và Chống gửi trùng lặp
+
 - Khóa chống gửi trùng thông báo cho khách hàng: Ràng buộc duy nhất `UNIQUE(container_job_id, job_version, message_kind)` tại bảng `outbound_message_items`. Khi 2 tiến trình worker cùng xử lý một chuyến xe, tiến trình thứ hai sẽ vi phạm ràng buộc và tự động dừng lại, đảm bảo mỗi phiên bản chỉ được phát hành đúng một lần.
 - Khóa chống thao tác trùng trên TMS: Sử dụng `Idempotency-Key` gắn liền với mã chuyến xe và phiên bản cập nhật; khóa này được tái sử dụng khi nhân viên bấm "Gửi lại" sau sự cố mạng.
 - Khi một điều hành viên mở một ca duyệt trên Web, hệ thống ghi nhận `assigned_to` để hiển thị trạng thái đang xử lý cho các điều hành viên khác, tránh việc hai người cùng can thiệp một ca.
 
 ### 2.7 Kiểm toán vận hành và Điều tiết tần suất gửi tin (Rate Limiting)
+
 - Mọi thao tác nghiệp vụ của người dùng và các tiến trình tự động nền đều được ghi vết đầy đủ vào bảng `activity_logs` (ghi rõ `user_id`, thời điểm, hành động và thay đổi dữ liệu; trường `user_id` để trống khi do worker tự động thực thi).
 - Mọi lượt gọi tích hợp tới TMS được ghi vết chi tiết tại `tms_sync_logs`, bao gồm dữ liệu gửi, phản hồi và số lần thử lại (Retry).
 - Tin nhắn gửi ra nền tảng Zalo được kiểm soát qua bộ điều tiết tần suất **Token Bucket** (`ZaloOutboundThrottler`) với giới hạn 10 request/giây và bộ đệm tức thời 20 tokens, kết hợp thuật toán lùi thời gian theo hàm mũ (Exponential Backoff) khi nhận mã lỗi `HTTP 429` để bảo vệ tài khoản không bị Zalo khóa do nghi vấn spam. Nếu gửi thất bại 3 lần liên tiếp, hệ thống tự động chuyển trạng thái tin sang lỗi và sinh cảnh báo cho ĐHVT xử lý thủ công.
 
 ## 3. Việc cần chốt thêm
 
-| Nội dung | Trạng thái |
-| :-- | :-- |
-| Danh sách chính xác các trường được phép hiển thị cho khách hàng | Chưa chốt |
-| Thời gian lưu `raw_payload` và file ảnh trước khi xóa mềm | Chưa chốt |
-| Cách xác thực chữ ký webhook khi chuyển từ Zalo OA sang cầu nối `zca-js` | Chưa chốt |
-| Chính sách khóa tài khoản và hết hạn phiên đăng nhập Web | Chưa chốt |
+| Nội dung                                                                           | Trạng thái |
+| :---------------------------------------------------------------------------------- | :----------- |
+| Danh sách chính xác các trường được phép hiển thị cho khách hàng      | Chưa chốt  |
+| Thời gian lưu `raw_payload` và file ảnh trước khi xóa mềm                 | Chưa chốt  |
+| Cách xác thực chữ ký webhook khi chuyển từ Zalo OA sang cầu nối `zca-js` | Chưa chốt  |
+| Chính sách khóa tài khoản và hết hạn phiên đăng nhập Web                | Chưa chốt  |

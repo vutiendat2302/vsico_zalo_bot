@@ -1,0 +1,14 @@
+{
+  "name": "vsico-oa-bridge",
+  "version": "1.0.0",
+  "description": "Cầu nối Zalo Official Account (OA Bridge & HTTP REST API Server) tương thích với lõi Backend VSICO",
+  "main": "oa_server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node oa_server.js",
+    "test-oa": "node -e \"import('./oa_client.js').then(async m => { const res = await m.getOaInfo(); console.log(JSON.stringify(res, null, 2)); })\""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
