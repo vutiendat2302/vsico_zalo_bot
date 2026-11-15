@@ -87,22 +87,27 @@ class AIFallbackExtractor:
         lines: list[ExtractedContainerLine],
         intent: Optional[Intent] = None,
     ) -> bool:
-        """Kiểm tra xem kết quả từ Rule-based Parser có thực sự cần chuyển tiếp sang AI Fallback hay không.
+        """Kiểm tra xem kết quả từ Rule/Local NLP Parser có thực sự cần gọi AI Fallback hay không.
 
-        Nguyên tắc tiết kiệm token (Local/Rule-first):
-        - Bảo toàn kết quả Rule-based nếu đã phát hiện lỗi cứng ISO 6346 (`check_digit_valid is False`)
-          hoặc mâu thuẫn gắn kết Xe - Container (T34).
+        Nguyên tắc ưu tiên xử lý tại chỗ (Local-First, chỉ gọi LLM khi thực sự bế tắc hoặc mơ hồ):
+        - Bỏ qua AI với tin xã giao (`IGNORE_CHAT`), hủy (`CANCEL_REQUEST`), duyệt/sửa của ĐHVT.
+        - Bảo toàn cảnh báo nghiệp vụ cứng (lỗi ISO 6346 hoặc mâu thuẫn gắn kết Xe - Container T34).
         - Định dạng chuẩn (`F1`, `F2`, `F3`) đã bóc tách được xe/container -> giữ Fast-Path Regex.
-        - Tin Hủy (`CANCEL_REQUEST`): không cần gọi LLM.
-        - Tin Bổ sung (`SUPPLEMENT`) / Đổi xe (`UPDATE_REQUEST`): nếu Regex đã bóc tách được
-          ít nhất 1 thực thể đích/thay đổi (cont, biển số, chì, tài xế, SĐT, giờ hẹn) -> giữ Rule-based.
-        - Tin Báo xe tự do (`PARSE_TRUCK_INFO`): chỉ gọi AI khi không tách được gì, confidence thấp
-          hơn ngưỡng, hoặc thiếu cả cặp `truck_plate` + `container_no` / chỉ tách được 1 nửa trên tin phức tạp.
+        - Tin bổ sung / đổi xe / tra cứu / báo xe tự do có cấu trúc rõ (`confidence >= threshold`):
+          nếu đã bóc tách được ít nhất 1 thực thể nghiệp vụ cốt lõi (xe, cont, SĐT, booking, chì, ETA)
+          và không còn trường mơ hồ (`unresolved_fields`) hoặc mốc giờ bị bỏ sót -> xử lý hoàn toàn nội bộ.
+        - Chỉ gọi Tier-3 LLM khi không bóc tách được thực thể nào, `confidence < threshold`,
+          hoặc còn trường mơ hồ cần suy luận ngữ nghĩa.
         """
         has_direct = bool(settings.AI_DIRECT_GEMINI_FALLBACK and settings.AI_API_KEY)
         if not settings.AI_ENABLED or (not settings.AI_SERVICE_URL and not has_direct):
             return False
-        if intent == Intent.CANCEL_REQUEST:
+        if intent in (
+            Intent.IGNORE_CHAT,
+            Intent.CANCEL_REQUEST,
+            Intent.APPROVE_OUTBOUND,
+            Intent.EDIT_PENDING,
+        ):
             return False
         if not lines:
             return True
@@ -115,7 +120,7 @@ class AIFallbackExtractor:
         if any(ln.source_format in ("F1", "F2", "F3") for ln in lines):
             return False
 
-        # Tin bổ sung / đổi xe: nếu Regex đã tách được thực thể liên quan -> 0 gọi AI
+        # Tin bổ sung / đổi xe: nếu Regex hoặc Local NLP đã tách được thực thể liên quan -> 0 gọi AI
         if intent in (Intent.SUPPLEMENT, Intent.UPDATE_REQUEST):
             has_useful = any(
                 ln.container_no
@@ -129,16 +134,32 @@ class AIFallbackExtractor:
             )
             return not has_useful
 
-        # Với định dạng tự do (`tu_do`): chỉ bỏ qua AI khi Regex đã tách đủ các trường cốt lõi;
-        # nếu thiếu bất kỳ trường quan trọng nào hoặc có mốc giờ chưa bóc được -> tự động gọi LLM.
+        # Với định dạng tự do (`tu_do`): chỉ gọi LLM khi parsing thất bại, thiếu toàn bộ khóa định danh,
+        # còn trường mơ hồ hoặc phát hiện mốc giờ thực sự chưa bóc được.
+        # Lưu ý: KHÔNG khớp nhầm biển số dạng `15H`, `50H`, `29H` thành mốc giờ (time_hint_re).
         threshold = settings.AI_FALLBACK_CONFIDENCE_THRESHOLD
-        time_hint_re = re.compile(r"\b\d{1,2}\s*(?:h\d{0,2}|giờ|:\d{2})\b", re.IGNORECASE)
+        time_hint_re = re.compile(
+            r"(?:(?:[01]?\d|2[0-3])\s*:\s*[0-5]\d|"
+            r"(?:[01]?\d|2[0-3])\s*(?:h|giờ)\s*[0-5]\d\b|"
+            r"(?:lúc|luc|hẹn|hen|tới|toi|vào|vao|trước|truoc|sau|tầm|tam|khoảng|khoang)\s+(?:[01]?\d|2[0-3])\s*h\b)",
+            re.IGNORECASE,
+        )
+        order_code_re = re.compile(r"\b(?:RO|LO)\d{3,6}\b", re.IGNORECASE)
         for ln in lines:
+            if ln.unresolved_fields:
+                return True
             if ln.confidence < threshold:
                 return True
-            if not ln.truck_plate or not ln.container_no:
-                return True
-            if not ln.driver_name or not ln.driver_phone or not ln.order_type:
+            has_primary_entity = bool(
+                ln.truck_plate
+                or ln.container_no
+                or ln.driver_phone
+                or ln.booking_no
+                or ln.seal_no
+                or ln.eta_time
+                or (ln.driver_name and order_code_re.search(ln.line_text or ""))
+            )
+            if not has_primary_entity:
                 return True
             if not ln.eta_time and time_hint_re.search(ln.line_text or ""):
                 return True

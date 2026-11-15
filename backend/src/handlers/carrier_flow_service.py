@@ -813,10 +813,24 @@ class CarrierFlowService:
             return None, matched_reply
         mentioned_conts = {ln.container_no for ln in lines if ln.container_no}
         if mentioned_conts:
-            incomplete_jobs = [job for job in incomplete_jobs if job.container_no in mentioned_conts]
+            exact_cont_jobs = [job for job in incomplete_jobs if job.container_no in mentioned_conts]
+            if exact_cont_jobs:
+                incomplete_jobs = exact_cont_jobs
+            else:
+                incomplete_jobs = [job for job in incomplete_jobs if not job.container_no]
         if lines[0].truck_plate:
-            incomplete_jobs = [job for job in incomplete_jobs if job.truck_record and
-                               compact_plate(job.truck_record.truck_plate or "") == compact_plate(lines[0].truck_plate)]
+            plate_cmp = compact_plate(lines[0].truck_plate)
+            exact_plate_jobs = [
+                job for job in incomplete_jobs
+                if job.truck_record and compact_plate(job.truck_record.truck_plate or "") == plate_cmp
+            ]
+            if exact_plate_jobs:
+                incomplete_jobs = exact_plate_jobs
+            else:
+                incomplete_jobs = [
+                    job for job in incomplete_jobs
+                    if not (job.truck_record and job.truck_record.truck_plate)
+                ]
         if len(incomplete_jobs) == 1:
             return incomplete_jobs[0], matched_reply
         return None, matched_reply
@@ -1386,7 +1400,12 @@ class CarrierFlowService:
             target_job.customer_id = cust_id
 
         plan_check = cls.verify_plan_and_carrier(db, merged_line, carrier_ctx, target_job.customer_id)
-        if plan_check.is_carrier_mismatch or plan_check.is_shipping_missing:
+        is_simple_cont_defect = (
+            plan_check.is_shipping_missing
+            and not plan_check.is_carrier_mismatch
+            and (not merged_line.container_no or merged_line.check_digit_valid is False)
+        )
+        if (plan_check.is_carrier_mismatch or plan_check.is_shipping_missing) and not is_simple_cont_defect:
             case_type = "CARRIER_MISMATCH" if plan_check.is_carrier_mismatch else "SHIPPING_NOT_FOUND"
             db.add(
                 ReviewCase(

@@ -100,6 +100,17 @@ class SendMode(UpperStrEnum):
     AUTO = "AUTO"  # Tự động gửi tin ra nhóm khách khi đủ dữ liệu
     MANUAL = "MANUAL"  # Thủ công, mọi tin nhắn đều phải qua ĐHVT duyệt trước khi gửi
 
+    @classmethod
+    def _missing_(cls, value: object) -> Optional["UpperStrEnum"]:
+        """Hỗ trợ tương thích các giá trị cấu hình chế độ gửi tiếng Việt cũ."""
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("tu_dong", "tudong", "auto"):
+                return cls.AUTO
+            if v in ("cho_duyet", "choduyet", "manual"):
+                return cls.MANUAL
+        return super()._missing_(value)
+
 
 class GroupRole(UpperStrEnum):
     """Vai trò chức năng của nhóm Zalo trong luồng điều vận."""
@@ -109,6 +120,20 @@ class GroupRole(UpperStrEnum):
     DHVT = "DHVT"  # Nhóm Zalo nội bộ của bộ phận Điều hành vận tải
     CUSTOMER = "CUSTOMER"  # Nhóm khách hàng doanh nghiệp nhận báo xe
     CARRIER = "CARRIER"  # Nhóm đối tác vận tải / nhà xe vệ tinh
+    DIRECT_CHAT = "DIRECT_CHAT"  # Hội thoại tin nhắn trực tiếp 1-1 trên Zalo
+
+    @classmethod
+    def _missing_(cls, value: object) -> Optional["UpperStrEnum"]:
+        """Hỗ trợ tương thích các mã vai trò nhóm viết tắt hoặc chữ thường."""
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("car", "nha_xe", "nhaxe"):
+                return cls.CARRIER
+            if v in ("internal", "noi_bo", "noibo"):
+                return cls.DHVT
+            if v in ("direct", "direct_chat", "1-1"):
+                return cls.DIRECT_CHAT
+        return super()._missing_(value)
 
 
 class OutboundStatus(UpperStrEnum):

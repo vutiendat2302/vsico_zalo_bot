@@ -20,7 +20,7 @@ from src.infrastructure.models import (
 
 from .intent_router import normalize
 from .schemas import Entities, ScopeContext
-from .scope_resolver import plan_scope
+from .scope_resolver import is_default_carrier_group, plan_scope
 
 
 def plans_statement(scope: ScopeContext, e: Entities) -> Select[tuple[TransportPlan]]:
@@ -28,9 +28,12 @@ def plans_statement(scope: ScopeContext, e: Entities) -> Select[tuple[TransportP
     stmt = select(TransportPlan).where(plan_scope(scope))
     if e.plan_date:
         stmt = stmt.where(TransportPlan.plan_date == e.plan_date)
+    id_filters = []
     for key in ("container_no", "order_code", "booking_no", "bill_of_lading_no"):
         if value := getattr(e, key):
-            stmt = stmt.where(func.upper(getattr(TransportPlan, key)) == value.upper())
+            id_filters.append(func.upper(getattr(TransportPlan, key)) == value.upper())
+    if id_filters:
+        stmt = stmt.where(or_(*id_filters))
     for key in (
         "warehouse_name",
         "customer_name",
@@ -74,7 +77,9 @@ def enrich_catalog(
     n = " " + normalize(text) + " "
     ambiguous = False
     unresolved_hints: set[str] = set()
-    base = select(TransportPlan).where(plan_scope(scope), TransportPlan.plan_date == e.plan_date)
+    base = select(TransportPlan).where(plan_scope(scope))
+    if e.plan_date is not None:
+        base = base.where(TransportPlan.plan_date == e.plan_date)
     plans = list(db.scalars(base).all())
     for attr in (
         "warehouse_name",
@@ -109,16 +114,21 @@ def enrich_catalog(
                 + r"\s+(.+?)(?=\s+(?:mai|hom|co|may|bao|chay|tong|ngay|luc)|[?,;]|$)",
                 normalize(text),
             )
-            if hint and hint[1].strip() not in (
-                "nao",
-                "hang",
-                "chua",
-                "cu",
-                "co",
-                "bao",
-                "that bai",
-                "da",
-                "dang",
+            if (
+                hint
+                and hint[1].strip()
+                not in (
+                    "nao",
+                    "hang",
+                    "chua",
+                    "cu",
+                    "co",
+                    "bao",
+                    "that bai",
+                    "da",
+                    "dang",
+                )
+                and not (attr == "province_name" and hint[1].strip() in ("thanh", "khac"))
             ):
                 token = hint[1].strip()
                 matches = [v for v in values if " " + token + " " in " " + normalize(v) + " "]
@@ -154,15 +164,14 @@ def enrich_catalog(
         elif matched_ids:
             ambiguous = True
     if e.plate_no and re.fullmatch(r"[\d.]{4,6}", e.plate_no):
-        if scope.role != "CARRIER":
+        if scope.role != "CARRIER" or (
+            not scope.carrier_id and not is_default_carrier_group(scope.zalo_group_id)
+        ):
             return e, True
-        vehicles = db.scalars(
-            select(Vehicle).where(
-                Vehicle.carrier_id == scope.carrier_id,
-                Vehicle.is_active.is_(True),
-                Vehicle.vehicle_type == 1,
-            )
-        ).all()
+        veh_stmt = select(Vehicle).where(Vehicle.is_active.is_(True), Vehicle.vehicle_type == 1)
+        if scope.carrier_id:
+            veh_stmt = veh_stmt.where(Vehicle.carrier_id == scope.carrier_id)
+        vehicles = db.scalars(veh_stmt).all()
         matches = {
             v.plate_no
             for v in vehicles
@@ -230,24 +239,35 @@ def scoped_jobs_statement(scope: ScopeContext, e: Entities) -> Select[tuple[Cont
 
     stmt = select(ContainerJob).join(ZaloMessage, ContainerJob.message_id == ZaloMessage.id)
     if scope.role == "CUSTOMER":
-        terms = []
-        for r in scope.routes:
-            filters = [ContainerJob.customer_id == r.customer_id]
-            if r.warehouse_id is not None:
-                filters.append(ContainerJob.warehouse_id == r.warehouse_id)
-            if r.order_type:
-                kinds = (
-                    ["load", "dong", "lo"]
-                    if r.order_type.lower() in ("load", "dong", "lo")
-                    else ["return", "tra", "ro"]
-                )
-                filters.append(func.lower(ContainerJob.order_type).in_(kinds))
-            terms.append(and_(*filters))
-        stmt = stmt.where(or_(*terms) if terms else false())
+        if scope.routes:
+            terms = []
+            for r in scope.routes:
+                filters = [ContainerJob.customer_id == r.customer_id]
+                if r.warehouse_id is not None:
+                    filters.append(ContainerJob.warehouse_id == r.warehouse_id)
+                if r.order_type:
+                    kinds = (
+                        ["load", "dong", "lo"]
+                        if r.order_type.lower() in ("load", "dong", "lo")
+                        else ["return", "tra", "ro"]
+                    )
+                    filters.append(func.lower(ContainerJob.order_type).in_(kinds))
+                terms.append(and_(*filters))
+            stmt = stmt.where(or_(*terms))
+        else:
+            plan_ids_sq = select(func.cast(TransportPlan.id, String)).where(
+                TransportPlan.group_id == scope.zalo_group_id
+            )
+            stmt = stmt.where(
+                ContainerJob.raw_fields["transport_plan_id"].as_string().in_(plan_ids_sq)
+            )
     elif scope.role == "CARRIER":
-        stmt = stmt.join(ZaloGroup, ZaloGroup.zalo_group_id == ZaloMessage.group_id).where(
-            ZaloGroup.carrier_id == str(scope.carrier_id), ZaloGroup.is_active.is_(True)
-        )
+        if scope.carrier_id:
+            stmt = stmt.join(ZaloGroup, ZaloGroup.zalo_group_id == ZaloMessage.group_id).where(
+                ZaloGroup.carrier_id == str(scope.carrier_id), ZaloGroup.is_active.is_(True)
+            )
+        else:
+            stmt = stmt.where(ZaloMessage.group_id == scope.zalo_group_id)
     if e.plan_date:
         start = datetime.combine(e.plan_date, time.min)
         stmt = stmt.where(

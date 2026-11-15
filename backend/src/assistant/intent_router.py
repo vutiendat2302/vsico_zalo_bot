@@ -9,11 +9,18 @@ from .schemas import Entities, Role, ToolCall
 
 PLATE_RE = re.compile(r"\b\d{2}[A-Z]{1,2}[- .]?\d{3}[- .]?\d{2}\b", re.IGNORECASE)
 CONTAINER_RE = re.compile(r"\b[A-Z]{4}\d{7}\b", re.IGNORECASE)
+ZALO_MENTION_RE = re.compile(r"\[@\d+\]")
+
+
+def strip_zalo_mentions(text: str) -> str:
+    """Loại bỏ thẻ @mention dạng `[@<id>]` của Zalo OA trước khi nhận diện ý định và mã đề xuất."""
+    return ZALO_MENTION_RE.sub(" ", text or "").strip()
 
 
 def normalize(text: str) -> str:
     """Bỏ dấu phục vụ luật và từ điển, giữ văn bản gốc ngoài module."""
-    value = unicodedata.normalize("NFD", text.lower()).replace("đ", "d")
+    cleaned = strip_zalo_mentions(text)
+    value = unicodedata.normalize("NFD", cleaned.lower()).replace("đ", "d")
     return " ".join("".join(c for c in value if unicodedata.category(c) != "Mn").split())
 
 
@@ -44,9 +51,17 @@ def parse_entities(text: str, reference: datetime) -> Entities:
         else 0
     )
     day += timedelta(days=offset)
-    match = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{4}))?\b", n)
-    if match:
-        day = day.replace(year=int(match[3] or day.year), month=int(match[2]), day=int(match[1]))
+    iso_match = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", n)
+    has_explicit_date = bool(iso_match or offset != 0 or "hom nay" in n)
+    if iso_match:
+        day = day.replace(
+            year=int(iso_match[1]), month=int(iso_match[2]), day=int(iso_match[3])
+        )
+    else:
+        match = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{4}))?\b", n)
+        if match:
+            has_explicit_date = True
+            day = day.replace(year=int(match[3] or day.year), month=int(match[2]), day=int(match[1]))
     e = Entities(plan_date=day)
     for attr, regex in [
         ("container_no", CONTAINER_RE),
@@ -68,6 +83,11 @@ def parse_entities(text: str, reference: datetime) -> Entities:
         short = re.search(r"\bxe\s+(\d{3}[.]?\d{2}|\d{4})\b", n)
         if short:
             e.plate_no = short[1]
+    if not has_explicit_date and any(
+        getattr(e, k)
+        for k in ("container_no", "order_code", "booking_no", "bill_of_lading_no", "plate_no", "case_id")
+    ):
+        e.plan_date = None
     if re.search(r"\b(mien bac|vung 1|phia bac)\b", n):
         e.region = 1
     elif re.search(r"\b(mien trung|vung 2|phia trung)\b", n):

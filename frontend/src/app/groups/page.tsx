@@ -209,6 +209,9 @@ export default function GroupsManagementPage() {
     if (r === "DHVT" || r === "INTERNAL" || r === "NỘI BỘ") {
       return <span className="text-slate-800 font-medium">Nội bộ ĐHVT</span>;
     }
+    if (r === "DIRECT_CHAT") {
+      return <span className="text-slate-600 font-medium">Chat cá nhân (1-1)</span>;
+    }
     return <span className="text-slate-700">{role}</span>;
   };
 

@@ -402,11 +402,19 @@ class OutboundTemplateBuilder:
         for line in lines:
             reasons: list[str] = []
 
-            # Kiểm tra 8 trường cốt lõi
+            # Khi chưa có số container hoặc sai check-digit thì chưa đối chiếu được kế hoạch (khách/lệnh/chì lấy từ plan),
+            # chỉ nhắc nhà xe đúng các thông tin điều xe trực tiếp đang thiếu/sai để tránh gây nhiễu.
+            is_missing_or_bad_cont = (not line.container_no) or (line.check_digit_valid is False)
             is_comp, missing = cls.check_core_fields_completeness(line)
             if not is_comp:
+                plan_derived = {"Khách hàng", "Loại lệnh (LOAD/RETURN)", "Số chì (seal)"}
                 for m in missing:
-                    reasons.append(f"thiếu/sai {m.lower()}")
+                    if is_missing_or_bad_cont and m in plan_derived:
+                        continue
+                    if m == "Số container":
+                        reasons.append("thiếu số container")
+                    else:
+                        reasons.append(f"thiếu/sai {m.lower()}")
 
             # Bổ sung các cảnh báo chi tiết nếu có
             if line.warnings:

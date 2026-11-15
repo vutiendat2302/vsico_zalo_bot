@@ -1,101 +1,159 @@
-# VSICO ZALO BOT & TMS INTEGRATION ECOSYSTEM
+# VSICO Zalo Bot & TMS Integration (v1.0.0)
 
-### HỆ THỐNG TỰ ĐỘNG HÓA ĐIỀU VẬN CONTAINER ĐA KÊNH (BACKEND • FRONTEND • AI SERVICE • DATABASE • ZALO BRIDGE)
-
-[![Python](https://img.shields.io/badge/Backend-FastAPI_%7C_SQLAlchemy_2.0-009688.svg)](./backend/BACKEND.md)
-[![Next.js](https://img.shields.io/badge/Frontend-Next.js_16_%7C_React_19_%7C_Tailwind_v4-000000.svg)](./frontend/FRONTEND.md)
-[![AI Service](https://img.shields.io/badge/AI_Service-Gemini_3.5_%7C_PaddleOCR_%7C_Qdrant-4285F4.svg)](./ai-service/AISERVICE.md)
-[![Database](https://img.shields.io/badge/Database-MySQL_8.4_%7C_Snowflake_ID-4479A1.svg)](./database/DATABASE.md)
-[![Zalo Bridge](https://img.shields.io/badge/Zalo_Bridge-zca--js_WebSocket-0068FF.svg)](./zca-js/ZCA_BRIDGE.md)
+Hệ thống tự động hóa tiếp nhận, bóc tách, đối chiếu kế hoạch vận tải container đa kênh, tích hợp hai chiều với phần mềm `be-tms` và trợ lý ảo vận tải phục vụ 3 vai trò (Khách hàng, Nhà xe, Điều hành vận tải - ĐHVT).
 
 ---
 
-## 1. Tổng quan Hệ sinh thái
+## 1. Kiến trúc Tổng thể
 
-**VSICO Zalo Bot** là nền tảng tự động hóa điều hành vận tải container toàn diện của **VSICO Logistics**, kết nối thời gian thực giữa các nhóm chat **Zalo (Nhà xe, Khách hàng, ĐHVT)**, giao diện **Web Quản trị Điều hành (ĐHVT & Admin)**, **Dịch vụ Trí tuệ Nhân tạo (AI & OCR)** và phần mềm trung tâm **TMS (`be-tms`)**.
-
-### Kiến trúc Tổng thể:
+Hệ thống được thiết kế theo kiến trúc phân tách dịch vụ (Microservices / Modular Monolith), tối ưu hóa hiệu năng xử lý tin nhắn thời gian thực, bảo mật dữ liệu cá nhân (PII Masking) và đảm bảo toàn vẹn dữ liệu qua cơ chế khóa phiên bản (Optimistic Locking):
 
 ```mermaid
-flowchart LR
-    Zalo["Zalo<br/>(Nhà xe, Khách hàng)"]
-    Bridge["ZCA Bridge<br/>(:3000)"]
-    BE["Backend FastAPI<br/>(:8000)"]
-    FE["Frontend Next.js<br/>(:3001)"]
-    AI["AI & OCR Service<br/>(:8001)"]
-    DB[("MySQL 8.4 & MinIO<br/>(17 Bảng Snowflake ID)")]
-    TMS["Hệ thống TMS<br/>(be-tms API)"]
+flowchart TD
+    subgraph Zalo_Channels["Kênh Giao Tiếp Zalo"]
+        ZG_CAR["Nhóm Zalo Nhà Xe / Thầu Phụ (SOURCE)"]
+        ZG_CUS["Nhóm Zalo Khách Hàng (TARGET)"]
+        ZG_DHVT["Nhóm Zalo ĐHVT Nội Bộ (DHVT)"]
+        ZG_DIRECT["Chat Cá Nhân 1-1 (DIRECT_CHAT)"]
+    end
 
-    Zalo <-->|"WebSocket / Tin nhắn & Ảnh"| Bridge
-    Bridge <-->|"Webhook / Outbound REST"| BE
-    FE <-->|"REST API + JWT RBAC"| BE
-    BE <-->|"X-Internal-Token<br/>OCR / NLP / Map Kho"| AI
-    BE <-->|"SQLAlchemy 2.0 / S3"| DB
-    BE <-->|"Đồng bộ Kế hoạch, Danh mục<br/>& Cập nhật Xe/Tài xế"| TMS
+    subgraph Bridges["Cầu Nối Zalo (Node.js)"]
+        OAB["oa-bridge (Zalo Official Account Webhook & GMF API)"]
+        ZCA["zca-js (Zalo WebSocket Listener & REST Server)"]
+    end
+
+    subgraph Core_Backend["Backend Core (FastAPI / Python 3.12)"]
+        WH["POST /webhook (< 50ms)"]
+        FIFO["FIFO Extraction Queue"]
+        NLP["Bóc tách 3 tầng: Regex/ISO 6346 -> RapidFuzz + Từ điển + PhoBERT -> AI Fallback"]
+        PRE["PlanResolutionEngine (6 Nhánh TH1-TH6 & Đồng bộ RO -> LO)"]
+        AST["Trợ lý AI 3 Vai trò (Khách hàng / Nhà xe / ĐHVT)"]
+        OUT["ZaloOutboundThrottler (Token Bucket)"]
+    end
+
+    subgraph AI_Microservice["AI & OCR Microservice (Stateless)"]
+        AIS["ai-service (FastAPI / PaddleOCR / Gemini Vision & LLM / Map Kho GP1-GP4)"]
+    end
+
+    subgraph Storage_External["Hạ tầng Lưu trữ & Hệ thống Ngoài"]
+        DB[("MySQL 8.4 (23 Bảng Snowflake ID 64-bit)")]
+        MINIO[("MinIO S3 Storage (Presigned URL)")]
+        TMS["Hệ thống be-tms (Đồng bộ Danh mục, Kế hoạch & Ghi ngược)"]
+        FE["Frontend Dashboard (Next.js 16 / React 19)"]
+    end
+
+    ZG_CAR <--> OAB
+    ZG_CUS <--> OAB
+    ZG_DHVT <--> OAB
+    ZG_DIRECT <--> OAB
+    ZG_CAR <--> ZCA
+
+    OAB -->|"POST /webhook"| WH
+    ZCA -->|"POST /webhook"| WH
+    WH --> DB
+    WH --> FIFO
+    FIFO --> NLP
+    NLP <-->|"X-Internal-Token (Masked PII)"| AIS
+    NLP --> PRE
+    FIFO --> AST
+    AST <-->|"Phân loại câu khó"| AIS
+    PRE <--> DB
+    PRE <-->|"Đồng bộ & Write-back"| TMS
+    PRE --> OUT
+    AST --> OUT
+    OUT --> OAB
+    OUT --> ZCA
+    FE <-->|"REST API + JWT Cookie"| Core_Backend
+    Core_Backend <--> MINIO
 ```
 
----
+### Các phân hệ chính
 
-## 2. Danh mục Tài liệu Chuyên biệt theo Phân hệ
-
-Mỗi phân hệ trong Monorepo đều có tài liệu kỹ thuật định danh riêng biệt và bộ kỹ năng AI Agent tại `.agents/skills/`:
-
-| Phân hệ | Thư mục | Tài liệu Kỹ thuật | AI Agent Skill | Mô tả Vai trò |
-| :--- | :--- | :--- | :--- | :--- |
-| **Backend Core** | [`backend/`](./backend) | [**`BACKEND.md`**](./backend/BACKEND.md) | [`vsico-backend`](./.agents/skills/vsico-backend/SKILL.md) | FastAPI Webhook Gateway, Parser F1/F2/F3, Queue Worker, Outbound Throttler, JWT Auth & TMS Sync |
-| **Frontend Web** | [`frontend/`](./frontend) | [**`FRONTEND.md`**](./frontend/FRONTEND.md) | [`vsico-frontend`](./.agents/skills/vsico-frontend/SKILL.md) | Giao diện quản trị Next.js 16 App Router (React 19, Tailwind v4, ESLint 9) cho ĐHVT & Admin (100% Realtime API, Zero Mock Data) |
-| **AI & OCR Service** | [`ai-service/`](./ai-service) | [**`AISERVICE.md`**](./ai-service/AISERVICE.md) | [`vsico-ai-service`](./.agents/skills/vsico-ai-service/SKILL.md) | Dịch vụ đọc hiểu ngữ cảnh hội thoại, bóc tách NER, PaddleOCR/Vision & Map kho GP1–GP4 |
-| **Cơ sở Dữ liệu** | [`database/`](./database) | [**`DATABASE.md`**](./database/DATABASE.md) | [`vsico-database`](./.agents/skills/vsico-database/SKILL.md) | Đặc tả 17 bảng MySQL 8.4, khóa chính Snowflake ID 64-bit, khóa TMS `BigInteger` & Alembic |
-| **Cầu nối Zalo** | [`zca-js/`](./zca-js) | [**`ZCA_BRIDGE.md`**](./zca-js/ZCA_BRIDGE.md) | [`vsico-infra`](./.agents/skills/vsico-infra/SKILL.md) | Bộ lắng nghe sự kiện Zalo WebSocket và máy chủ REST phát hành tin nhắn |
-| **Tài liệu Thiết kế** | [`docs/`](./docs) | [**`docs/`**](./docs) | [`vsico-docs`](./.agents/skills/vsico-docs/SKILL.md) | Sơ đồ kiến trúc, đặc tả tích hợp API TMS, quy trình làm việc ĐHVT & báo cáo |
-| **Quy tắc Agent** | `.` | [**`AGENTS.md`**](./AGENTS.md) | [`.agents/skills/`](./.agents/skills) | Quy tắc bất biến, chuẩn kiến trúc và hướng dẫn vận hành cho AI Agent & Developer |
+1. **[`backend/`](./backend/BACKEND.md)**: Lõi xử lý nghiệp vụ viết bằng Python 3.12+ và FastAPI theo kiến trúc Clean Architecture (`api`, `assistant`, `config`, `domain`, `handlers`, `infrastructure`, `ingestion`, `messaging`, `observability`, `outbound`, `parsing`, `validation`).
+   - Tiếp nhận tin nhắn qua `POST /webhook` (< 50ms), lưu thô vào `zalo_messages` và đẩy vào hàng đợi `FIFOExtractionQueue`.
+   - Bóc tách thông tin vận tải đa tầng: **Tầng 1** (Regex & kiểm tra chữ số kiểm tra container ISO 6346 Modulo 11) -> **Tầng 2** (`LocalNLPExtractor` kết hợp **PhoBERT** tách từ ghép tiếng Việt & nhận diện thực thể BIO NER, **Từ điển danh mục** `vehicles`/`drivers`/`customers`/`warehouses` và **RapidFuzz** so khớp mờ) -> **Tầng 3** (Fallback sang `ai-service` khi thiếu trường hoặc độ tự tin thấp).
+   - Đối chiếu kế hoạch bằng `PlanResolutionEngine` xử lý 6 nhánh nghiệp vụ (`TH1` đến `TH6`), gom nhóm theo từng xe (`resolve_batch`), tự động kế thừa xe/tài xế nguyên tử từ lệnh trả (`RO`) sang lệnh đóng ghép vỏ (`LO`) và tự học bí danh kho (`WarehouseAlias`) khi ĐHVT duyệt ca trên Web.
+   - Trợ lý ảo vận tải (`src/assistant/`) phục vụ 3 vai trò: Khách hàng, Nhà xe (có luồng xác nhận 2 bước khi cập nhật xe/tài xế) và ĐHVT (tra cứu tổng quan lệnh đóng/lệnh trả toàn hệ thống hoặc theo từng vùng miền/tỉnh thành, cảnh báo vỏ, trùng xe, tóm tắt ca ưu tiên; chặn mọi thao tác ghi/duyệt trên Zalo qua `BLOCK_WRITE`).
+   - Chi tiết luồng nghiệp vụ Zalo được đặc tả tại [`backend/zalo.md`](./backend/zalo.md).
+2. **[`ai-service/`](./ai-service/AISERVICE.md)**: Microservice AI & OCR độc lập, không trạng thái (Stateless), chỉ giao tiếp nội bộ với `backend` qua `X-Internal-Token`. Đảm nhiệm OCR ảnh/PDF lệnh giao nhận (PaddleOCR kết hợp Gemini Vision), bóc tách thực thể phức tạp, phân loại ý định trợ lý cho câu hỏi khó và Map địa chỉ kho đa tầng (`plan_cont` -> `habit` -> `fuzzy (RapidFuzz)` -> `vector` -> `llm`). Toàn bộ SĐT tài xế đều được che (`0903xxxx59`) trước khi gửi lên Cloud LLM.
+3. **[`frontend/`](./frontend/FRONTEND.md)**: Bảng điều khiển Web Quản lý (Next.js 16 App Router, React 19, TypeScript 5, Tailwind CSS v4) dành cho ĐHVT và Admin. Hỗ trợ theo dõi kế hoạch vận chuyển, xử lý ca chờ duyệt (`/reviews`) với danh sách kế hoạch ứng viên gợi ý (`candidate_plans`), quản lý nhóm Zalo thời gian thực (`/groups`), quản lý danh mục đồng bộ từ TMS (`/master/*`), giả lập luồng tin nhắn (`/sandbox`) và quản trị người dùng (`/admin/users`).
+4. **[`database/`](./database/DATABASE.md)**: Hệ quản trị cơ sở dữ liệu MySQL 8.4+ gồm **23 bảng** chia thành 4 nhóm nghiệp vụ chính, sử dụng khóa chính **Snowflake ID 64-bit (`BigInteger`)** sinh tại tầng ứng dụng và các khóa đồng bộ TMS (`BigInteger` có đánh chỉ mục).
+5. **[`oa-bridge/`](./oa-bridge/OA_BRIDGE.md) & [`zca-js/`](./zca-js/ZCA_BRIDGE.md)**: Hai module cầu nối Zalo viết bằng Node.js. `oa-bridge` tích hợp Zalo Official Account (hỗ trợ nhóm GMF và chat cá nhân `direct_<user_id>`, tự động đồng bộ danh sách nhóm thực tế sang Backend); `zca-js` duy trì kết nối WebSocket thời gian thực và cung cấp REST API gửi tin nhắn.
 
 ---
 
-## 3. Cấu trúc Thư mục Dự án
+## 2. Cấu trúc Thư mục Dự án
 
 ```text
 vsico_zalo_bot/
-├── .agents/skills/              # 6 bộ kỹ năng chuyên sâu cho AI Agent (Backend, Frontend, AI, DB, Infra, Docs)
-├── backend/                     # Backend FastAPI + SQLAlchemy 2.0 + Alembic (tài liệu: BACKEND.md)
-├── frontend/                    # Frontend Next.js 16 App Router (Turbopack, React 19, Tailwind v4, ESLint 9, tài liệu: FRONTEND.md)
-├── ai-service/                  # AI & OCR Microservice (tài liệu: AISERVICE.md)
-├── database/                    # Đặc tả Schema 17 bảng & ERD (tài liệu: DATABASE.md)
-├── zca-js/                      # Cầu nối Zalo Node.js ESM (tài liệu: ZCA_BRIDGE.md)
-├── docs/                        # Kho tài liệu thiết kế hệ thống, API TMS & quy trình nghiệp vụ
-├── docker-compose.yml           # Hạ tầng Container tập trung (MySQL 8.4 & MinIO S3 Storage)
-├── .env                         # Tệp biến môi trường cục bộ duy nhất cho toàn dự án
-├── .env.example                 # Tệp mẫu biến môi trường chuẩn
-├── AGENTS.md                    # Quy chuẩn kiến trúc & phát triển bắt buộc
-└── README.md                    # Trang tổng quan dự án (tài liệu này)
+├── backend/                  # FastAPI Core Backend (Clean Architecture, 23 ORM models, Pytest & Postman tests)
+│   ├── BACKEND.md            # Đặc tả kỹ thuật chi tiết của phân hệ Backend
+│   ├── zalo.md               # Đặc tả nghiệp vụ bóc tách, đối chiếu 6 nhánh và Trợ lý AI 3 vai trò
+│   └── tests/postman/        # Bộ kịch bản kiểm thử Postman chuyên nghiệp (01 -> 15)
+├── ai-service/               # Stateless AI & OCR Microservice (PaddleOCR, Gemini, RapidFuzz Warehouse Matcher)
+│   └── AISERVICE.md          # Đặc tả kỹ thuật của phân hệ AI Service
+├── frontend/                 # Next.js 16 Web Dashboard cho ĐHVT & Admin
+│   └── FRONTEND.md           # Đặc tả kiến trúc và giao diện điều hành Frontend
+├── database/                 # Thiết kế CSDL MySQL 8.4+ và sơ đồ ERD
+│   └── DATABASE.md           # Đặc tả chi tiết 23 bảng dữ liệu và quy ước Snowflake ID
+├── oa-bridge/                # Cầu nối Zalo Official Account (Webhook & GMF Group Sync)
+│   └── OA_BRIDGE.md          # Tài liệu cấu hình và API của OA Bridge
+├── zca-js/                   # Cầu nối Zalo WebSocket Listener & Outbound REST Server
+│   └── ZCA_BRIDGE.md         # Tài liệu cấu hình và API của ZCA Bridge
+├── docs/                     # Thư mục tài liệu quy trình nghiệp vụ và kiến trúc ban đầu
+├── docker-compose.yml        # Cấu hình hạ tầng Docker (MySQL 8.4, MinIO S3 Storage)
+├── .env.example              # Mẫu cấu hình biến môi trường tập trung duy nhất tại thư mục gốc
+└── AGENTS.md                 # Quy chuẩn kỹ thuật và hướng dẫn phát triển cho dự án
 ```
 
 ---
 
-## 4. Khởi chạy Nhanh Toàn Hệ thống (Quickstart)
+## 3. Hướng dẫn Khởi chạy Nhanh (Quickstart)
 
-### Bước 1: Thiết lập biến môi trường tập trung tại thư mục gốc
+### Bước 1: Khởi chạy Hạ tầng (MySQL 8.4 & MinIO)
 
 ```bash
 cp .env.example .env
-```
-
-### Bước 2: Khởi động hạ tầng MySQL 8.4 & MinIO qua Docker Compose
-
-```bash
 docker compose up -d
 ```
 
-### Bước 3: Khởi chạy Backend API & Database Migrations (Cổng `8000`)
+### Bước 2: Khởi chạy Backend & Đồng bộ Schema CSDL
 
 ```bash
 cd backend
+python3 -m venv .venv
 source .venv/bin/activate
-make db-migrate
-make run
+pip install -r requirements.txt
+
+# Kiểm tra kết nối MySQL và cập nhật Alembic Migration (23 bảng)
+python scripts/manage_db.py check
+alembic upgrade head
+
+# Chạy Backend ở cổng 8000
+uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Bước 4: Khởi chạy Frontend Dashboard (Cổng `3001`)
+### Bước 3: Khởi chạy AI Service (Cổng 8001)
+
+```bash
+cd ai-service
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+### Bước 4: Khởi chạy Cầu nối Zalo (`oa-bridge` hoặc `zca-js`)
+
+```bash
+# Khởi chạy Zalo OA Bridge (Cổng 3000)
+cd oa-bridge
+npm install
+npm start
+```
+
+### Bước 5: Khởi chạy Frontend Dashboard (Cổng 3001)
 
 ```bash
 cd frontend
@@ -103,10 +161,24 @@ npm install
 npm run dev
 ```
 
-### Bước 5: Khởi chạy Cầu nối Zalo `zca-js` (Cổng `3000`)
+---
 
-```bash
-cd zca-js
-npm install
-npm start
-```
+## 4. Kiểm thử Hệ thống
+
+- **Kiểm thử tự động Backend (Unit, Integration, NLP PhoBERT + RapidFuzz & Golden Benchmark 56 mẫu)**:
+  ```bash
+  cd backend
+  .venv/bin/pytest tests -v
+  ```
+- **Kiểm thử tự động AI Service**:
+  ```bash
+  cd ai-service
+  .venv/bin/pytest -v
+  ```
+- **Kiểm tra Lint & Build Frontend**:
+  ```bash
+  cd frontend
+  npm run lint
+  npm run build
+  ```
+- **Kịch bản Kiểm thử Postman**: Xem danh mục 15 tài liệu hướng dẫn kiểm thử trên giao diện Postman tại [`backend/tests/postman/README.md`](./backend/tests/postman/README.md) (đặc biệt kịch bản tổng hợp số 15: [`15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md`](./backend/tests/postman/15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md)).

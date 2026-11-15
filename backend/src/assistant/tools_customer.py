@@ -1,5 +1,7 @@
 """Công cụ khách hàng: tra cứu có phạm vi, yêu cầu thay đổi chỉ tạo ca Web."""
 
+import re
+
 from sqlalchemy import Integer, String, func, select
 from sqlalchemy.orm import Session
 
@@ -11,9 +13,10 @@ from src.infrastructure.models import (
     ZaloMessage,
 )
 
+from .intent_router import normalize
 from .queries import plan_outbounds, plans_statement, scoped_cases, scoped_jobs_statement
-from .response_formatter import NOT_FOUND, format_plans, job_line
-from .schemas import AssistantReply, ScopeContext, ToolCall
+from .response_formatter import NOT_FOUND, customer_job_line, format_plans
+from .schemas import AssistantReply, Entities, ScopeContext, ToolCall
 
 
 def summary(db: Session, scope: ScopeContext, call: ToolCall) -> AssistantReply:
@@ -51,10 +54,47 @@ def summary(db: Session, scope: ScopeContext, call: ToolCall) -> AssistantReply:
     if scope.role == "CUSTOMER":
         sent_stmt = sent_stmt.where(OutboundMessage.target_group_id == scope.group_id)
     sent = db.scalar(sent_stmt) or 0
+    date_label = f" {call.entities.plan_date}" if call.entities.plan_date else ""
     return AssistantReply(
-        text=f"Tổng quan kế hoạch vận chuyển {call.entities.plan_date}: {total} lệnh.\n"
+        text=f"Tổng quan kế hoạch vận chuyển{date_label}: {total} lệnh.\n"
         f"Đã có xe: {assigned}; chưa có xe: {total - assigned}; đã phát hành thông báo: {sent} lệnh.\n"
         + "\n".join(f"{kind} / {size or 'Chưa rõ cỡ'}: {count}" for kind, size, count, _ in rows)
+    )
+
+
+def _booking_count_line(db: Session, scope: ScopeContext, entities: Entities) -> tuple[str | None, list[str]]:
+    """Đếm nhanh tổng số lệnh và số đã có xe cho Booking hoặc B/L khi khách hỏi số lượng."""
+    filter_e = Entities(
+        plan_date=entities.plan_date,
+        booking_no=entities.booking_no,
+        bill_of_lading_no=entities.bill_of_lading_no,
+    )
+    sub = plans_statement(scope, filter_e).subquery()
+    row = db.execute(
+        select(
+            func.count(),
+            func.sum(
+                (func.length(func.trim(func.coalesce(sub.c.planned_truck_plate, ""))) > 0).cast(
+                    Integer
+                )
+            ),
+        )
+    ).one()
+    total = int(row[0] or 0)
+    if total == 0:
+        return None, []
+    assigned = int(row[1] or 0)
+    label = (
+        f"Booking {entities.booking_no}"
+        if entities.booking_no
+        else f"B/L {entities.bill_of_lading_no}"
+    )
+    sample_ids = [
+        str(pid) for pid in db.scalars(select(sub.c.id).limit(20)).all()
+    ]
+    return (
+        f"{label}: tổng {total} lệnh (đã có xe: {assigned}, chưa có xe: {total - assigned}).",
+        sample_ids,
     )
 
 
@@ -69,7 +109,7 @@ def run_customer(
         cases = scoped_cases(db, scope, call.entities)
         return AssistantReply(
             text="\n".join(
-                f"Ca #{c.id}: {c.status}"
+                f"Yêu cầu ({(c.details or {}).get('order_code') or c.container_no or (c.details or {}).get('booking_no') or c.case_type}): {c.status}"
                 + (
                     f" — {(c.resolution or {}).get('reason')}"
                     if (c.resolution or {}).get("reason")
@@ -114,13 +154,71 @@ def run_customer(
         return AssistantReply(
             text="\n".join(lines[:20]) or "Chưa có thay đổi đã phát hành trong phạm vi tra cứu."
         )
+    is_count_booking = bool(
+        (call.entities.booking_no or call.entities.bill_of_lading_no)
+        and re.search(
+            r"\b(may|bao nhieu)\s+(xe|chuyen|lenh|cont)\b",
+            normalize(message.message_text or ""),
+        )
+    )
+    has_specific_trip = bool(
+        call.entities.container_no or call.entities.order_code or call.entities.plate_no
+    )
+    if name in ("customer_query_schedule", "customer_get_trip_detail", "customer_get_vehicle_driver") and is_count_booking:
+        count_line, count_plan_ids = _booking_count_line(db, scope, call.entities)
+        if not has_specific_trip:
+            if not count_line:
+                return AssistantReply(text=NOT_FOUND)
+            return AssistantReply(
+                text=count_line,
+                plan_ids=count_plan_ids,
+            )
+        # Khi hỏi cả số lượng Booking và chi tiết 1 cont/lệnh cụ thể, tách truy vấn chi tiết để không bị trôi bởi danh sách Booking.
+        trip_entities = call.entities.model_copy(
+            update={"booking_no": None, "bill_of_lading_no": None}
+        )
+        trip_plans = list(
+            db.scalars(plans_statement(scope, trip_entities).order_by(TransportPlan.id).limit(21)).all()
+        )
+        trip_reply = format_plans(
+            trip_plans,
+            f"Kế hoạch {trip_entities.plan_date}:" if trip_entities.plan_date else "Thông tin tra cứu:",
+            detail=True,
+        )
+        if not trip_plans:
+            jobs = list(
+                db.scalars(
+                    scoped_jobs_statement(scope, trip_entities)
+                    .order_by(ContainerJob.id.desc())
+                    .limit(3)
+                ).all()
+            )
+            if jobs:
+                trip_reply.text = "Thông tin tra cứu:\n" + "\n".join(customer_job_line(j) for j in jobs)
+        if count_line and trip_plans:
+            return AssistantReply(
+                text=count_line + "\n" + trip_reply.text,
+                plan_ids=list(dict.fromkeys(count_plan_ids + trip_reply.plan_ids)),
+            )
+        if count_line:
+            return AssistantReply(
+                text=count_line + "\nKhông tìm thấy chuyến khớp mã cont/lệnh còn lại trong phạm vi nhóm.",
+                plan_ids=count_plan_ids,
+            )
+        return trip_reply
+
+    default_title = (
+        f"Kế hoạch {call.entities.plan_date}:"
+        if call.entities.plan_date
+        else ("Thông tin container:" if call.entities.container_no else "Kế hoạch tra cứu:")
+    )
     reply = format_plans(
         plans,
-        f"Kế hoạch {call.entities.plan_date}:",
+        default_title,
         detail=name.endswith(("get_trip_detail", "get_vehicle_driver")),
     )
 
-    if name.endswith(("get_trip_detail", "get_vehicle_driver")):
+    if not plans and name.endswith(("get_trip_detail", "get_vehicle_driver")):
         jobs = list(
             db.scalars(
                 scoped_jobs_statement(scope, call.entities)
@@ -129,9 +227,5 @@ def run_customer(
             ).all()
         )
         if jobs:
-            if not plans:
-                reply.text = "Thông tin nhà xe đã báo trong phạm vi nhóm:"
-            reply.text += "\n" + "\n".join(
-                job_line(j, mask_phone=name.endswith("get_trip_detail")) for j in jobs
-            )
+            reply.text = "Thông tin container:\n" + "\n".join(customer_job_line(j) for j in jobs)
     return reply

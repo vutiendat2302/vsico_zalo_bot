@@ -9,14 +9,17 @@ và cấu hình 2 trạng thái phát hành tin nhắn (`send_mode`):
    - Kể cả tin nhắn có thỏa mãn đầy đủ 100% thì VẪN đưa vào danh sách để Điều độ viên (DVDH) duyệt trước khi phát hành.
 """
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional
+import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from src.config.settings import settings
 from src.domain.enums import GroupRole, SendMode
 from src.infrastructure.database import get_db
 from src.infrastructure.models import ZaloGroup
@@ -84,9 +87,103 @@ class GroupResponse(BaseModel):
     created_at: Optional[str] = None
 
 
+def _safe_group_role(raw_role: Optional[str]) -> str:
+    """Chuẩn hóa giá trị vai trò nhóm Zalo an toàn, không ném ValueError khi gặp giá trị lạ."""
+    if not raw_role:
+        return GroupRole.SOURCE.value
+    try:
+        return GroupRole(raw_role).value
+    except ValueError:
+        return raw_role.strip().upper() or GroupRole.SOURCE.value
+
+
+def _safe_send_mode(raw_mode: Optional[str]) -> str:
+    """Chuẩn hóa giá trị chế độ gửi an toàn, mặc định AUTO nếu giá trị không hợp lệ."""
+    if not raw_mode:
+        return SendMode.AUTO.value
+    try:
+        return SendMode(raw_mode).value
+    except ValueError:
+        return SendMode.AUTO.value
+
+
+def _infer_group_role_from_bridge(group_id: str, group_name: str, group_type: str) -> str:
+    """Suy luận vai trò mặc định từ thông tin nhóm thật trên Zalo OA / Bridge."""
+    gtype = (group_type or "").strip().lower()
+    if gtype == "oa_direct" or group_id.startswith("direct_"):
+        return GroupRole.DIRECT_CHAT.value
+    default_carrier_gid = (settings.DEFAULT_CARRIER_GROUP_ID or "").strip()
+    if default_carrier_gid and group_id.strip() == default_carrier_gid:
+        return GroupRole.SOURCE.value
+    low_name = (group_name or "").lower()
+    if any(k in low_name for k in ("điều hành", "dieu hanh", "đhvt", "dhvt", "nội bộ", "noi bo")):
+        return GroupRole.DHVT.value
+    if any(k in low_name for k in ("nhà xe", "nha xe", "thầu phụ", "thau phu", "vận tải", "van tai", "đội xe", "doi xe")):
+        return GroupRole.SOURCE.value
+    return GroupRole.DESTINATION.value
+
+
+def sync_live_groups_from_bridge(db: Session) -> int:
+    """Đồng bộ danh sách nhóm thật và hội thoại từ Zalo Bridge (`/api/bot/groups`) vào bảng `zalo_groups`."""
+    bridge_base = (settings.ZALO_BRIDGE_URL or "http://localhost:3000").rstrip("/")
+    url = f"{bridge_base}/api/bot/groups"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Backend-VSICO"})
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return 0
+
+    live_groups = payload.get("groups")
+    if not isinstance(live_groups, list):
+        return 0
+
+    synced_count = 0
+    for item in live_groups:
+        if not isinstance(item, dict):
+            continue
+        gid = str(item.get("group_id") or item.get("groupId") or "").strip()
+        if not gid:
+            continue
+        gname = str(item.get("name") or "").strip()
+        gtype = str(item.get("type") or "").strip()
+        inferred_role = _infer_group_role_from_bridge(gid, gname, gtype)
+
+        existing = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == gid))
+        if existing is None:
+            db.add(
+                ZaloGroup(
+                    zalo_group_id=gid,
+                    name=gname or gid,
+                    group_role=inferred_role,
+                    send_mode=SendMode.AUTO.value,
+                    is_active=True,
+                    is_test=False,
+                )
+            )
+            synced_count += 1
+        else:
+            changed = False
+            if gname and existing.name != gname:
+                existing.name = gname
+                changed = True
+            if existing.is_test:
+                existing.is_test = False
+                changed = True
+            if gtype == "oa_direct" and existing.group_role != GroupRole.DIRECT_CHAT.value:
+                existing.group_role = GroupRole.DIRECT_CHAT.value
+                changed = True
+            if changed:
+                synced_count += 1
+
+    if synced_count > 0:
+        db.commit()
+    return synced_count
+
+
 @router.get("", response_model=dict[str, Any])
 def list_groups(
-    role: Optional[str] = Query(None, description="Lọc theo vai trò: source, destination, customer, internal"),
+    role: Optional[str] = Query(None, description="Lọc theo vai trò: source, destination, customer, internal, direct_chat"),
     send_mode: Optional[str] = Query(None, description="Lọc theo chế độ: tu_dong, cho_duyet"),
     is_active: Optional[bool] = Query(None, description="Lọc theo trạng thái kích hoạt"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo tên nhóm hoặc Zalo Group ID"),
@@ -94,14 +191,22 @@ def list_groups(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Lấy danh sách các nhóm Zalo kèm cấu hình chế độ gửi (`send_mode`)."""
+    """Lấy danh sách các nhóm Zalo kèm tự động đồng bộ nhóm thật từ Zalo Bridge."""
+    sync_live_groups_from_bridge(db)
     stmt = select(ZaloGroup)
 
     if role:
-        norm_role = GroupRole(role).value
-        stmt = stmt.where(ZaloGroup.group_role.in_([norm_role, role.lower(), role.upper()]))
+        norm_role = _safe_group_role(role)
+        role_variants = {norm_role, role.lower(), role.upper()}
+        if norm_role in (GroupRole.SOURCE.value, GroupRole.CARRIER.value):
+            role_variants.update({"SOURCE", "CARRIER", "source", "carrier", "car"})
+        elif norm_role in (GroupRole.DESTINATION.value, GroupRole.CUSTOMER.value):
+            role_variants.update({"DESTINATION", "CUSTOMER", "destination", "customer"})
+        elif norm_role == GroupRole.DHVT.value:
+            role_variants.update({"DHVT", "dhvt", "internal", "INTERNAL"})
+        stmt = stmt.where(ZaloGroup.group_role.in_(list(role_variants)))
     if send_mode:
-        clean_mode = SendMode(send_mode).value
+        clean_mode = _safe_send_mode(send_mode)
         stmt = stmt.where(ZaloGroup.send_mode.in_([clean_mode, send_mode.lower(), send_mode.upper()]))
     if is_active is not None:
         stmt = stmt.where(ZaloGroup.is_active == is_active)
@@ -114,13 +219,13 @@ def list_groups(
 
     items = []
     for g in groups:
-        mode_val = SendMode(g.send_mode).value if g.send_mode else SendMode.AUTO.value
+        mode_val = _safe_send_mode(g.send_mode)
         mode_label = "Tự động" if mode_val == SendMode.AUTO.value else "Chờ duyệt"
         items.append({
             "id": str(g.id),
             "zalo_group_id": g.zalo_group_id,
             "name": g.name or f"Nhóm {g.zalo_group_id}",
-            "group_role": (GroupRole(g.group_role).value if g.group_role else GroupRole.SOURCE.value),
+            "group_role": _safe_group_role(g.group_role),
             "carrier_id": g.carrier_id,
             "carrier_name": g.carrier_name,
             "send_mode": mode_val,
@@ -343,35 +448,86 @@ def delete_group(group_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
 
 @router.get("/{group_id}", response_model=dict[str, Any])
 def get_group_detail(group_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Xem chi tiết một nhóm Zalo theo ID kèm thông tin thành viên thật từ Zalo nếu có."""
-    import json
-    import urllib.request
-
+    """Xem chi tiết một nhóm Zalo theo ID kèm thông tin thành viên thật từ Zalo Bridge."""
     g = db.get(ZaloGroup, group_id)
     if not g:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy nhóm Zalo ID={group_id}.")
 
-    mode_val = SendMode(g.send_mode).value if g.send_mode else SendMode.AUTO.value
+    mode_val = _safe_send_mode(g.send_mode)
     mode_label = "Tự động" if mode_val == SendMode.AUTO.value else "Chờ duyệt"
 
     zalo_live_info: Optional[dict[str, Any]] = None
+    bridge_base = (settings.ZALO_BRIDGE_URL or "http://localhost:3000").rstrip("/")
     try:
-        url = f"http://localhost:3000/api/bot/groups/{g.zalo_group_id}/info"
+        url = f"{bridge_base}/api/bot/groups/{g.zalo_group_id}/info"
         req = urllib.request.Request(url, headers={"User-Agent": "Backend-VSICO"})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            live_data = json.loads(resp.read().decode())
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            live_data = json.loads(resp.read().decode("utf-8"))
             if live_data.get("ok"):
+                raw_members = live_data.get("members")
+                members_list: list[dict[str, Any]] = []
+                if isinstance(raw_members, list):
+                    for m in raw_members:
+                        if isinstance(m, dict):
+                            mid = str(
+                                m.get("user_id")
+                                or m.get("oa_id")
+                                or m.get("id")
+                                or ""
+                            )
+                            mname = (
+                                m.get("display_name")
+                                or m.get("name")
+                                or m.get("user_alias")
+                                or mid
+                            )
+                            members_list.append(
+                                {
+                                    "id": mid,
+                                    "display_name": mname,
+                                    "avatar": m.get("avatar"),
+                                }
+                            )
+                elif isinstance(live_data.get("members_profiles"), dict):
+                    for uid, prof in live_data.get("members_profiles", {}).items():
+                        members_list.append(
+                            {
+                                "id": str(uid),
+                                "display_name": prof.get("displayName")
+                                or prof.get("zaloName")
+                                or str(uid),
+                                "avatar": prof.get("avatar"),
+                            }
+                        )
+
+                grp_wrapper = live_data.get("group") or {}
+                grp_info = (
+                    grp_wrapper.get("group_info")
+                    if isinstance(grp_wrapper, dict) and isinstance(grp_wrapper.get("group_info"), dict)
+                    else (grp_wrapper if isinstance(grp_wrapper, dict) else {})
+                )
+                live_name = (
+                    grp_info.get("name")
+                    or live_data.get("name")
+                    or (live_data.get("data") or {}).get("name")
+                )
+                if live_name and g.name != live_name:
+                    g.name = str(live_name).strip()
+                    db.commit()
+                    db.refresh(g)
+
+                total_members = (
+                    live_data.get("totalMembers")
+                    or live_data.get("total_members")
+                    or grp_info.get("total_member")
+                    or len(members_list)
+                )
                 zalo_live_info = {
-                    "total_members": live_data.get("total_members", 0),
-                    "creator_id": live_data.get("data", {}).get("creatorId"),
-                    "members": [
-                        {
-                            "id": uid,
-                            "display_name": prof.get("displayName") or prof.get("zaloName") or uid,
-                            "avatar": prof.get("avatar"),
-                        }
-                        for uid, prof in live_data.get("members_profiles", {}).items()
-                    ],
+                    "total_members": total_members,
+                    "creator_id": (live_data.get("data") or {}).get("creatorId"),
+                    "group_link": grp_info.get("group_link"),
+                    "avatar": grp_info.get("avatar"),
+                    "members": members_list,
                 }
     except Exception:
         zalo_live_info = None
@@ -382,7 +538,7 @@ def get_group_detail(group_id: int, db: Session = Depends(get_db)) -> dict[str, 
             "id": str(g.id),
             "zalo_group_id": g.zalo_group_id,
             "name": g.name or f"Nhóm {g.zalo_group_id}",
-            "group_role": g.group_role,
+            "group_role": _safe_group_role(g.group_role),
             "carrier_id": g.carrier_id,
             "carrier_name": g.carrier_name,
             "send_mode": mode_val,
@@ -440,8 +596,8 @@ def create_group(payload: GroupCreatePayload, db: Session = Depends(get_db)) -> 
     if existing:
         raise HTTPException(status_code=400, detail=f"Nhóm có Zalo ID '{payload.zalo_group_id}' đã tồn tại.")
 
-    clean_mode = SendMode(payload.send_mode).value if payload.send_mode else SendMode.AUTO.value
-    clean_role = GroupRole(payload.group_role).value if payload.group_role else GroupRole.SOURCE.value
+    clean_mode = _safe_send_mode(payload.send_mode)
+    clean_role = _safe_group_role(payload.group_role)
     grp = ZaloGroup(
         zalo_group_id=payload.zalo_group_id.strip(),
         name=payload.name,

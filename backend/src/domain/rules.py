@@ -105,10 +105,12 @@ def clean_plate(raw_plate: Optional[str]) -> Optional[str]:
     if not raw_plate:
         return None
     alnum = re.sub(r"[^A-Za-z0-9]", "", raw_plate).upper()
-    match = re.match(r"^(\d{2}[A-Z]{1,2})(\d{4,5})$", alnum)
+    match = re.match(r"^(\d{2}[A-Z]{1,2})(\d{4,6})$", alnum)
     if not match:
         return raw_plate.strip().upper()
     prefix, digits = match.group(1), match.group(2)
+    if len(digits) == 6:
+        return f"{prefix}-{digits[:3]}.{digits[3:]}"
     if len(digits) == 5:
         return f"{prefix}-{digits[:3]}.{digits[3:]}"
     return f"{prefix}-{digits}"

@@ -19,20 +19,21 @@ class IntentClassifier:
     _SOCIAL_CHAT_EXACT_REGEX = re.compile(
         r"^(?:hi+|hello+|alo+|chào\b.*|xin\s*chào.*|em\s*chào.*|dạ\b.*|vâng\b.*|"
         r"cảm\s*ơn.*|cám\s*ơn.*|tks\b.*|thanks\b.*|thank\s*you.*|"
-        r"ok+\s*(?:anh|chị|em|bác|nhé|ạ|nha|shop|sếp).*|"
+        r"ok+\s*(?:anh|chị|em|bác|nhé|ạ|nha|shop|sếp|bạn)?.*|"
         r"đã\s*nhận(?:\s*thông\s*tin)?.*|nhận\s*thông\s*tin.*|"
+        r"mọi\s*người\s*(?:ăn\s*cơm|nghỉ\s*trưa|ngủ).*|"
         r"chúc\s*(?:buổi\s*sáng|mọi\s*người|anh|chị|cuối\s*tuần).*|"
-        r"haha+|hihi+|\:\)+|\👍+|\🙏+|\❤️+)$",
+        r"haha+|hihi+|\:\)+|[\U0001F300-\U0001FAFF\u2600-\u27BF\s]+)$",
         re.IGNORECASE,
     )
 
-    # Biểu thức nhận diện biển số xe (có dấu gạch/chấm, khoảng trắng hoặc viết liền)
+    # Biểu thức nhận diện biển số xe (có dấu gạch/chấm/gạch chéo, khoảng trắng hoặc viết liền, hỗ trợ 4-6 chữ số)
     _PLATE_PATTERN = re.compile(
-        r"\b\d{2}[A-Za-z]{1,2}(?:[\s.\-]*\d{3}[\s.\-]*\d{1,2}|[\s.\-]*\d{4,5})\b"
+        r"\b\d{2}[A-Za-z]{1,2}(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6})\b"
     )
-    # Biểu thức nhận diện số hiệu container (chuẩn 4 chữ + 6-7 số hoặc đi kèm từ khóa cont/cntr)
+    # Biểu thức nhận diện số hiệu container (đúng 4 chữ + 7 số theo ISO 6346 hoặc viết liền/chấm/gạch 4 chữ + 7 số)
     _CONTAINER_PATTERN = re.compile(
-        r"\b[A-Za-z]{3}[UJuZujz][\s.\-]*\d{5,8}\b|(?:số\s*cont|so\s*cont|container|cntr|cont)\s*[:\-]?\s*[A-Za-z0-9\-]{5,15}",
+        r"\b(?:[A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d){7}|[A-Za-z]{4}[\.\-]?\d(?:[\s.\-]*\d){6})\b",
         re.IGNORECASE,
     )
     # Biểu thức nhận diện SĐT
@@ -78,7 +79,7 @@ class IntentClassifier:
         if re.match(r"^(?:sửa|sua|edit)\s*#?\d+\b", lower):
             return Intent.EDIT_PENDING
 
-        # 3. Kiểm tra yêu cầu hủy chuyến xe
+        # 3. Kiểm tra yêu cầu hủy chuyến xe (loại trừ trường hợp "hủy thay xe / hủy đổi xe" vẫn chạy chuyến)
         if re.search(r"\b(?:hủy\s*xe|huy\s*xe|hủy\s*chuyến|huy\s*chuyen|báo\s*hủy|bao\s*huy)\b", lower):
             return Intent.CANCEL_REQUEST
 
@@ -87,12 +88,13 @@ class IntentClassifier:
         if digit_count < 2 and cls._SOCIAL_CHAT_EXACT_REGEX.match(lower):
             return Intent.IGNORE_CHAT
 
-        # 5. Kiểm tra yêu cầu đổi xe / đổi tài xế / đính chính / sửa cont / đổi giờ (T27, T28, T29)
+        # 5. Kiểm tra yêu cầu đổi xe / đổi tài xế / đính chính / sửa cont / đổi giờ / hủy thay xe (T27, T28, T29)
         if re.search(
-            r"\b(?:đổi\s+(?:sang|qua)\s+(?:xe|tài|lái|đầu\s*kéo|cont)|doi\s+(?:sang|qua)\s+(?:xe|tai|lai|dau\s*keo|cont)|"
-            r"thay\s+(?:bằng|sang)\s+xe|chuyển\s+sang\s+xe|"
-            r"đổi\s*xe|doi\s*xe|đổi\s*tài|doi\s*tai|đổi\s*lái\s*xe|doi\s*lai\s*xe|thay\s*xe|"
-            r"đổi\s*số\s*xe|đính\s*chính|dinh\s*chinh|sửa\s*cont|sua\s*cont|sửa\s*chì|sua\s*chi|"
+            r"\b(?:đổi\s+(?:sang|qua|thành|lại|về)|doi\s+(?:sang|qua|thanh|lai|ve)|"
+            r"thay\s+(?:bằng|sang|xe)|chuyển\s+sang\s+xe|chỉ\s*đổi\s*xe|chi\s*doi\s*xe|"
+            r"hủy\s*(?:thay|đổi)\s*xe|huy\s*(?:thay|doi)\s*xe|không\s*đổi\s*nữa|khong\s*doi\s*nua|"
+            r"đổi\s*xe|doi\s*xe|đổi\s*tài|doi\s*tai|đổi\s*lái\s*xe|doi\s*lai\s*xe|"
+            r"đổi\s*số|doi\s*so|sửa\s*số|sua\s*so|đính\s*chính|dinh\s*chinh|sửa\s*cont|sua\s*cont|sửa\s*chì|sua\s*chi|"
             r"cập\s*nhật\s*lại|cap\s*nhat\s*lai|lùi\s*giờ|lui\s*gio|đổi\s*lịch|doi\s*lich|xe\s*đến\s*muộn)\b",
             lower,
         ):

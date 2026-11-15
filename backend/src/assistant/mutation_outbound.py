@@ -80,6 +80,16 @@ def prepare_notification(
         for g in groups
         if g and g.is_active and g.group_role.upper() in ("CUSTOMER", "DESTINATION")
     ]
+    if len(groups) != 1 and plan.group_id:
+        fallback_group = db.scalar(
+            select(ZaloGroup).where(
+                ZaloGroup.zalo_group_id == plan.group_id,
+                ZaloGroup.is_active.is_(True),
+                func.upper(ZaloGroup.group_role).in_(["CUSTOMER", "DESTINATION"]),
+            )
+        )
+        if fallback_group:
+            groups = [fallback_group]
     source = db.get(ZaloGroup, scope.group_id)
     if len(groups) != 1:
         job.routing_status = "NEEDS_REVIEW"

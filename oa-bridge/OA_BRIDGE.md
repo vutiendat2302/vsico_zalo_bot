@@ -1,54 +1,75 @@
-# VSICO Zalo OA Bridge (`oa-bridge`)
+# Đặc tả Kỹ thuật Cầu nối Zalo Official Account (`oa-bridge` v1.0.0)
 
-Mô-đun cầu nối cho **Zalo Official Account (API v3)**, giữ nguyên hợp đồng giao tiếp với lõi Backend FastAPI và bộ REST API tương thích `zca-js` để có thể chuyển đổi qua lại mà không sửa đổi lõi Backend hay `zca-js`.
-
----
-
-## 1. Cấu trúc tệp
-
-| Tệp | Vai trò |
-| :--- | :--- |
-| `oa_server.js` | HTTP Server (mặc định cổng `3000`): nhận Webhook OA (`/webhook/zalo-oa`) đẩy sang Backend (`/webhook`), đồng thời cung cấp đầy đủ các API `/api/bot/*` tương thích `zca-js`. |
-| `oa_client.js` | Gọi Zalo OpenAPI (`getoa`, `message/cs`, `user/detail`, `user/getlist`, `listrecentchat`, `conversation`), tự động refresh token khi gặp mã lỗi hết hạn (`-216`, `-124`). |
-| `token_manager.js` | Quản lý vòng đời `ZALO_OA_ACCESS_TOKEN` / `ZALO_OA_REFRESH_TOKEN`, tự động làm mới và cập nhật trực tiếp vào tệp `.env` gốc. |
-| `env_loader.js` | Đọc biến môi trường từ tệp `.env` duy nhất ở thư mục gốc dự án. |
-| `package.json` | Khai báo lệnh `npm start` và `npm run test-oa`. |
+Module `oa-bridge` là dịch vụ cầu nối viết bằng **Node.js (ESM)**, đóng vai trò trung gian giao tiếp hai chiều giữa nền tảng **Zalo Official Account (OA)** — bao gồm cả nhóm chat GMF (Group Message Feature) và hội thoại cá nhân 1-1 (`direct_<user_id>`) — với phân hệ `backend` FastAPI.
 
 ---
 
-## 2. Danh mục REST API (tương thích `zca-js`)
+## 1. Kiến trúc & Chức năng Chính
 
-| STT | Method & Endpoint | Chức năng trên Zalo OA |
-| :---: | :--- | :--- |
-| 1 | `GET /health`, `GET /api/health`, `GET /api/bot/status` | Kiểm tra trạng thái Bridge và thông tin kết nối Zalo OA |
-| 2 | `GET /api/bot/groups` | Danh sách hội thoại gần nhất (quy đổi thành `direct_<user_id>`) |
-| 3 | `GET /api/bot/groups/:groupId/info` | Chi tiết nhóm GMF (kèm thành viên nếu có quyền) hoặc hồ sơ `direct_<user_id>` |
-| 3b | `GET /api/bot/groups/:groupId/members` | Lấy danh sách thành viên theo `groupId` (`?offset=0&count=50`) |
-| 4 | `GET /api/bot/users` | Danh sách người dùng đang quan tâm OA (followers) |
-| 5 | `GET /api/bot/users/:userId` | Hồ sơ chi tiết một người dùng OA |
-| 6 | `GET /api/bot/groups/:groupId/messages` | Lịch sử tin nhắn trong hội thoại `direct_<user_id>` |
-| 7 | `GET /api/bot/groups/:groupId/users/:userId/messages` | Lọc tin nhắn của `userId` trong hội thoại `groupId` |
-| 8 | `POST /api/bot/send/user` | Gửi tin nhắn 1-1 tới `userId` (`{"userId", "message", "quoteMsgId?"}`) |
-| 9 | `POST /api/bot/send/group` | Gửi tin nhắn tới `groupId` (hỗ trợ `direct_<user_id>`) |
-| 10 | `GET /api/bot/realtime/messages`, `POST /api/bot/realtime/clear` | Xem / xóa bộ nhớ đệm tin nhắn realtime từ Webhook OA |
-| 11 | `POST /webhook/zalo-oa` | Cổng nhận Webhook từ Zalo OA và forward sang Backend `/webhook` |
+1. **Tiếp nhận Webhook từ Zalo OA (`POST /webhook/zalo-oa`)**:
+   - Nhận sự kiện thời gian thực từ máy chủ Zalo OA (tin nhắn văn bản, hình ảnh, trích dẫn/quote tin nhắn trong nhóm GMF hoặc chat cá nhân 1-1).
+   - Tự động lưu trữ danh sách nhóm GMF và các cuộc trò chuyện cá nhân (`direct_<user_id>`) đang hoạt động.
+   - Chuẩn hóa payload về định dạng chuẩn của hệ thống và chuyển tiếp tức thời sang `POST /webhook` của `backend` kèm header bảo mật `X-Webhook-Secret`.
+2. **Đồng bộ Danh sách Nhóm Thực tế (`GET /api/bot/groups`)**:
+   - Kết nối trực tiếp tới Zalo OA GMF API (`https://openapi.zalo.me/v3.0/oa/group/getgroupsofoa`) để lấy danh sách nhóm thật của OA (tên nhóm, `group_id`, `total_member`, `group_link`, `status`).
+   - Kết hợp cùng danh sách hội thoại cá nhân (`type: "oa_direct"`, `group_id: "direct_<userId>"`) và trả về cho `backend` khi `GET /api/groups` gọi đồng bộ tự động (`sync_live_groups_from_bridge`).
+3. **Chi tiết Thành viên Nhóm (`GET /api/bot/groups/:groupId`)**:
+   - Truy vấn thông tin chi tiết nhóm và danh sách thành viên để hiển thị trên màn hình Quản lý Nhóm Zalo (`/groups`) của Frontend Dashboard.
+4. **Phát hành Tin nhắn (`POST /api/bot/send`)**:
+   - Nhận lệnh gửi tin từ `ZaloOutboundThrottler` của `backend` và tự động phân nhánh gửi vào nhóm GMF hoặc gửi tin nhắn trực tiếp 1-1 (`direct_<user_id>`) qua Zalo OA OpenAPI.
 
 ---
 
-## 3. Chạy và kiểm tra kết nối
+## 2. Sơ đồ Luồng Hoạt động
 
-1. Kiểm tra kết nối trực tiếp tới Zalo OA:
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Zalo as Zalo OA Cloud (GMF Group & Direct 1-1)
+    participant OAB as oa-bridge (Node.js :3000)
+    participant BE as Backend FastAPI (:8000)
+    participant FE as Frontend Web (/groups)
 
-```bash
-cd oa-bridge
-npm run test-oa
+    Zalo->>OAB: Sự kiện Webhook (Tin nhắn nhóm GMF / Chat 1-1)
+    OAB->>OAB: Ghi nhận trạng thái nhóm / direct_<user_id>
+    OAB->>BE: POST /webhook (Header X-Webhook-Secret)
+    BE-->>OAB: 200 OK (< 50ms)
+
+    FE->>BE: GET /api/groups
+    BE->>OAB: GET /api/bot/groups
+    OAB->>Zalo: GET /v3.0/oa/group/getgroupsofoa
+    Zalo-->>OAB: Danh sách nhóm thật của OA
+    OAB-->>BE: Trả về danh sách nhóm GMF + direct_<user_id>
+    BE->>BE: Đồng bộ vào bảng zalo_groups (SOURCE / TARGET / DHVT / DIRECT_CHAT)
+    BE-->>FE: Hiển thị danh sách nhóm thực tế
+
+    BE->>OAB: POST /api/bot/send (to, text, quoteMsgId)
+    OAB->>Zalo: Gửi tin nhắn GMF hoặc OA Direct Message
+    Zalo-->>OAB: Trả về message_id
+    OAB-->>BE: { ok: true, messageId }
 ```
 
-2. Khởi động Bridge (lưu ý tắt `zca-js` nếu cùng dùng cổng `3000`, hoặc đặt `OA_BRIDGE_PORT` riêng):
+---
+
+## 3. Danh sách Endpoint của `oa-bridge`
+
+| Phương thức & Đường dẫn | Mô tả chức năng |
+| :--- | :--- |
+| `GET /health` | Kiểm tra trạng thái kết nối và cấu hình Zalo OA Access Token. |
+| `POST /webhook/zalo-oa` | Cổng nhận sự kiện Webhook từ Zalo Developer Console. |
+| `GET /api/bot/groups` | Trả về toàn bộ nhóm GMF thực tế của OA và các hội thoại `direct_<user_id>`. |
+| `GET /api/bot/groups/:groupId` | Trả về thông tin chi tiết và danh sách thành viên của một nhóm cụ thể. |
+| `POST /api/bot/send` | Gửi tin nhắn văn bản (kèm trích dẫn nếu có) vào nhóm GMF hoặc hội thoại `direct_<user_id>`. |
+| `POST /api/token/refresh` | Làm mới `ZALO_OA_ACCESS_TOKEN` bằng `ZALO_OA_REFRESH_TOKEN`. |
+
+---
+
+## 4. Khởi chạy Dịch vụ
+
+Cấu hình các biến `ZALO_OA_APP_ID`, `ZALO_OA_SECRET_KEY`, `ZALO_OA_ACCESS_TOKEN`, `ZALO_OA_REFRESH_TOKEN`, `ZALO_BRIDGE_PORT=3000` và `BACKEND_WEBHOOK_URL=http://localhost:8000/webhook` tại tệp `.env` ở thư mục gốc dự án:
 
 ```bash
 cd oa-bridge
+npm install
 npm start
 ```
-
-3. Cấu hình Webhook trên `developers.zalo.me` trỏ vào `https://<domain>/webhook/zalo-oa` và điền `ZALO_OA_SECRET_KEY` vào `.env`.

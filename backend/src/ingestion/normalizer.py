@@ -92,7 +92,30 @@ class WebhookIngestor:
             or ""
         ).strip() or None
 
-        raw_group_id = str(payload_dict.get("group_id") or "").strip()
+        raw_payload = (
+            payload_dict.get("raw_payload")
+            if isinstance(payload_dict.get("raw_payload"), dict)
+            else {}
+        )
+        raw_event_name = str(
+            payload_dict.get("event_name") or raw_payload.get("event_name") or ""
+        ).strip()
+        raw_recipient = (
+            raw_payload.get("recipient")
+            if isinstance(raw_payload.get("recipient"), dict)
+            else {}
+        )
+        raw_recipient_id = str(raw_recipient.get("id") or "").strip()
+        raw_oa_id = str(raw_payload.get("oa_id") or "").strip()
+        raw_group_id = str(
+            payload_dict.get("group_id")
+            or raw_payload.get("group_id")
+            or (
+                raw_recipient_id
+                if "_group_" in raw_event_name and raw_recipient_id and raw_recipient_id != raw_oa_id
+                else ""
+            )
+        ).strip()
         group_name = (payload_dict.get("group_name") or "").strip() or None
         quote_msg_id = (
             payload_dict.get("quote_msg_id")
@@ -109,7 +132,7 @@ class WebhookIngestor:
         # Phân biệt tin nhắn nhắn trực tiếp (Direct 1-1) và tin nhắn nhắn trong Group Zalo
         if not raw_group_id:
             group_id = f"direct_{sender_id}"
-            effective_group_name = group_name or f"Direct Chat - {sender_name or sender_id}"
+            effective_group_name = group_name or sender_name or f"User {sender_id}"
             group_role = "DIRECT_CHAT"
         else:
             group_id = raw_group_id

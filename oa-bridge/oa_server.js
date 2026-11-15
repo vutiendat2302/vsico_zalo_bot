@@ -128,8 +128,14 @@ function verifyZaloOaSignature(signatureHeader, rawBody, parsedBody) {
  */
 async function mapOaEventToBackendPayload(oaEvent) {
   const senderId = String(oaEvent?.sender?.id || "").trim();
+  const rawEventName = String(oaEvent?.event_name || "").trim();
+  const oaId = String(oaEvent?.oa_id || "").trim();
+  const recipientId = String(oaEvent?.recipient?.id || "").trim();
   const groupId = String(
-    oaEvent?.group_id || oaEvent?.recipient?.group_id || oaEvent?.message?.group_id || ""
+    oaEvent?.group_id ||
+      oaEvent?.recipient?.group_id ||
+      oaEvent?.message?.group_id ||
+      (rawEventName.includes("_group_") && recipientId && recipientId !== oaId ? recipientId : "")
   ).trim();
   const attachments = oaEvent?.message?.attachments || [];
   const firstImage = attachments.find((item) => item?.type === "image");

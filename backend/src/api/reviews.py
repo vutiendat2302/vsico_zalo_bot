@@ -122,10 +122,7 @@ def _is_real_source_message(orig_msg: Optional[ZaloMessage]) -> bool:
             orig_msg.zalo_message_id
             and (orig_msg.zalo_message_id.startswith("test_") or orig_msg.zalo_message_id.startswith("pytest_"))
         )
-        or (
-            orig_msg.sender_id
-            and (orig_msg.sender_id.startswith("test_") or orig_msg.sender_id.startswith("pytest_"))
-        )
+        or (orig_msg.sender_id and orig_msg.sender_id.startswith("pytest_"))
     )
 
 
@@ -467,6 +464,150 @@ def _apply_payload_edits_to_job(
     return fields_changed, habit_recorded
 
 
+def _parse_optional_int(value: Any) -> Optional[int]:
+    """Chuyển đổi an toàn giá trị số nguyên (kể cả chuỗi Snowflake ID)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_cancel_target_group_id(
+    db: Session,
+    *,
+    customer_id: Optional[int],
+    warehouse_id: Optional[int],
+    order_type: Optional[str],
+    source_group: Optional[ZaloGroup],
+    orig_msg: Optional[ZaloMessage],
+    plan: Optional[TransportPlan],
+    customer_hint: Optional[str] = None,
+) -> Optional[int]:
+    """Xác định nhóm Zalo khách hàng nhận thông báo hủy chuyến (ưu tiên plan.group_id, RouteMap, rồi source_group nếu là nhóm khách)."""
+    plan_gid = str(plan.group_id).strip() if plan and plan.group_id else None
+    target_gid, _ = CarrierFlowService.find_target_zalo_group_safe(
+        db=db,
+        customer_id=customer_id,
+        warehouse_id=warehouse_id,
+        order_type=order_type,
+        source_group_id_str=orig_msg.group_id if orig_msg else None,
+        plan_group_id_str=plan_gid,
+        customer_hint=customer_hint,
+    )
+    if target_gid is None and plan_gid:
+        target_gid, _ = CarrierFlowService.find_target_zalo_group_safe(
+            db=db,
+            customer_id=customer_id,
+            warehouse_id=warehouse_id,
+            order_type=order_type,
+            source_group_id_str=orig_msg.group_id if orig_msg else None,
+            plan_group_id_str=None,
+            customer_hint=customer_hint,
+        )
+    if (
+        target_gid is None
+        and source_group is not None
+        and source_group.is_active
+        and (source_group.group_role or "").upper() in (GroupRole.CUSTOMER.value, GroupRole.DESTINATION.value)
+    ):
+        target_gid = source_group.id
+    return target_gid
+
+
+def _apply_plan_cancel_update(
+    db: Session,
+    *,
+    plan: TransportPlan,
+    case_obj: ReviewCase,
+    actor: str,
+    cancel_reason: str,
+    now: datetime,
+    container_no: Optional[str],
+    updated_plan_ids: list[int],
+) -> None:
+    """Cập nhật ghi chú hủy chuyến, tăng version và ghi ActivityLog cho TransportPlan."""
+    if plan.id in updated_plan_ids:
+        return
+    plan.version = (plan.version or 1) + 1
+    plan.tms_sync_status = TmsSyncStatus.PENDING.value
+    stamp = now.strftime("%d/%m %H:%M")
+    cancel_note = f"[HUY CHUYEN {stamp} - {actor}]: {cancel_reason}"
+    plan.notes = f"{plan.notes}\n{cancel_note}".strip() if plan.notes else cancel_note
+    updated_plan_ids.append(plan.id)
+    db.add(
+        ActivityLog(
+            id=snowflake.generate(),
+            actor_id=actor,
+            action="PLAN_CANCELLED_CONFIRMED",
+            entity_type="transport_plan",
+            entity_id=str(plan.id),
+            details={"review_case_id": case_obj.id, "container_no": container_no, "reason": cancel_reason},
+        )
+    )
+
+
+def _create_cancel_outbound_for_target(
+    db: Session,
+    *,
+    target_gid: int,
+    order_type: Optional[str],
+    cancel_text: str,
+    idempotency_key: str,
+    actor: str,
+    now: datetime,
+    job_id: Optional[int] = None,
+) -> int:
+    """Tạo bản ghi OutboundMessage thông báo hủy chuyến (tái sử dụng nếu trùng idempotency_key)."""
+    existing_om = db.scalar(select(OutboundMessage).where(OutboundMessage.idempotency_key == idempotency_key))
+    if existing_om:
+        return existing_om.id
+    cancel_om = OutboundMessage(
+        id=snowflake.generate(),
+        target_group_id=target_gid,
+        order_type=order_type or "tra",
+        message_kind="cancel",
+        content=cancel_text,
+        idempotency_key=idempotency_key,
+        status=OutboundStatus.PENDING_SEND.value,
+        approved_by=actor,
+        approved_at=now,
+        attempt_count=0,
+    )
+    db.add(cancel_om)
+    db.flush()
+    if job_id is not None:
+        db.add(OutboundMessageItem(outbound_message_id=cancel_om.id, container_job_id=job_id))
+    return cancel_om.id
+
+
+def _resolve_plan_for_cancel_case(
+    db: Session,
+    case_obj: ReviewCase,
+    payload: Optional[ReviewApprovePayload],
+) -> Optional[TransportPlan]:
+    """Tìm TransportPlan gắn với ca hủy chuyến khi chưa có bản ghi ContainerJob."""
+    details = case_obj.details if isinstance(case_obj.details, dict) else {}
+    plan_id = _parse_optional_int(
+        (payload.selected_plan_id if payload and payload.selected_plan_id else None)
+        or details.get("selected_plan_id")
+        or details.get("transport_plan_id")
+    )
+    if plan_id is not None:
+        plan = db.get(TransportPlan, plan_id)
+        if plan is not None:
+            return plan
+    cont = str(details.get("container_no") or "").strip().upper()
+    if cont:
+        return db.scalar(
+            select(TransportPlan)
+            .where(TransportPlan.container_no == cont)
+            .order_by(TransportPlan.id.desc())
+        )
+    return None
+
+
 def _approve_cancel_request_case(
     db: Session,
     case_obj: ReviewCase,
@@ -476,7 +617,7 @@ def _approve_cancel_request_case(
     payload: Optional[ReviewApprovePayload],
     is_real_msg: bool,
 ) -> dict[str, Any]:
-    """Xác nhận hủy chuyến: cập nhật local TransportPlan, phát hành thông báo hủy mẫu default_huy.txt và phản hồi nhà xe."""
+    """Xác nhận hủy chuyến: cập nhật local TransportPlan, phát hành thông báo hủy mẫu default_huy.txt và phản hồi nhà xe/khách hàng."""
     now = datetime.now(UTC)
     cancel_reason = (
         (payload.cancel_reason.strip() if payload and payload.cancel_reason else None)
@@ -491,18 +632,22 @@ def _approve_cancel_request_case(
 
     pending_send_ids: list[int] = []
     updated_plan_ids: list[int] = []
+    details = case_obj.details if isinstance(case_obj.details, dict) else {}
+    cancelled_labels: list[str] = []
 
     target_jobs = list(jobs)
-    if not target_jobs and isinstance(case_obj.details, dict) and case_obj.details.get("container_no"):
+    if not target_jobs and details.get("container_no"):
         fallback_job = db.scalar(
             select(ContainerJob)
-            .where(ContainerJob.container_no == str(case_obj.details.get("container_no")).upper())
+            .where(ContainerJob.container_no == str(details.get("container_no")).upper())
             .order_by(ContainerJob.id.desc())
         )
         if fallback_job:
             target_jobs.append(fallback_job)
 
     for job in target_jobs:
+        if job.container_no:
+            cancelled_labels.append(job.container_no)
         job.validation_status = ValidationStatus.REJECTED.value
         job.routing_status = RoutingStatus.CANCELLED.value
         job.tms_sync_status = TmsSyncStatus.PENDING.value
@@ -526,39 +671,46 @@ def _approve_cancel_request_case(
         if plan is None:
             plan_res = resolve_plan_detailed(db, job, source_group, for_update=True)
             plan = plan_res.plan
+        if plan is None and len(target_jobs) == 1:
+            plan = _resolve_plan_for_cancel_case(db, case_obj, payload)
         if plan is not None:
-            plan.version = (plan.version or 1) + 1
-            plan.tms_sync_status = TmsSyncStatus.PENDING.value
-            stamp = now.strftime("%d/%m %H:%M")
-            cancel_note = f"[HUY CHUYEN {stamp} - {actor}]: {cancel_reason}"
-            plan.notes = f"{plan.notes}\n{cancel_note}".strip() if plan.notes else cancel_note
-            updated_plan_ids.append(plan.id)
-            db.add(
-                ActivityLog(
-                    id=snowflake.generate(),
-                    actor_id=actor,
-                    action="PLAN_CANCELLED_CONFIRMED",
-                    entity_type="transport_plan",
-                    entity_id=str(plan.id),
-                    details={"review_case_id": case_obj.id, "container_no": job.container_no, "reason": cancel_reason},
-                )
+            _apply_plan_cancel_update(
+                db,
+                plan=plan,
+                case_obj=case_obj,
+                actor=actor,
+                cancel_reason=cancel_reason,
+                now=now,
+                container_no=job.container_no or plan.container_no,
+                updated_plan_ids=updated_plan_ids,
             )
 
         # Tạo thông báo hủy chuyến gửi khách hàng dùng template default_huy.txt
-        cust_obj = db.get(Customer, job.customer_id) if job.customer_id else None
-        wh_obj = db.get(Warehouse, job.warehouse_id) if job.warehouse_id else None
+        cust_id = job.customer_id or (plan.customer_id if plan else None)
+        wh_id = job.warehouse_id or (plan.warehouse_id if plan else None)
+        eff_order_type = job.order_type or (plan.order_type if plan else None) or "tra"
+        cust_hint = job.customer_hint or (plan.customer_name if plan else None)
+        wh_hint = job.warehouse_hint or (plan.warehouse_name if plan else None)
+        cust_obj = db.get(Customer, cust_id) if cust_id else None
+        wh_obj = db.get(Warehouse, wh_id) if wh_id else None
         tr = job.truck_record
+        note_parts = (
+            [p for p in [f"Lệnh {plan.order_code}" if plan.order_code else None, f"Booking {plan.booking_no}" if plan.booking_no else None] if p]
+            if plan
+            else []
+        )
         line = ExtractedContainerLine(
             line_no=job.line_no or 1,
-            container_no=job.container_no,
-            container_size=job.container_size,
-            seal_no=job.seal_no,
-            order_type=job.order_type or "tra",
-            warehouse_hint=job.warehouse_hint,
-            customer_hint=job.customer_hint,
-            truck_plate=tr.truck_plate if tr else None,
-            driver_name=tr.driver_name if tr else None,
-            driver_phone=tr.driver_phone if tr else None,
+            container_no=job.container_no or (plan.container_no if plan else None),
+            container_size=job.container_size or (plan.container_size if plan else None),
+            seal_no=job.seal_no or (plan.seal_no if plan else None),
+            order_type=eff_order_type,
+            warehouse_hint=wh_hint,
+            customer_hint=cust_hint,
+            truck_plate=(tr.truck_plate if tr else None) or (plan.planned_truck_plate if plan else None),
+            driver_name=(tr.driver_name if tr else None) or (plan.driver_name if plan else None),
+            driver_phone=(tr.driver_phone if tr else None) or (plan.driver_phone if plan else None),
+            note="; ".join(note_parts) if note_parts else None,
         )
         cancel_text = (
             payload.outbound_content.strip()
@@ -566,36 +718,140 @@ def _approve_cancel_request_case(
             else OutboundTemplateBuilder.build_cancel_notification(
                 line=line,
                 reason=cancel_reason,
-                customer_name=cust_obj.name if cust_obj else (job.customer_hint or "Quý khách hàng"),
-                warehouse_name=wh_obj.name if wh_obj else (job.warehouse_hint or "Kho khách hàng"),
+                customer_name=cust_obj.name if cust_obj else (cust_hint or "Quý khách hàng"),
+                warehouse_name=wh_obj.name if wh_obj else (wh_hint or "Kho khách hàng"),
                 customer_id=cust_obj.tms_customer_id if cust_obj else None,
             )
         )
-        target_gid, _ = CarrierFlowService.find_target_zalo_group_safe(
-            db=db,
-            customer_id=job.customer_id,
-            warehouse_id=job.warehouse_id,
-            order_type=job.order_type,
-            source_group_id_str=orig_msg.group_id if orig_msg else None,
-            customer_hint=job.customer_hint,
+        target_gid = _resolve_cancel_target_group_id(
+            db,
+            customer_id=cust_id,
+            warehouse_id=wh_id,
+            order_type=eff_order_type,
+            source_group=source_group,
+            orig_msg=orig_msg,
+            plan=plan,
+            customer_hint=cust_hint,
         )
         if target_gid:
-            cancel_om = OutboundMessage(
-                id=snowflake.generate(),
-                target_group_id=target_gid,
-                order_type=job.order_type or "tra",
-                message_kind="cancel",
-                content=cancel_text,
+            om_id = _create_cancel_outbound_for_target(
+                db,
+                target_gid=target_gid,
+                order_type=eff_order_type,
+                cancel_text=cancel_text,
                 idempotency_key=f"outbound:cancel:{case_obj.id}:{job.id}",
-                status=OutboundStatus.PENDING_SEND.value,
-                approved_by=actor,
-                approved_at=now,
-                attempt_count=0,
+                actor=actor,
+                now=now,
+                job_id=job.id,
             )
-            db.add(cancel_om)
-            db.flush()
-            db.add(OutboundMessageItem(outbound_message_id=cancel_om.id, container_job_id=job.id))
-            pending_send_ids.append(cancel_om.id)
+            pending_send_ids.append(om_id)
+
+    # Nếu chưa có ContainerJob (VD: yêu cầu hủy gắn trực tiếp với TransportPlan), vẫn cập nhật plan và tạo thông báo gửi khách
+    if not target_jobs:
+        plan = _resolve_plan_for_cancel_case(db, case_obj, payload)
+        if plan is not None:
+            _apply_plan_cancel_update(
+                db,
+                plan=plan,
+                case_obj=case_obj,
+                actor=actor,
+                cancel_reason=cancel_reason,
+                now=now,
+                container_no=plan.container_no,
+                updated_plan_ids=updated_plan_ids,
+            )
+            plan_label = plan.container_no or plan.order_code or plan.booking_no
+            if plan_label:
+                cancelled_labels.append(plan_label)
+            cust_obj = db.get(Customer, plan.customer_id) if plan.customer_id else None
+            wh_obj = db.get(Warehouse, plan.warehouse_id) if plan.warehouse_id else None
+            note_parts = [p for p in [f"Lệnh {plan.order_code}" if plan.order_code else None, f"Booking {plan.booking_no}" if plan.booking_no else None] if p]
+            line = ExtractedContainerLine(
+                line_no=1,
+                container_no=plan.container_no,
+                container_size=plan.container_size,
+                seal_no=plan.seal_no,
+                order_type=plan.order_type or "tra",
+                warehouse_hint=plan.warehouse_name or plan.delivery_address,
+                customer_hint=plan.customer_name,
+                truck_plate=plan.planned_truck_plate,
+                driver_name=plan.driver_name,
+                driver_phone=plan.driver_phone,
+                note="; ".join(note_parts) if note_parts else None,
+            )
+            cancel_text = (
+                payload.outbound_content.strip()
+                if (payload and payload.outbound_content and payload.outbound_content.strip())
+                else OutboundTemplateBuilder.build_cancel_notification(
+                    line=line,
+                    reason=cancel_reason,
+                    customer_name=cust_obj.name if cust_obj else (plan.customer_name or "Quý khách hàng"),
+                    warehouse_name=wh_obj.name if wh_obj else (plan.warehouse_name or "Kho khách hàng"),
+                    customer_id=cust_obj.tms_customer_id if cust_obj else None,
+                )
+            )
+            target_gid = _resolve_cancel_target_group_id(
+                db,
+                customer_id=plan.customer_id,
+                warehouse_id=plan.warehouse_id,
+                order_type=plan.order_type,
+                source_group=source_group,
+                orig_msg=orig_msg,
+                plan=plan,
+                customer_hint=plan.customer_name,
+            )
+            if target_gid:
+                om_id = _create_cancel_outbound_for_target(
+                    db,
+                    target_gid=target_gid,
+                    order_type=plan.order_type,
+                    cancel_text=cancel_text,
+                    idempotency_key=f"outbound:cancel:{case_obj.id}:plan:{plan.id}",
+                    actor=actor,
+                    now=now,
+                )
+                pending_send_ids.append(om_id)
+        else:
+            target_gid = _resolve_cancel_target_group_id(
+                db,
+                customer_id=None,
+                warehouse_id=None,
+                order_type=None,
+                source_group=source_group,
+                orig_msg=orig_msg,
+                plan=None,
+                customer_hint=details.get("group_name"),
+            )
+            if target_gid:
+                raw_cont = str(details.get("container_no") or "").strip().upper() or None
+                if raw_cont:
+                    cancelled_labels.append(raw_cont)
+                line = ExtractedContainerLine(
+                    line_no=1,
+                    container_no=raw_cont,
+                    order_type="tra",
+                    customer_hint=details.get("group_name") or (source_group.name if source_group else None),
+                )
+                cancel_text = (
+                    payload.outbound_content.strip()
+                    if (payload and payload.outbound_content and payload.outbound_content.strip())
+                    else OutboundTemplateBuilder.build_cancel_notification(
+                        line=line,
+                        reason=cancel_reason,
+                        customer_name=details.get("group_name") or (source_group.name if source_group else "Quý khách hàng"),
+                        warehouse_name="Kho khách hàng",
+                    )
+                )
+                om_id = _create_cancel_outbound_for_target(
+                    db,
+                    target_gid=target_gid,
+                    order_type="tra",
+                    cancel_text=cancel_text,
+                    idempotency_key=f"outbound:cancel:{case_obj.id}:case",
+                    actor=actor,
+                    now=now,
+                )
+                pending_send_ids.append(om_id)
 
     case_obj.status = ReviewStatus.APPROVED.value
     case_obj.resolved_at = now
@@ -633,7 +889,7 @@ def _approve_cancel_request_case(
             and not source_group.is_test
             and source_group.group_role.upper() in (GroupRole.CARRIER.value, GroupRole.SOURCE.value)
         ):
-            cont_lbl = ", ".join(j.container_no for j in target_jobs if j.container_no) or "chuyến xe"
+            cont_lbl = ", ".join(cancelled_labels) or "chuyến xe"
             ZaloDispatcher.send_to_group(
                 group_id=orig_msg.group_id,
                 message=f"[VSICO] ĐHVT đã xác nhận hủy {cont_lbl} và thông báo tới khách hàng. Lý do: {cancel_reason}",
@@ -738,10 +994,18 @@ def approve_review_case(
     orig_msg = db.get(ZaloMessage, case_obj.message_id) if case_obj.message_id else None
     is_real_msg = _is_real_source_message(orig_msg)
 
-    # Nhánh riêng: Phê duyệt yêu cầu hủy chuyến
-    if case_obj.case_type == "CANCEL_REQUEST" or (
-        case_obj.case_type == "CARRIER_CANCEL_OR_ISSUE"
-        and (case_obj.details or {}).get("requested_action") == "CANCEL"
+    # Nhánh riêng: Phê duyệt yêu cầu hủy chuyến (từ Nhà xe hoặc Khách hàng)
+    details = case_obj.details if isinstance(case_obj.details, dict) else {}
+    req_action = str(details.get("requested_action") or "").upper()
+    is_customer_cancel = case_obj.case_type == "CUSTOMER_CHANGE_REQUEST" and (
+        req_action == "CANCEL"
+        or (not req_action and case_obj.priority == "HIGH")
+        or (payload is not None and bool(payload.cancel_reason and payload.cancel_reason.strip()))
+    )
+    if (
+        case_obj.case_type == "CANCEL_REQUEST"
+        or (case_obj.case_type == "CARRIER_CANCEL_OR_ISSUE" and req_action == "CANCEL")
+        or is_customer_cancel
     ):
         return _approve_cancel_request_case(
             db=db,
@@ -1130,6 +1394,65 @@ def reject_review_case(
     if pending_count == 0 and orig_msg:
         orig_msg.processing_status = MessageStatus.CANCELLED.value
 
+    source_group = (
+        db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == orig_msg.group_id))
+        if orig_msg
+        else None
+    )
+    reject_outbound_id: Optional[int] = None
+    if (
+        source_group
+        and source_group.is_active
+        and (source_group.group_role or "").upper() in (GroupRole.CUSTOMER.value, GroupRole.DESTINATION.value)
+    ):
+        details = case_obj.details if isinstance(case_obj.details, dict) else {}
+        plan = _resolve_plan_for_cancel_case(db, case_obj, None)
+        conts = ", ".join(j.container_no for j in jobs_to_cancel if j.container_no)
+        detail_conts = details.get("containers") if isinstance(details.get("containers"), list) else []
+        target_label = (
+            conts
+            or (plan.order_code if plan and plan.order_code else None)
+            or (plan.container_no if plan and plan.container_no else None)
+            or (plan.booking_no if plan and plan.booking_no else None)
+            or (str(details.get("container_no")).strip() if details.get("container_no") else None)
+            or (", ".join(str(c) for c in detail_conts if c) if detail_conts else None)
+            or "chuyến vận chuyển"
+        )
+        reject_key = f"outbound:reject:{case_obj.id}"
+        existing_reject_om = db.scalar(
+            select(OutboundMessage).where(OutboundMessage.idempotency_key == reject_key)
+        )
+        if existing_reject_om:
+            reject_outbound_id = existing_reject_om.id
+        else:
+            order_type = (
+                (jobs_to_cancel[0].order_type if jobs_to_cancel else None)
+                or (plan.order_type if plan else None)
+                or "tra"
+            )
+            reject_om = OutboundMessage(
+                id=snowflake.generate(),
+                target_group_id=source_group.id,
+                order_type=order_type,
+                message_kind="answer",
+                content=(
+                    f"[VSICO] ĐHVT chưa thể thực hiện yêu cầu thay đổi/hủy cho {target_label}. "
+                    f"Lý do: {reject_reason}. Vui lòng liên hệ ĐHVT nếu cần hỗ trợ thêm."
+                ),
+                idempotency_key=reject_key,
+                status=OutboundStatus.PENDING_SEND.value,
+                approved_by=actor,
+                approved_at=now,
+                attempt_count=0,
+            )
+            db.add(reject_om)
+            db.flush()
+            reject_outbound_id = reject_om.id
+        case_obj.resolution = {
+            **(case_obj.resolution or {}),
+            "reject_outbound_ids": [reject_outbound_id],
+        }
+
     db.add(
         ActivityLog(
             id=snowflake.generate(),
@@ -1143,18 +1466,18 @@ def reject_review_case(
     db.commit()
 
     if orig_msg and _is_real_source_message(orig_msg) and settings.AUTO_DISPATCH_OUTBOUND:
-        source_group = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == orig_msg.group_id))
-        if (
-            source_group
-            and not source_group.is_test
-            and source_group.group_role.upper() in (GroupRole.CARRIER.value, GroupRole.SOURCE.value)
-        ):
-            conts = ", ".join(j.container_no for j in jobs_to_cancel if j.container_no) or "lượt xe"
-            ZaloDispatcher.send_to_group(
-                group_id=orig_msg.group_id,
-                message=f"[VSICO] ĐHVT từ chối thông tin điều xe ({conts}). Lý do: {reject_reason}. Vui lòng kiểm tra và gửi lại.",
-                quote_msg_id=orig_msg.zalo_message_id,
-            )
+        if source_group and not source_group.is_test:
+            if reject_outbound_id is not None:
+                from src.infrastructure.outbox_worker import drain_outbox
+
+                drain_outbox(lambda: nullcontext(db), [reject_outbound_id])
+            elif source_group.group_role.upper() in (GroupRole.CARRIER.value, GroupRole.SOURCE.value):
+                conts = ", ".join(j.container_no for j in jobs_to_cancel if j.container_no) or "lượt xe"
+                ZaloDispatcher.send_to_group(
+                    group_id=orig_msg.group_id,
+                    message=f"[VSICO] ĐHVT từ chối thông tin điều xe ({conts}). Lý do: {reject_reason}. Vui lòng kiểm tra và gửi lại.",
+                    quote_msg_id=orig_msg.zalo_message_id,
+                )
 
     return {
         "ok": True,

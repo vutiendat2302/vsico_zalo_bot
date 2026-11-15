@@ -157,10 +157,6 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
             reply = AssistantReply(
                 text="Tin nhắn chưa rõ hoặc gồm cả hỏi và sửa. Vui lòng ghi một mã lệnh/ngày và tách thông tin muốn tra cứu khỏi thay đổi cần xác nhận."
             )
-        elif scope.role == "CUSTOMER" and not scope.routes:
-            reply = AssistantReply(
-                text="Nhóm chưa được cấu hình RouteMap đang hoạt động; vui lòng liên hệ ĐHVT để khai báo tuyến được phép tra cứu."
-            )
         elif (
             re.search(r"\b[A-Za-z]{4}\d{5,6}\b", message.message_text)
             and not call.entities.container_no
@@ -187,7 +183,7 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
     except (PermissionError, ValueError) as exc:
         reply = AssistantReply(text=str(exc))
     outbound = _send_or_queue_group_reply(
-        db, group, message, reply.text[:6000], order_type="ANSWER", dispatch=False
+        db, group, message, reply.text[:1950], order_type="ANSWER", dispatch=False
     )
     # Nháp lưu khóa outbox để resolve quote cả khi worker gửi sau transaction này.
     for draft in db.scalars(

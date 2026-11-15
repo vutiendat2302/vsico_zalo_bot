@@ -22,6 +22,7 @@ from src.infrastructure.models import (
     ZaloMessage,
 )
 
+from .intent_router import local_date
 from .queries import plan_jobs, plan_outbounds, plans_statement, scoped_cases, scoped_jobs_statement
 from .response_formatter import NOT_FOUND, format_plans, job_line, plan_line
 from .schemas import AssistantReply, ScopeContext, ToolCall
@@ -74,7 +75,7 @@ def run_dhvt(
     """Thực thi O01–O14, tuyệt đối không sửa kế hoạch hay trạng thái duyệt."""
     name = call.intent
     base = settings.FRONTEND_BASE_URL.rstrip("/")
-    start, end = day_bounds(call.entities.plan_date)
+    start, end = day_bounds(call.entities.plan_date or local_date(scope.reference_time))
     stmt = plans_statement(scope, call.entities)
     if name in ("dhvt_get_daily_overview", "dhvt_get_entity_stats"):
         reply = summary(db, scope, call)

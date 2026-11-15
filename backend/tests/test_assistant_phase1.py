@@ -204,17 +204,20 @@ def test_carrier_cannot_see_unassigned_or_other_carrier(db_session, assistant_en
     assert "LO8200" not in text and "LO8201" not in text
 
 
-def test_customer_scope_required_even_when_plan_group_matches(db_session, assistant_env):
-    """Không dùng group_id mặc định để mở quyền khi thiếu RouteMap."""
+def test_customer_fallback_to_plan_group_id_when_missing_route_map(db_session, assistant_env):
+    """Khi chưa có RouteMap, nhóm khách chỉ xem được kế hoạch khớp transport_plans.group_id."""
     groups, plans = assistant_env
     for route in db_session.scalars(
         select(RouteMap).where(RouteMap.zalo_group_id == groups[0][1].id)
     ).all():
         route.is_active = False
+    plans[0].group_id = "other_group_id"
     plans[1].group_id = groups[0][1].zalo_group_id
     db_session.flush()
-    _, text = send(db_session, groups[0][1], "LO8201 xe nào chở?")
-    assert "RouteMap" in text and "29C-441.22" not in text
+    _, text_own = send(db_session, groups[0][1], "LO8201 xe nào chở?")
+    _, text_other = send(db_session, groups[0][1], "LO8200 xe nào chở?")
+    assert "29C-441.22" in text_own
+    assert "29C-441.11" not in text_other
 
 
 def test_two_step_change_sender_version_and_replay(db_session, assistant_env):
@@ -373,6 +376,69 @@ def test_dhvt_wrong_role_or_group_is_denied(db_session, assistant_env):
     db_session.flush()
     _, reply = send(db_session, group, "LO8200 hiện thế nào?")
     assert "chưa được gắn" in reply
+
+
+def test_carrier_fallback_to_group_id_and_dhvt_unlinked_sender(db_session, assistant_env):
+    """Nhà xe chưa gắn carrier_id dùng group_id kế hoạch; ĐHVT chưa gắn user vẫn tra được."""
+    groups, plans = assistant_env
+    carrier_group = groups[0][0]
+    carrier_group.carrier_id = None
+    plans[0].group_id = carrier_group.zalo_group_id
+    plans[1].group_id = "other_carrier_group"
+    db_session.flush()
+    _, c_own = send(db_session, carrier_group, "LO8200 mấy giờ?")
+    _, c_other = send(db_session, carrier_group, "LO8201 mấy giờ?")
+    assert "LO8200" in c_own and "LO8201" not in c_other
+
+    dhvt_group, _user = dhvt_identity(db_session)
+    _, dhvt_reply = send(db_session, dhvt_group, "LO8200 hiện thế nào?", sender="oa_unlinked_staff")
+    assert "29C-440.22" in dhvt_reply
+
+
+def test_customer_query_multi_identifiers_across_dates(db_session, assistant_env):
+    """Tra Booking và Cont không ghi ngày vẫn tìm được trên ngày khác và trả về cả hai."""
+    from datetime import timedelta
+
+    groups, plans = assistant_env
+    for route in db_session.scalars(
+        select(RouteMap).where(RouteMap.zalo_group_id == groups[0][1].id)
+    ).all():
+        route.is_active = False
+    other_day = REFERENCE.date() - timedelta(days=5)
+    plans[0].group_id = groups[0][1].zalo_group_id
+    plans[0].plan_date = other_day
+    plans[0].booking_no = "B26110492"
+    plans[0].container_no = None
+    plans[1].group_id = groups[0][1].zalo_group_id
+    plans[1].plan_date = other_day
+    plans[1].container_no = "TGCU5311133"
+    plans[1].booking_no = None
+    db_session.flush()
+    _, reply = send(
+        db_session,
+        groups[0][1],
+        "Booking B26110492 có mấy xe? Cont TGCU5311133 xe nào chở?",
+    )
+    assert "Booking B26110492: tổng 1 lệnh" in reply
+    assert "TGCU5311133" in reply and "LO8201" in reply
+    assert "Kế hoạch None" not in reply
+    _, count_only = send(db_session, groups[0][1], "Booking B26110492 có mấy xe?")
+    assert "Booking B26110492: tổng 1 lệnh" in count_only and "1. " not in count_only
+    from src.assistant.response_formatter import format_plans
+
+    long_plans = []
+    for i in range(20):
+        p = TransportPlan(
+            id=snowflake.generate(),
+            plan_date=other_day,
+            order_code=f"LO9{i:03d}",
+            order_type="dong",
+            warehouse_name="KHO CONG TY CO PHAN THUONG MAI VA VAN TAI QUOC TE SIEU DAI " * 2,
+            required_time="15:00",
+        )
+        long_plans.append(p)
+    capped = format_plans(long_plans, "Kế hoạch tra cứu:", detail=True)
+    assert len(capped.text) <= 1900 and "Còn kết quả khác" in capped.text
 
 
 def test_sent_or_queued_trip_creates_review_after_confirmation(db_session, assistant_env):
@@ -559,3 +625,373 @@ def test_timeline_includes_actual_bot_reply_and_extraction(db_session, assistant
     group, _user = dhvt_identity(db_session)
     _, reply = send(db_session, group, "LO8200 đã đổi những gì?")
     assert "Cần bổ sung chì" in reply and "rule-test" in reply
+
+
+def test_customer_cancel_request_approve_notifies_customer_group(
+    api_client, db_session, assistant_env, monkeypatch
+):
+    """Duyệt yêu cầu hủy chuyến từ khách (chưa có ContainerJob, sender test_) vẫn tạo và gửi thông báo về nhóm khách."""
+    from sqlalchemy import delete
+    from src.infrastructure.models import RouteMap
+    from src.infrastructure.security import create_access_token
+    from src.infrastructure.zalo_dispatcher import ZaloDispatcher
+
+    groups, plans = assistant_env
+    cust_group = groups[0][1]
+    cust_group.is_test = False
+    plans[0].group_id = cust_group.zalo_group_id
+    db_session.execute(delete(RouteMap).where(RouteMap.zalo_group_id == cust_group.id))
+    db_session.flush()
+
+    message, _ = send(db_session, cust_group, "Hủy chuyến LO8200")
+    message.sender_id = "test_customer_user_01"
+    message.zalo_message_id = f"zalo_{uuid4().hex[:8]}"
+    db_session.flush()
+
+    case = db_session.scalar(select(ReviewCase).where(ReviewCase.message_id == message.id))
+    assert case is not None
+    assert case.case_type == "CUSTOMER_CHANGE_REQUEST"
+    assert case.container_job_id is None
+
+    sent_calls: list[dict] = []
+
+    def _fake_send(**kwargs):
+        sent_calls.append(kwargs)
+        return True, f"z_out_{uuid4().hex[:6]}", None
+
+    monkeypatch.setattr(settings, "AUTO_DISPATCH_OUTBOUND", True)
+    monkeypatch.setattr(ZaloDispatcher, "send_to_group", _fake_send)
+
+    _group, user = dhvt_identity(db_session)
+    token = create_access_token({"sub": str(user.id), "username": user.username, "role": user.role})
+    response = api_client.post(
+        f"/api/reviews/{case.id}/approve",
+        json={"cancel_reason": "Khách báo hủy lệnh trước giờ đóng hàng"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "APPROVED"
+    assert len(body["cancel_outbound_ids"]) == 1
+    assert plans[0].id in body["updated_plan_ids"]
+
+    db_session.refresh(case)
+    db_session.refresh(plans[0])
+    assert case.status == "APPROVED"
+    assert plans[0].version == 2
+    assert "HUY CHUYEN" in (plans[0].notes or "")
+
+    om = db_session.get(OutboundMessage, body["cancel_outbound_ids"][0])
+    assert om is not None
+    assert om.target_group_id == cust_group.id
+    assert om.message_kind == "cancel"
+    assert om.status == "SENT"
+    assert str(case.id) not in om.content
+    assert any(c["group_id"] == cust_group.zalo_group_id for c in sent_calls)
+
+
+def test_customer_cancel_request_reject_notifies_customer_group_without_snowflake_id(
+    api_client, db_session, assistant_env, monkeypatch
+):
+    """Từ chối yêu cầu hủy/đổi từ khách phải lưu OutboundMessage và gửi Zalo lại cho nhóm khách, không lộ Snowflake ID."""
+    from src.infrastructure.security import create_access_token
+    from src.infrastructure.zalo_dispatcher import ZaloDispatcher
+
+    groups, plans = assistant_env
+    cust_group = groups[0][1]
+    cust_group.is_test = False
+    db_session.flush()
+
+    message, _ = send(db_session, cust_group, "Hủy chuyến LO8200")
+    message.sender_id = "test_customer_user_01"
+    message.zalo_message_id = f"zalo_{uuid4().hex[:8]}"
+    db_session.flush()
+
+    case = db_session.scalar(select(ReviewCase).where(ReviewCase.message_id == message.id))
+    assert case is not None
+
+    sent_calls: list[dict] = []
+
+    def _fake_send(**kwargs):
+        sent_calls.append(kwargs)
+        return True, f"z_rej_{uuid4().hex[:6]}", None
+
+    monkeypatch.setattr(settings, "AUTO_DISPATCH_OUTBOUND", True)
+    monkeypatch.setattr(ZaloDispatcher, "send_to_group", _fake_send)
+
+    _group, user = dhvt_identity(db_session)
+    token = create_access_token({"sub": str(user.id), "username": user.username, "role": user.role})
+    response = api_client.post(
+        f"/api/reviews/{case.id}/reject",
+        json={"reason": "Xe đã vào kho lấy hàng"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "REJECTED"
+
+    db_session.refresh(case)
+    assert case.status == "REJECTED"
+    rej_ids = (case.resolution or {}).get("reject_outbound_ids") or []
+    assert len(rej_ids) == 1
+    om = db_session.get(OutboundMessage, rej_ids[0])
+    assert om is not None
+    assert om.target_group_id == cust_group.id
+    assert om.message_kind == "answer"
+    assert om.status == "SENT"
+    assert "LO8200" in om.content
+    assert "Xe đã vào kho lấy hàng" in om.content
+    assert str(case.id) not in om.content
+    assert str(plans[0].id) not in om.content
+    assert any(
+        c["group_id"] == cust_group.zalo_group_id and "LO8200" in str(c["message"])
+        for c in sent_calls
+    )
+
+
+def test_default_carrier_group_covers_all_carriers_and_unassigned_plans(
+    db_session, assistant_env, monkeypatch
+):
+    """Nhóm nhà xe mặc định (3632c4cbeaa503fb5ab4) xem được lệnh của mọi nhà xe và lệnh chưa gắn nhà xe."""
+    assert settings.DEFAULT_CARRIER_GROUP_ID == "3632c4cbeaa503fb5ab4"
+    groups, plans = assistant_env
+    # Tạo thêm 1 kế hoạch chưa gán carrier_id để mô phỏng dữ liệu kéo TMS ban đầu
+    unassigned_plan = TransportPlan(
+        id=snowflake.generate(),
+        plan_date=date(2026, 11, 10),
+        order_code="RO9999",
+        order_type="tra",
+        customer_id=plans[0].customer_id,
+        customer_name=plans[0].customer_name,
+        warehouse_id=plans[0].warehouse_id,
+        warehouse_name=plans[0].warehouse_name,
+        carrier_id=None,
+        group_id="b0301d81c0ee29b070ff",
+    )
+    db_session.add(unassigned_plan)
+    db_session.flush()
+
+    default_group = db_session.scalar(
+        select(ZaloGroup).where(ZaloGroup.zalo_group_id == settings.DEFAULT_CARRIER_GROUP_ID)
+    )
+    if default_group is None:
+        default_group = ZaloGroup(
+            id=snowflake.generate(),
+            zalo_group_id=settings.DEFAULT_CARRIER_GROUP_ID,
+            name="TMS Nhà xe - TEST",
+            group_role="SOURCE",
+            carrier_id=None,
+            send_mode="AUTO",
+            is_active=True,
+            is_test=False,
+        )
+        db_session.add(default_group)
+    else:
+        default_group.group_role = "SOURCE"
+        default_group.carrier_id = None
+        default_group.is_active = True
+    db_session.flush()
+
+    _, reply_all = send(db_session, default_group, "Hôm nay lệnh nào thiếu cont hoặc chưa có chì?")
+    assert "LO8200" in reply_all
+    assert "LO8201" in reply_all
+    assert "RO9999" in reply_all
+
+    # Nhóm nhà xe riêng vẫn bị cách ly đúng phạm vi của riêng mình
+    _, reply_scoped = send(db_session, groups[0][0], "Hôm nay lệnh nào thiếu cont hoặc chưa có chì?")
+    assert "LO8200" in reply_scoped
+    assert "LO8201" not in reply_scoped
+    assert "RO9999" not in reply_scoped
+
+
+def test_carrier_group_resolves_by_tms_carrier_id_and_code(db_session, assistant_env):
+    """Nhóm nhà xe có thể liên kết qua carriers.tms_carrier_id hoặc carriers.code bên cạnh Snowflake ID."""
+    groups, plans = assistant_env
+    car_group = groups[0][0]
+    carrier = db_session.get(Carrier, plans[0].carrier_id)
+    assert carrier is not None
+    carrier.tms_carrier_id = 99887766
+    carrier.code = f"CAR_{uuid4().hex[:6]}"
+    db_session.flush()
+
+    car_group.carrier_id = str(carrier.tms_carrier_id)
+    db_session.flush()
+    _, reply_tms = send(db_session, car_group, "LO8200 mấy giờ?")
+    assert "LO8200" in reply_tms
+
+    car_group.carrier_id = carrier.code
+    db_session.flush()
+    _, reply_code = send(db_session, car_group, "LO8200 mấy giờ?")
+    assert "LO8200" in reply_code
+
+
+def test_oa_gmf_mention_quote_confirmation_and_normalizer_group_fallback(
+    db_session, assistant_env, monkeypatch
+):
+    """Nhắc tên [@oa_id] xác nhận + quote tin từ nhóm OA GMF (recipient.id) phải khớp đúng nhóm và chốt đề xuất."""
+    from src.infrastructure.fifo_queue import fifo_queue
+    from src.ingestion.normalizer import WebhookIngestor
+
+    monkeypatch.setattr(fifo_queue, "enqueue", lambda _mid: None)
+
+    groups, plans = assistant_env
+    car_group = groups[0][0]
+    msg, _ = send(db_session, car_group, "LO8200 đổi sang 29C-550.22", sender="test_carrier_user_01")
+    draft = db_session.scalar(select(MessageDraft).where(MessageDraft.first_message_id == msg.id))
+    assert draft is not None
+    out = db_session.get(OutboundMessage, int(draft.entities["prompt_outbound_id"]))
+    out.zalo_message_id = f"gmf_{uuid4().hex[:10]}"
+    out.status = "SENT"
+    db_session.flush()
+
+    raw_oa_payload = {
+        "app_id": "4565940023054009074",
+        "event_name": "user_send_group_text",
+        "group_id": "",
+        "sender": {"id": "2025593064656318114", "name": "User Zalo"},
+        "timestamp": "1794782663206",
+        "quote_msg_id": out.zalo_message_id,
+        "message": {
+            "text": "[@2208036998371849749] xác nhận",
+            "msg_id": f"eb_{uuid4().hex[:12]}",
+            "quote_msg_id": out.zalo_message_id,
+        },
+        "raw_payload": {
+            "oa_id": "2208036998371849749",
+            "event_name": "user_send_group_text",
+            "recipient": {"id": car_group.zalo_group_id},
+        },
+    }
+    in_msg, is_dup = WebhookIngestor.ingest_webhook_payload(db_session, raw_oa_payload)
+    assert not is_dup
+    assert in_msg.group_id == car_group.zalo_group_id
+
+    handled = handle_assistant(db_session, in_msg, car_group)
+    assert handled is True
+    db_session.refresh(plans[0])
+    assert plans[0].version == 2
+    assert plans[0].planned_truck_plate == "29C-550.22"
+
+
+def test_carrier_missing_container_warning_is_dispatched_to_zalo(db_session, monkeypatch):
+    """Tin báo xe thiếu container tự động gửi BotReply nhắc nhà xe (không tạo ReviewCase ĐHVT) và tự gộp khi nhà xe bổ sung."""
+    from src.domain.rules import compute_iso6346_check_digit
+    from src.handlers.extraction_handler import ExtractionHandler
+    from src.infrastructure.models import BotReply, Customer, OutboundMessage, ReviewCase, RouteMap, TransportPlan
+    from src.infrastructure.zalo_dispatcher import ZaloDispatcher
+
+    cust = Customer(
+        id=snowflake.generate(),
+        tms_customer_id=f"C_MC_{uuid4().hex[:6]}",
+        name="Khách Test Auto Cont",
+        normalized_name="khách test auto cont",
+        is_active=True,
+    )
+    car_grp = ZaloGroup(
+        id=snowflake.generate(),
+        zalo_group_id=f"real_car_{uuid4().hex[:8]}",
+        name="TMS Nhà xe TEST",
+        group_role="SOURCE",
+        send_mode="AUTO",
+        is_test=False,
+        is_active=True,
+    )
+    cust_grp = ZaloGroup(
+        id=snowflake.generate(),
+        zalo_group_id=f"real_cust_{uuid4().hex[:8]}",
+        name="TMS Khách TEST",
+        group_role="CUSTOMER",
+        send_mode="AUTO",
+        is_test=False,
+        is_active=True,
+    )
+    db_session.add_all([cust, car_grp, cust_grp])
+    db_session.flush()
+
+    cont_ok = "MSKU123456" + str(compute_iso6346_check_digit("MSKU1234560"))
+    db_session.add(
+        RouteMap(
+            id=snowflake.generate(),
+            customer_id=cust.id,
+            zalo_group_id=cust_grp.id,
+            is_active=True,
+        )
+    )
+    db_session.add(
+        TransportPlan(
+            id=snowflake.generate(),
+            tms_order_id=987654321,
+            order_code="RO2744",
+            plan_date=REFERENCE.date(),
+            order_type="RETURN",
+            customer_id=cust.id,
+            customer_name=cust.name,
+            container_no=cont_ok,
+            seal_no="SL998877",
+            group_id=cust_grp.zalo_group_id,
+        )
+    )
+    db_session.flush()
+
+    msg = ZaloMessage(
+        id=snowflake.generate(),
+        zalo_message_id=f"z_{uuid4().hex[:10]}",
+        group_id=car_grp.zalo_group_id,
+        sender_id="2025593064656318114",
+        message_text="| 15F-017.85 | Nguyễn Văn Quyên | 0390687729",
+        raw_payload={},
+        processing_status="QUEUED",
+        created_at=REFERENCE,
+        zalo_sent_at=REFERENCE,
+    )
+    db_session.add(msg)
+    db_session.flush()
+
+    sent_calls: list[dict] = []
+
+    def _fake_send(**kwargs):
+        sent_calls.append(kwargs)
+        return True, f"z_warn_{uuid4().hex[:6]}", None
+
+    monkeypatch.setattr(settings, "AUTO_DISPATCH_OUTBOUND", True)
+    monkeypatch.setattr(ZaloDispatcher, "send_to_group", _fake_send)
+
+    ExtractionHandler.process_message_by_id(db_session, msg.id)
+
+    reply = db_session.scalar(select(BotReply).where(BotReply.message_id == msg.id))
+    assert reply is not None
+    assert reply.zalo_msg_id is not None
+    assert "thiếu số container" in reply.reply_text
+    assert "khách hàng" not in reply.reply_text
+    assert db_session.scalar(select(ReviewCase).where(ReviewCase.message_id == msg.id)) is None
+    assert any(
+        c["group_id"] == car_grp.zalo_group_id and "thiếu số container" in str(c["message"])
+        for c in sent_calls
+    )
+
+    # Nhà xe bổ sung số container (kể cả không quote) -> tự gộp và gửi thông báo khách
+    msg_supp = ZaloMessage(
+        id=snowflake.generate(),
+        zalo_message_id=f"z_{uuid4().hex[:10]}",
+        group_id=car_grp.zalo_group_id,
+        sender_id="2025593064656318114",
+        message_text=f"15F-017.85 cont {cont_ok}",
+        raw_payload={},
+        processing_status="QUEUED",
+        created_at=REFERENCE,
+        zalo_sent_at=REFERENCE,
+    )
+    db_session.add(msg_supp)
+    db_session.flush()
+    ExtractionHandler.process_message_by_id(db_session, msg_supp.id)
+
+    db_session.refresh(reply)
+    assert reply.status == "RESOLVED"
+    assert db_session.scalar(select(ReviewCase).where(ReviewCase.message_id == msg_supp.id)) is None
+    assert any(c["group_id"] == cust_grp.zalo_group_id and cont_ok in str(c["message"]) for c in sent_calls)
+
+    # Khách tra cứu trực tiếp số cont -> chỉ hiển thị thông tin chính, không kèm ghi chú dự kiến hoặc 'Nhà xe báo ... VALID/SENT'
+    _, cust_reply = send(db_session, cust_grp, cont_ok)
+    assert cont_ok in cust_reply and "15F-017.85" in cust_reply
+    assert "Giờ hiển thị là giờ dự kiến" not in cust_reply
+    assert "Nhà xe báo" not in cust_reply
+    assert "định tuyến SENT" not in cust_reply

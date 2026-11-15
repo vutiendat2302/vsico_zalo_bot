@@ -633,8 +633,8 @@ def _handle_customer_group_message(
             notify_zalo=True,
         )
         ack_reply = (
-            f"VSICO đã ghi nhận đề xuất từ Quý khách (Ca #{case_obj.id}) và chuyển bộ phận "
-            "Điều hành vận tải kiểm tra, phản hồi lại trong thời gian sớm nhất."
+            f"VSICO đã ghi nhận đề xuất cho {containers[0] if containers else (primary_plan.order_code if primary_plan else 'chuyến vận chuyển')} "
+            "và chuyển bộ phận Điều hành vận tải kiểm tra, phản hồi lại trong thời gian sớm nhất."
         )
         _send_or_queue_group_reply(db, group, message, ack_reply, order_type="ANSWER")
         _record_activity(

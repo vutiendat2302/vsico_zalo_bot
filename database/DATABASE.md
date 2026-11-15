@@ -97,6 +97,12 @@ sequenceDiagram
 erDiagram
     carriers |o--o{ zalo_info : "nhóm Zalo nhà xe"
     carriers |o--o{ transport_plans : "nhà xe phụ trách"
+    carriers ||--o{ vehicles : "sở hữu đội xe"
+    carriers ||--o{ drivers : "quản lý tài xế"
+    customers ||--o{ customer_aliases : "bí danh khách hàng"
+    warehouses ||--o{ warehouse_aliases : "bí danh kho (tự học / thủ công)"
+    customers |o--o{ warehouse_aliases : "thuộc khách hàng"
+    carriers |o--o{ warehouse_aliases : "thói quen nhà xe"
     zalo_info |o--o{ users : "nhóm Zalo ĐHVT chung"
     zalo_info |o--o{ zalo_messages : "nơi nhận tin"
     zalo_messages |o--o{ files : "đính kèm"
@@ -320,17 +326,55 @@ erDiagram
         string entity_type
         bigint entity_id
     }
+    vehicles {
+        bigint id PK "Snowflake ID"
+        bigint tms_vehicle_id UK
+        bigint carrier_id FK
+        string plate_no "Biển số chuẩn hóa"
+        int vehicle_type "1=Đầu kéo, 2=Rơ-moóc"
+        boolean is_active
+    }
+    drivers {
+        bigint id PK "Snowflake ID"
+        bigint tms_driver_id UK
+        bigint carrier_id FK
+        string full_name
+        string normalized_name
+        string phone
+        string identity_no
+        string license_no
+        boolean is_active
+    }
+    customer_aliases {
+        bigint id PK "Snowflake ID"
+        bigint customer_id FK
+        string alias
+        string normalized_alias
+        string source
+        boolean is_active
+    }
+    warehouse_aliases {
+        bigint id PK "Snowflake ID"
+        bigint warehouse_id FK
+        bigint customer_id FK
+        bigint carrier_id FK
+        string alias
+        string normalized_alias
+        string source "MANUAL | LEARNED"
+        boolean is_active
+    }
 ```
 
 **Quy ước Khóa chính (Snowflake ID) & Khóa đồng bộ TMS:**
 
-- **Khóa chính nội bộ (`id`)**: Toàn bộ 19 bảng trong hệ thống Bot sử dụng **Snowflake ID 64-bit (`BigInteger`)** do tầng ứng dụng sinh tự động (không dùng `AUTO_INCREMENT`), đảm bảo duy nhất toàn cục, phân tán tốt và sắp xếp tăng dần theo thời gian.
-- **Khóa đồng bộ từ TMS (`tms_*_id`)**: Lưu dưới dạng **`BigInteger` (8 bytes)** thay vì `String` để tối ưu dung lượng bộ nhớ và tốc độ tìm kiếm B-Tree Index (do trên TMS các khóa `customer_id`, `warehouse_id`, `carrier_id`, `user_id`, `dispatch_id`, `order_id` đều là số nguyên). Các mã hiển thị dạng chữ (nếu có) được tách riêng vào cột `code`.
+- **Khóa chính nội bộ (`id`)**: Toàn bộ **23 bảng** trong hệ thống Bot sử dụng **Snowflake ID 64-bit (`BigInteger`)** do tầng ứng dụng sinh tự động (không dùng `AUTO_INCREMENT`), đảm bảo duy nhất toàn cục, phân tán tốt và sắp xếp tăng dần theo thời gian.
+- **Khóa đồng bộ từ TMS (`tms_*_id`)**: Lưu dưới dạng **`BigInteger` (8 bytes)** thay vì `String` để tối ưu dung lượng bộ nhớ và tốc độ tìm kiếm B-Tree Index (do trên TMS các khóa `customer_id`, `warehouse_id`, `carrier_id`, `vehicle_id`, `driver_id`, `user_id`, `dispatch_id`, `order_id` đều là số nguyên). Các mã hiển thị dạng chữ (nếu có) được tách riêng vào cột `code`.
+- **Ánh xạ tên bảng nhóm Zalo trong ORM**: Trong thiết kế nghiệp vụ bảng danh bạ nhóm Zalo được gọi là `zalo_info` (hoặc `zalo_groups` trong SQLAlchemy ORM `backend/src/infrastructure/models.py`), hỗ trợ 4 vai trò: `SOURCE` (`car`), `TARGET` (`cus`), `DHVT` (`dhvt`) và `DIRECT_CHAT` (`oa_direct` chat 1-1).
 
 **Quan hệ logic (không có khóa ngoại vật lý trong sơ đồ):**
 
 - `zalo_messages.quote_msg_id` trỏ tới `zalo_messages.zalo_message_id` của tin được trích dẫn.
-- `users.zalo_user_id` khớp với `zalo_messages.sender_id` để nhận diện nhân viên ĐHVT khi hỏi tra cứu Bot trên Zalo (chỉ đọc). Duyệt, sửa, từ chối chỉ thực hiện trên Web; nhóm Zalo ĐHVT chỉ nhận thông báo một chiều.
+- `users.zalo_user_id` khớp với `zalo_messages.sender_id` để nhận diện nhân viên ĐHVT khi hỏi tra cứu Bot trên Zalo (chỉ đọc). Duyệt, sửa, từ chối chỉ thực hiện trên Web; nhóm Zalo ĐHVT chỉ nhận thông báo một chiều và hỗ trợ tra cứu thống kê.
 - Khi người dùng quote một tin của Bot: `zalo_messages.quote_msg_id` được đối chiếu với `outbound_messages.zalo_msg_id` (nơi duy nhất lưu ID tin Bot đã gửi); từ đó tra ra `bot_replies` (câu hỏi đang chờ), `outbound_message_items` (các chuyến đã báo) hoặc `review_cases` (tin thông báo ĐHVT).
 - `container_jobs` được sửa tại chỗ: mỗi lần đổi trường nghiệp vụ thì `version` + 1, giá trị cũ → mới ghi vào `activity_logs.details`. Không tạo dòng `container_jobs` mới cho bản sửa.
 - `activity_logs` tham chiếu mọi bảng qua cặp `entity_type` + `entity_id` (`BigInteger` Snowflake ID).
@@ -338,29 +382,37 @@ erDiagram
 
 ### 3.2 Schema
 
-Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân chia theo 4 nhóm chức năng:
+Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân chia theo **4 nhóm chức năng chính**:
+1. **Nhóm 1 — Danh mục, Bí danh & Cấu hình định tuyến (10 bảng)**: `zalo_info` (`zalo_groups`), `users`, `carriers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`, `vehicles`, `drivers`, `route_maps`.
+2. **Nhóm 2 — Kế hoạch Vận chuyển & Đồng bộ TMS (2 bảng)**: `transport_plans`, `tms_sync_logs`.
+3. **Nhóm 3 — Tiếp nhận, Bóc tách NLP/AI & Thực thi Vận tải (5 bảng)**: `zalo_messages`, `files`, `extraction_runs`, `truck_records`, `container_jobs`.
+4. **Nhóm 4 — Hội thoại, Ca Duyệt & Kiểm toán (6 bảng)**: `message_drafts`, `bot_replies`, `outbound_messages`, `outbound_message_items`, `review_cases`, `activity_logs`.
 
 | STT | Tên bảng CSDL       | Nhóm chức năng       | Vai trò nghiệp vụ chính                                                              |
 | :-: | :-------------------- | :---------------------- | :--------------------------------------------------------------------------------------- |
-|  1  | `zalo_messages`     | Nghiệp vụ Runtime     | Lưu tin nhắn thô ban đầu nhận từ Webhook Zalo                                     |
-|  2  | `zalo_info`         | Danh mục & Cấu hình  | Danh bạ nhóm Zalo (Nhóm Nhà xe, Nhóm Khách hàng, Nhóm ĐHVT chung)               |
+|  1  | `zalo_messages`     | Tiếp nhận & Thực thi  | Lưu tin nhắn thô ban đầu nhận từ Webhook Zalo                                     |
+|  2  | `zalo_info` (`zalo_groups`) | Danh mục & Cấu hình | Danh bạ nhóm Zalo (Nhóm Nhà xe `SOURCE`, Khách hàng `TARGET`, Nội bộ `DHVT`, Chat 1-1 `DIRECT_CHAT`) |
 |  3  | `users`             | Danh mục & Cấu hình  | Tài khoản nội bộ (ĐHVT, Admin) đăng nhập Web quản lý; nhận diện ĐHVT khi hỏi Bot trên Zalo |
 |  4  | `carriers`          | Danh mục & Cấu hình  | Danh mục Nhà xe / Đội xe chuẩn đồng bộ từ phần mềm TMS                        |
 |  5  | `customers`         | Danh mục & Cấu hình  | Danh mục Khách hàng chuẩn đồng bộ từ TMS (không chứa thông tin Zalo)          |
 |  6  | `warehouses`        | Danh mục & Cấu hình  | Danh mục Kho đóng/trả hàng đồng bộ từ TMS                                       |
-|  7  | `transport_plans`   | Kế hoạch Vận chuyển | Kế hoạch vận chuyển hằng ngày (Đồng bộ từ TMS hoặc Import từ Excel/CSV)      |
-|  8  | `outbound_messages` | Nghiệp vụ Runtime     | Mọi tin Bot gửi ra Zalo (khách, nhà xe, nhóm ĐHVT); nơi duy nhất lưu `zalo_msg_id`                           |
-|  9  | `truck_records`     | Nghiệp vụ Runtime     | Thông tin lượt xe (Đầu kéo, Lái xe, SĐT)                                         |
-| 10 | `container_jobs`    | Nghiệp vụ Runtime     | Thực thể trung tâm quản lý từng công việc container                              |
-| 11 | `extraction_runs`   | Nghiệp vụ Runtime     | Nhật ký các phiên bóc tách dữ liệu (AI, Regex, OCR)                              |
-| 12 | `bot_replies`       | Nghiệp vụ Runtime     | Theo dõi câu hỏi Bot đặt cho nhà xe và trạng thái trả lời                                       |
-| 13 | `review_cases`      | Nghiệp vụ Runtime     | Hàng đợi ca cần ĐHVT duyệt và cảnh báo hệ thống (xử lý trên Web)                       |
-| 14 | `tms_sync_logs`     | Nghiệp vụ Runtime     | Nhật ký gọi API đồng bộ dữ liệu sang phần mềm TMS                              |
-| 15 | `route_maps`        | Danh mục & Cấu hình  | Ma trận định tuyến: Khách hàng + Kho + Loại lệnh ➔ Zalo nhận tin               |
-| 16 | `activity_logs`     | Nghiệp vụ Runtime     | Nhật ký kiểm toán (Audit Trail) thao tác người dùng & hệ thống                 |
-| 17 | `files`             | Lưu trữ               | Lưu thông tin file và đường dẫn (MinIO)                                           |
-| 18 | `message_drafts`   | Nghiệp vụ Runtime     | Bản nháp gom tin rời rạc theo (nhóm, người gửi), có hạn chờ debounce             |
-| 19 | `outbound_message_items` | Nghiệp vụ Runtime | Chuyến nào, phiên bản nào đã được báo trong tin gửi đi (chống gửi trùng) |
+|  7  | `transport_plans`   | Kế hoạch & TMS       | Kế hoạch vận chuyển hằng ngày (Đồng bộ từ TMS hoặc Import từ Excel/CSV)      |
+|  8  | `outbound_messages` | Hội thoại & Kiểm toán | Mọi tin Bot gửi ra Zalo (khách, nhà xe, nhóm ĐHVT); nơi duy nhất lưu `zalo_msg_id`                           |
+|  9  | `truck_records`     | Tiếp nhận & Thực thi  | Thông tin lượt xe (Đầu kéo, Rơ-moóc, Lái xe, SĐT)                                |
+| 10  | `container_jobs`    | Tiếp nhận & Thực thi  | Thực thể trung tâm quản lý từng công việc container                              |
+| 11  | `extraction_runs`   | Tiếp nhận & Thực thi  | Nhật ký các phiên bóc tách dữ liệu (Regex, PhoBERT + RapidFuzz, AI, OCR)         |
+| 12  | `bot_replies`       | Hội thoại & Kiểm toán | Theo dõi câu hỏi Bot đặt cho nhà xe và trạng thái trả lời                                       |
+| 13  | `review_cases`      | Hội thoại & Kiểm toán | Hàng đợi ca cần ĐHVT duyệt kèm danh sách `candidate_plans` trên Web              |
+| 14  | `tms_sync_logs`     | Kế hoạch & TMS       | Nhật ký gọi API đồng bộ dữ liệu sang phần mềm TMS                              |
+| 15  | `route_maps`        | Danh mục & Cấu hình  | Ma trận định tuyến: Khách hàng + Kho + Loại lệnh ➔ Zalo nhận tin               |
+| 16  | `activity_logs`     | Hội thoại & Kiểm toán | Nhật ký kiểm toán (Audit Trail) thao tác người dùng & hệ thống                 |
+| 17  | `files`             | Tiếp nhận & Thực thi  | Lưu thông tin file và đường dẫn (MinIO)                                           |
+| 18  | `message_drafts`    | Hội thoại & Kiểm toán | Bản nháp gom tin rời rạc theo (nhóm, người gửi), có hạn chờ debounce             |
+| 19  | `outbound_message_items` | Hội thoại & Kiểm toán | Chuyến nào, phiên bản nào đã được báo trong tin gửi đi (chống gửi trùng) |
+| 20  | `vehicles`          | Danh mục & Cấu hình  | Danh mục Phương tiện (Đầu kéo `1` / Rơ-moóc `2`) đồng bộ từ TMS phục vụ từ điển NLP |
+| 21  | `drivers`           | Danh mục & Cấu hình  | Danh mục Tài xế (Họ tên, SĐT, CCCD, Bằng lái) đồng bộ từ TMS phục vụ từ điển NLP |
+| 22  | `customer_aliases`  | Danh mục & Cấu hình  | Từ điển tên viết tắt / bí danh của Khách hàng phục vụ RapidFuzz & PhoBERT       |
+| 23  | `warehouse_aliases` | Danh mục & Cấu hình  | Từ điển tên viết tắt / bí danh Kho (hỗ trợ tự học `LEARNED` khi ĐHVT duyệt ca)  |
 
 ---
 
@@ -845,6 +897,77 @@ Hệ thống quản lý tổng cộng **19 bảng dữ liệu** được phân c
 
 ---
 
-### Bổ sung kế hoạch nội bộ khi chưa kết nối TMS
+#### BẢNG 20: `vehicles`
 
-`transport_plans` bổ sung `carrier_id` (BIGINT FK carriers, index), `driver_name` (VARCHAR 128), `driver_phone` (VARCHAR 16), `version` (INT, mặc định 1), `tms_sync_status` (VARCHAR 32, mặc định NOT_STARTED). Cập nhật nội bộ đặt PENDING, không đồng nghĩa TMS đã nhận. API cập nhật sử dụng version để chống ghi đè.
+> **Ý nghĩa**: Danh mục phương tiện (Đầu kéo / Rơ-moóc) chuẩn đồng bộ từ API `GET /vehicles` của phần mềm TMS, phục vụ đối chiếu quyền sở hữu đội xe của nhà xe và làm từ điển danh mục cho bộ bóc tách NLP nội bộ (`LocalNLPExtractor`).
+
+| Tên trường        | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định  | Ý nghĩa & Quy tắc nghiệp vụ                                                                                 |
+| :---------------- | :-------------- | :------------------------------------------------------- | :-------- | :---------------------------------------------------------------------------------------------------------- |
+| `id`              | `BigInteger`    | **PK**, Snowflake ID                                     |           | Khóa chính Snowflake 64-bit                                                                                  |
+| `tms_vehicle_id`  | `BigInteger`    | **Unique**, Nullable, **Index**                          | `NULL`    | Khóa nguyên ID phương tiện gốc từ phần mềm TMS                                                               |
+| `carrier_id`      | `BigInteger`    | **FK** (`carriers.id`), Nullable, **Index**              | `NULL`    | Nhà xe quản lý phương tiện                                                                                   |
+| `plate_no`        | `String(32)`    | Not Null, **Index**                                      |           | Biển số đã chuẩn hóa viết liền (VD: `29H42392`, `29R04512`)                                                  |
+| `vehicle_type`    | `Integer`       | Not Null                                                 | `1`       | Phân loại phương tiện: `1` = Đầu kéo (`tractor`), `2` = Rơ-moóc (`trailer`)                                 |
+| `is_active`       | `Boolean`       | Not Null                                                 | `True`    | Trạng thái hoạt động                                                                                         |
+| `created_at`      | `DateTime(UTC)` | Not Null                                                 | `utc_now` | Thời điểm tạo bản ghi                                                                                        |
+| `updated_at`      | `DateTime(UTC)` | Not Null                                                 | `utc_now` | Thời điểm cập nhật bản ghi                                                                                   |
+
+---
+
+#### BẢNG 21: `drivers`
+
+> **Ý nghĩa**: Danh mục tài xế chuẩn đồng bộ từ API `GET /drivers` của phần mềm TMS, dùng để điền tự động SĐT / CCCD khi nhà xe chỉ nhắn tên tài xế hoặc biển số xe, đồng thời là nguồn từ điển cho PhoBERT + RapidFuzz.
+
+| Tên trường        | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định  | Ý nghĩa & Quy tắc nghiệp vụ                                                                                 |
+| :---------------- | :-------------- | :------------------------------------------------------- | :-------- | :---------------------------------------------------------------------------------------------------------- |
+| `id`              | `BigInteger`    | **PK**, Snowflake ID                                     |           | Khóa chính Snowflake 64-bit                                                                                  |
+| `tms_driver_id`   | `BigInteger`    | **Unique**, Nullable, **Index**                          | `NULL`    | Khóa nguyên ID tài xế gốc từ phần mềm TMS                                                                    |
+| `carrier_id`      | `BigInteger`    | **FK** (`carriers.id`), Nullable, **Index**              | `NULL`    | Nhà xe quản lý tài xế                                                                                        |
+| `full_name`       | `String(128)`   | Not Null                                                 |           | Họ và tên tài xế hiển thị                                                                                    |
+| `normalized_name` | `String(128)`   | Nullable, **Index**                                      | `NULL`    | Họ tên bỏ dấu chữ thường phục vụ tìm kiếm mờ (`RapidFuzz`)                                                   |
+| `phone`           | `String(32)`    | Nullable, **Index**                                      | `NULL`    | Số điện thoại 10 số đã chuẩn hóa                                                                             |
+| `identity_no`     | `String(32)`    | Nullable                                                 | `NULL`    | Số CCCD / CMND                                                                                               |
+| `license_no`      | `String(64)`    | Nullable                                                 | `NULL`    | Số giấy phép lái xe (hạng FC)                                                                                |
+| `is_active`       | `Boolean`       | Not Null                                                 | `True`    | Trạng thái hoạt động                                                                                         |
+| `created_at`      | `DateTime(UTC)` | Not Null                                                 | `utc_now` | Thời điểm tạo bản ghi                                                                                        |
+| `updated_at`      | `DateTime(UTC)` | Not Null                                                 | `utc_now` | Thời điểm cập nhật bản ghi                                                                                   |
+
+---
+
+#### BẢNG 22: `customer_aliases`
+
+> **Ý nghĩa**: Lưu trữ các tên gọi tắt, tên thương mại hoặc từ khóa viết tắt của khách hàng để tầng NLP nội bộ (`RapidFuzz + Từ điển danh mục + PhoBERT`) nhận diện khách hàng từ tin nhắn tự do của nhà xe.
+
+| Tên trường         | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định   | Ý nghĩa & Quy tắc nghiệp vụ                                                                                 |
+| :----------------- | :-------------- | :------------------------------------------------------- | :--------- | :---------------------------------------------------------------------------------------------------------- |
+| `id`               | `BigInteger`    | **PK**, Snowflake ID                                     |            | Khóa chính Snowflake 64-bit                                                                                  |
+| `customer_id`      | `BigInteger`    | **FK** (`customers.id`), Not Null, **Index**             |            | Khách hàng chuẩn được ánh xạ                                                                                 |
+| `alias`            | `String(255)`   | Not Null                                                 |            | Cụm từ gọi tắt gốc (VD: `Giấy An Hòa`, `Tôn Hòa Phát`)                                                       |
+| `normalized_alias` | `String(255)`   | Not Null, **Index**                                      |            | Cụm từ bỏ dấu chữ thường phục vụ đối chiếu nhanh                                                             |
+| `source`           | `String(32)`    | Not Null                                                 | `'MANUAL'` | Nguồn tạo bí danh (`'MANUAL'` hoặc `'LEARNED'`)                                                              |
+| `is_active`        | `Boolean`       | Not Null                                                 | `True`     | Trạng thái kích hoạt                                                                                         |
+| `created_at`       | `DateTime(UTC)` | Not Null                                                 | `utc_now`  | Thời điểm tạo bản ghi                                                                                        |
+
+---
+
+#### BẢNG 23: `warehouse_aliases`
+
+> **Ý nghĩa**: Lưu trữ các tên gọi tắt, cụm địa danh hoặc thói quen ghi địa chỉ kho của từng nhà xe. Khi ĐHVT duyệt ca chờ (`review_cases`) và chọn kế hoạch ứng viên trên Web, hệ thống tự động học (`source = 'LEARNED'`) và lưu cụm địa chỉ thô vào bảng này để các chuyến sau tự động khớp (`TH1`).
+
+| Tên trường         | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định   | Ý nghĩa & Quy tắc nghiệp vụ                                                                                 |
+| :----------------- | :-------------- | :------------------------------------------------------- | :--------- | :---------------------------------------------------------------------------------------------------------- |
+| `id`               | `BigInteger`    | **PK**, Snowflake ID                                     |            | Khóa chính Snowflake 64-bit                                                                                  |
+| `warehouse_id`     | `BigInteger`    | **FK** (`warehouses.id`), Not Null, **Index**            |            | Kho chuẩn trong danh mục được ánh xạ                                                                         |
+| `customer_id`      | `BigInteger`    | **FK** (`customers.id`), Nullable, **Index**             | `NULL`     | Khách hàng liên quan (nếu bí danh gắn theo khách)                                                            |
+| `carrier_id`       | `BigInteger`    | **FK** (`carriers.id`), Nullable, **Index**              | `NULL`     | Nhà xe liên quan (phục vụ tầng `habit` theo thói quen từng nhà xe)                                           |
+| `alias`            | `String(255)`   | Not Null                                                 |            | Địa chỉ / tên kho viết tắt nhà xe gửi trên Zalo (VD: `KCN Quế Võ`, `Kho Minh Phú Yên Phong`)                 |
+| `normalized_alias` | `String(255)`   | Not Null, **Index**                                      |            | Chuỗi chuẩn hóa không dấu phục vụ khớp chính xác và `RapidFuzz`                                              |
+| `source`           | `String(32)`    | Not Null                                                 | `'MANUAL'` | `'MANUAL'` (khai báo tay) hoặc `'LEARNED'` (tự học khi ĐHVT duyệt ca trên Web)                               |
+| `is_active`        | `Boolean`       | Not Null                                                 | `True`     | Trạng thái kích hoạt                                                                                         |
+| `created_at`       | `DateTime(UTC)` | Not Null                                                 | `utc_now`  | Thời điểm ghi nhận                                                                                           |
+
+---
+
+### Bổ sung kế hoạch nội bộ và kiểm soát đồng thời
+
+`transport_plans` bổ sung `carrier_id` (`BigInteger` FK `carriers`, index), `driver_name` (`String(128)`), `driver_phone` (`String(16)`), `version` (`Integer`, mặc định `1`), `tms_sync_status` (`String(32)`, mặc định `'NOT_STARTED'`). Khi cập nhật nội bộ, trạng thái đồng bộ đặt về `'PENDING'` để đẩy sang TMS qua `TmsPlanSyncService` (có che SĐT `0903xxxx59` trong nhật ký `tms_sync_logs`). Mọi API cập nhật kế hoạch và duyệt ca trên Web đều kiểm tra `expected_version` để chống ghi đè đồng thời (Optimistic Locking).

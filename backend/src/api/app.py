@@ -41,32 +41,19 @@ fifo_queue.register_processor(ExtractionHandler.process_message_by_id)
 
 
 def seed_initial_users() -> None:
-    """Tự động kiểm tra và khởi tạo tài khoản quản trị viên (admin) nếu chưa tồn tại.
-
-    Cơ chế hoạt động:
-    - Khi Backend khởi động, kiểm tra xem đã có tài khoản với username == 'admin' hoặc role == 'admin' chưa.
-    - Nếu CHƯA CÓ: Tự động tạo tài khoản admin (mật khẩu mặc định: 123456, quyền: admin)
-      kèm nhóm ĐHVT nội bộ (3073804738540831090). Giúp hệ thống hoạt động ngay lập tức khi
-      chuyển sang máy tính khác hoặc môi trường mới mà không cần tạo thủ công.
-    - Nếu ĐÃ CÓ: Bỏ qua và giữ nguyên toàn bộ tài khoản hiện tại.
-    """
+    """Tự động đồng bộ nhóm thật từ Zalo Bridge và khởi tạo tài khoản admin nếu chưa tồn tại."""
     try:
+        from src.api.groups import sync_live_groups_from_bridge
+
         with SessionLocal() as db:
-            # 1. Đảm bảo nhóm Zalo ĐHVT nội bộ (3073804738540831090) luôn tồn tại
-            grp_id = 3073804738540831090
-            existing_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.id == grp_id))
-            if not existing_grp:
-                new_grp = ZaloGroup(
-                    id=grp_id,
-                    zalo_group_id=str(grp_id),
-                    name="Nhóm ĐHVT Nội Bộ VSICO",
-                    group_role=GroupRole.DHVT.value,
-                    send_mode=SendMode.AUTO.value,
-                    is_test=False,
-                    is_active=True,
+            # 1. Đồng bộ danh sách nhóm thật từ Zalo Bridge (nếu Bridge đang chạy)
+            sync_live_groups_from_bridge(db)
+            dhvt_grp = db.scalar(
+                select(ZaloGroup).where(
+                    ZaloGroup.group_role == GroupRole.DHVT.value,
+                    ZaloGroup.is_test.is_(False),
                 )
-                db.add(new_grp)
-                db.commit()
+            )
 
             # 2. Kiểm tra xem hệ thống đã có tài khoản quản trị admin hay chưa
             admin_user = db.scalar(
@@ -83,17 +70,16 @@ def seed_initial_users() -> None:
                     role=UserRole.ADMIN.value,
                     email="admin@vsico.com.vn",
                     password_hash=hash_password("123456"),
-                    zalo_user_id="6691387223255581446",
-                    zalo_info_id=grp_id,
+                    zalo_user_id="2025593064656318114",
+                    zalo_info_id=dhvt_grp.id if dhvt_grp else None,
                     is_active=True,
                     created_at=datetime.now(timezone.utc),
                 )
                 db.add(new_admin)
                 db.commit()
-                print("[SEED] Chưa có admin trong CSDL. Đã tự động tạo tài khoản quản trị: admin / 123456")
-            else:
-                # Đã có tài khoản admin, bỏ qua không can thiệp
-                pass
+            elif dhvt_grp and admin_user.zalo_info_id != dhvt_grp.id:
+                admin_user.zalo_info_id = dhvt_grp.id
+                db.commit()
     except Exception as exc:
         print(f"[SEED WARN] Không thể tự động kiểm tra/khởi tạo tài khoản admin: {exc}")
 

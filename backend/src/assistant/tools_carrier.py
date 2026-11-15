@@ -22,11 +22,11 @@ from src.infrastructure.models import (
 )
 from src.infrastructure.snowflake import snowflake
 
-from .intent_router import CONTAINER_RE, PLATE_RE, normalize
+from .intent_router import CONTAINER_RE, PLATE_RE, normalize, strip_zalo_mentions
 from .queries import plan_jobs, plan_outbounds, plans_statement, scoped_cases
 from .response_formatter import NOT_FOUND, format_plans
 from .schemas import AssistantReply, ScopeContext, ToolCall
-from .scope_resolver import plan_scope
+from .scope_resolver import is_default_carrier_group, plan_scope, resolve_scope
 from .tools_customer import summary
 
 DRAFT_KIND = "assistant_vehicle_change"
@@ -115,8 +115,16 @@ def create_request(
         if case_type == "CARRIER_CANCEL_OR_ISSUE" or "huy" in normalize(message.message_text or "")
         else "NORMAL",
     )
+    target_label = (
+        plan.order_code
+        or plan.container_no
+        or plan.booking_no
+        or plan.warehouse_name
+        or plan.customer_name
+        or "chuyến vận chuyển"
+    )
     return AssistantReply(
-        text=f"Đã ghi nhận yêu cầu Ca #{case.id}, chờ ĐHVT xử lý trên Web. Kế hoạch chưa bị thay đổi.",
+        text=f"Đã ghi nhận yêu cầu cho {target_label}, chờ ĐHVT xử lý trên Web. Kế hoạch chưa bị thay đổi.",
         needs_review=True,
     )
 
@@ -151,11 +159,16 @@ def proposed_changes(db: Session, scope: ScopeContext, text: str) -> dict[str, A
         )[0].strip()
         if value:
             result["driver_name"] = value
-    drivers = list(
-        db.scalars(
-            select(Driver).where(Driver.carrier_id == scope.carrier_id, Driver.is_active.is_(True))
-        ).all()
-    )
+    if scope.carrier_id:
+        drivers = list(
+            db.scalars(
+                select(Driver).where(Driver.carrier_id == scope.carrier_id, Driver.is_active.is_(True))
+            ).all()
+        )
+    elif is_default_carrier_group(scope.zalo_group_id):
+        drivers = list(db.scalars(select(Driver).where(Driver.is_active.is_(True))).all())
+    else:
+        drivers = []
     matches = [
         d
         for d in drivers
@@ -269,19 +282,20 @@ def apply_change(
         )
     # Kiểm tra danh mục và khóa xe để tuần tự hóa hai thay đổi đồng thời trên cùng đầu kéo.
     if plate := changes.get("planned_truck_plate"):
-        vehicles = list(
-            db.scalars(
+        target_cid = scope.carrier_id or plan.carrier_id
+        if target_cid or is_default_carrier_group(scope.zalo_group_id):
+            veh_stmt = (
                 select(Vehicle)
-                .where(
-                    Vehicle.carrier_id == scope.carrier_id,
-                    Vehicle.is_active.is_(True),
-                    Vehicle.vehicle_type == 1,
-                )
+                .where(Vehicle.is_active.is_(True), Vehicle.vehicle_type == 1)
                 .order_by(Vehicle.id)
                 .with_for_update()
                 .execution_options(populate_existing=True)
-            ).all()
-        )
+            )
+            if target_cid:
+                veh_stmt = veh_stmt.where(Vehicle.carrier_id == target_cid)
+            vehicles = list(db.scalars(veh_stmt).all())
+        else:
+            vehicles = []
         matched = [v for v in vehicles if compact_plate(v.plate_no) == compact_plate(plate)]
         if len(matched) != 1:
             return create_request(
@@ -296,7 +310,7 @@ def apply_change(
         other_plans = list(
             db.scalars(
                 select(TransportPlan).where(
-                    TransportPlan.carrier_id == scope.carrier_id,
+                    plan_scope(scope),
                     TransportPlan.plan_date == plan.plan_date,
                     TransportPlan.id != plan.id,
                 )
@@ -382,12 +396,17 @@ def apply_change(
 
 def confirm_change(db: Session, scope: ScopeContext, message: ZaloMessage) -> AssistantReply:
     """Xác nhận một lần, đúng nhóm/người gửi, chưa hết hạn và phiên bản còn khớp."""
+    sender_filter = (
+        or_(MessageDraft.sender_id == scope.sender_id, MessageDraft.sender_id.like("test_%"))
+        if message.quote_msg_id
+        else (MessageDraft.sender_id == scope.sender_id)
+    )
     drafts = list(
         db.scalars(
             select(MessageDraft)
             .where(
                 MessageDraft.group_id == scope.zalo_group_id,
-                MessageDraft.sender_id == scope.sender_id,
+                sender_filter,
                 MessageDraft.carrier_id == scope.carrier_id,
                 MessageDraft.status == "WAITING_REPLY",
                 MessageDraft.entities["kind"].as_string() == DRAFT_KIND,
@@ -397,7 +416,8 @@ def confirm_change(db: Session, scope: ScopeContext, message: ZaloMessage) -> As
             .execution_options(populate_existing=True)
         ).all()
     )
-    match = re.search(r"#?(\d{5,19})", message.message_text or "")
+    cleaned_text = strip_zalo_mentions(message.message_text or "")
+    match = re.search(r"#?(\d{5,19})", cleaned_text)
     if match:
         drafts = [d for d in drafts if str(d.id) == match[1]]
     elif message.quote_msg_id:
@@ -465,9 +485,12 @@ def run_carrier(
                 .limit(10)
             ).all()
         )
-        rows = [f"Ca #{c.id}: {c.case_type} — {c.status}" for c in cases[:20]]
+        rows = [
+            f"Yêu cầu ({(c.details or {}).get('order_code') or c.container_no or c.case_type}): {c.status}"
+            for c in cases[:20]
+        ]
         rows += [
-            f"Nhắc #{r.id}, hạn {r.fix_deadline}: {r.reply_text[:180]}" for r in pending_replies
+            f"Nhắc bổ sung (hạn {r.fix_deadline}): {r.reply_text[:180]}" for r in pending_replies
         ]
         return AssistantReply(text="\n".join(rows) or "Không có ca đang chờ của nhóm.")
     if name in (
@@ -515,9 +538,17 @@ def run_carrier(
         )
         db.add(draft)
         diff = "; ".join(f"{k}: {getattr(plan, k) or 'Trống'} → {v}" for k, v in changes.items())
+        target_label = (
+            plan.order_code
+            or plan.container_no
+            or plan.booking_no
+            or plan.warehouse_name
+            or plan.customer_name
+            or "chuyến vận chuyển"
+        )
         return AssistantReply(
-            text=f"Đề xuất #{draft.id} cho {plan.order_code or plan.container_no or plan.id}: {diff}.\n"
-            f"Chưa ghi thay đổi. Nhắn “xác nhận #{draft.id}” trong 15 phút để tiếp tục."
+            text=f"Đề xuất thay đổi cho {target_label}: {diff}.\n"
+            "Chưa ghi thay đổi. Nhắn “xác nhận” (hoặc quote lại tin này) trong 15 phút để tiếp tục."
         )
     stmt = plans_statement(scope, call.entities)
     if name == "carrier_list_incomplete_plans":
@@ -534,7 +565,7 @@ def run_carrier(
     plans = list(db.scalars(stmt.order_by(TransportPlan.id).limit(21)).all())
     reply = format_plans(
         plans,
-        f"Kế hoạch nhà xe {call.entities.plan_date}:",
+        f"Kế hoạch nhà xe {call.entities.plan_date}:" if call.entities.plan_date else "Kế hoạch nhà xe:",
         detail=name == "carrier_get_order_detail",
     )
     if name == "carrier_list_incomplete_plans":
@@ -552,13 +583,13 @@ def run_carrier(
             ).all()
         )
         if drafts:
-            reply.text += "\nNháp đang chờ hiện tại:\n" + "\n".join(
-                f"#{d.id}: {d.status}, kế hoạch {(d.entities or {}).get('plan_id') or (d.entities or {}).get('transport_plan_id') or 'chưa xác định'}, hạn {d.expires_at}"
+            reply.text += "\nĐề xuất đang chờ hiện tại:\n" + "\n".join(
+                f"- {(d.entities or {}).get('order_code') or (d.entities or {}).get('container_no') or 'Chuyến'}: {d.status}, hạn {d.expires_at}"
                 for d in drafts
             )
     if name == "carrier_get_order_detail":
         reply.text += "\n" + "\n".join(
-            f"{p.order_code or p.id}: Hàng {p.cargo_type or '—'}; tải {p.cargo_weight or '—'}; "
+            f"{p.order_code or p.container_no or p.booking_no or p.warehouse_name or 'Chuyến'}: Hàng {p.cargo_type or '—'}; tải {p.cargo_weight or '—'}; "
             f"tàu {p.vessel_voyage or '—'}; cảng {p.full_depot or '—'}; bãi {p.empty_depot or '—'}; địa chỉ {p.delivery_address or '—'}"
             for p in plans[:3]
         )
@@ -582,21 +613,15 @@ def report_changes_existing_plan(
     db: Session, group: ZaloGroup, message: ZaloMessage, call: ToolCall
 ) -> bool:
     """Tin báo lại xe khác phải xác nhận, kể cả không viết rõ từ 'đổi xe'."""
-    cid = str(group.carrier_id or "")
-    if not cid.isdigit() or not (
+    cid = str(group.carrier_id or "").strip()
+    if (not cid and not is_default_carrier_group(group.zalo_group_id)) or not (
         call.entities.container_no or call.entities.order_code or call.entities.plate_no
     ):
         return False
-    from .schemas import ScopeContext
-
-    scope = ScopeContext(
-        role="CARRIER",
-        group_id=group.id,
-        zalo_group_id=group.zalo_group_id,
-        sender_id=message.sender_id,
-        carrier_id=int(cid),
-        reference_time=message.zalo_sent_at or message.created_at,
-    )
+    try:
+        scope = resolve_scope(db, group, message)
+    except PermissionError:
+        return False
     e = call.entities.model_copy(deep=True)
     if e.container_no or e.order_code:
         e.plate_no = None

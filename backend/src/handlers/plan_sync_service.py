@@ -104,10 +104,18 @@ def _narrow_plans_by_context(plans: list[TransportPlan], job: ContainerJob) -> l
     return candidates
 
 
+def _is_default_carrier_group(group: ZaloGroup) -> bool:
+    """Kiểm tra nhóm nguồn có phải nhóm nhà xe mặc định dùng để test toàn bộ nhà xe không."""
+    default_gid = (settings.DEFAULT_CARRIER_GROUP_ID or "").strip()
+    return bool(default_gid and group.zalo_group_id and group.zalo_group_id.strip() == default_gid)
+
+
 def _filter_plans_for_carrier(plans: list[TransportPlan], group: ZaloGroup) -> list[TransportPlan]:
     """Lọc danh sách kế hoạch thuộc nhà xe của nhóm gửi (chặt theo carrier_id hoặc tên khi id trống)."""
     cid = int(group.carrier_id) if group.carrier_id and str(group.carrier_id).isdigit() else None
     group_cname = _norm_text(group.carrier_name)
+    if cid is None and not group_cname and _is_default_carrier_group(group):
+        return list(plans)
     matched: list[TransportPlan] = []
     for plan in plans:
         if plan.carrier_id is not None:
@@ -130,6 +138,7 @@ def resolve_plan_detailed(
     cid = int(group.carrier_id) if group.carrier_id and str(group.carrier_id).isdigit() else None
     has_carrier_id = cid is not None
     has_carrier_name = bool(_norm_text(group.carrier_name))
+    is_default_carrier = _is_default_carrier_group(group)
 
     raw = dict(job.raw_fields or {})
     linked_id = raw.get("transport_plan_id")
@@ -170,7 +179,7 @@ def resolve_plan_detailed(
                 candidate_plan_ids=[p.id for p in by_cont],
             )
 
-    if not has_carrier_id and not has_carrier_name:
+    if not has_carrier_id and not has_carrier_name and not is_default_carrier:
         return PlanResolutionResult(
             plan=None,
             status="CARRIER_UNREGISTERED",

@@ -6,9 +6,27 @@ from sqlalchemy import and_, false, func, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from src.config.settings import settings
 from src.infrastructure.models import Carrier, RouteMap, TransportPlan, User, ZaloGroup, ZaloMessage
 
 from .schemas import RouteScope, ScopeContext
+
+
+def is_default_carrier_group(zalo_group_id: str | None) -> bool:
+    """Kiểm tra nhóm Zalo có phải nhóm nhà xe mặc định áp dụng cho toàn bộ nhà xe khi test hay không."""
+    default_gid = (settings.DEFAULT_CARRIER_GROUP_ID or "").strip()
+    return bool(default_gid and zalo_group_id and zalo_group_id.strip() == default_gid)
+
+
+def _find_carrier_by_group_ref(db: Session, raw_carrier_id: str) -> Carrier | None:
+    """Tìm nhà xe theo Snowflake id, tms_carrier_id hoặc mã code trên zalo_groups.carrier_id."""
+    cid_str = raw_carrier_id.strip()
+    filters = [Carrier.code == cid_str]
+    if cid_str.isdigit():
+        cid_int = int(cid_str)
+        filters.append(Carrier.id == cid_int)
+        filters.append(Carrier.tms_carrier_id == cid_int)
+    return db.scalar(select(Carrier).where(or_(*filters)))
 
 
 def resolve_scope(db: Session, group: ZaloGroup, message: ZaloMessage) -> ScopeContext:
@@ -26,29 +44,31 @@ def resolve_scope(db: Session, group: ZaloGroup, message: ZaloMessage) -> ScopeC
     carrier_id = user_id = None
     routes = ()
     if role == "CARRIER":
-        cid = str(group.carrier_id or "")
-        carrier = db.get(Carrier, int(cid)) if cid.isdigit() else None
-        if not carrier or not carrier.is_active:
-            raise PermissionError(
-                "Nhóm chưa được liên kết với Nhà xe đang hoạt động. Vui lòng liên hệ ĐHVT."
-            )
-        carrier_id = carrier.id
-    elif role == "DHVT":
-        users = list(
-            db.scalars(
-                select(User).where(
-                    User.zalo_user_id == message.sender_id,
-                    User.is_active.is_(True),
-                    func.lower(User.role).in_(["admin", "dhvt"]),
-                    User.zalo_info_id == group.id,
+        cid = str(group.carrier_id or "").strip()
+        if cid:
+            carrier = _find_carrier_by_group_ref(db, cid)
+            if not carrier or not carrier.is_active:
+                raise PermissionError(
+                    "Nhóm chưa được liên kết với Nhà xe đang hoạt động. Vui lòng liên hệ ĐHVT."
                 )
-            ).all()
+            carrier_id = carrier.id
+    elif role == "DHVT":
+        by_sender = list(
+            db.scalars(select(User).where(User.zalo_user_id == message.sender_id)).all()
         )
-        if len(users) != 1:
-            raise PermissionError(
-                "Tài khoản Zalo chưa được gắn duy nhất với nhân viên ĐHVT của nhóm."
-            )
-        user_id = users[0].id
+        if by_sender:
+            users = [
+                u
+                for u in by_sender
+                if u.is_active
+                and (u.role or "").lower() in ("admin", "dhvt")
+                and (u.zalo_info_id == group.id or u.zalo_info_id is None)
+            ]
+            if len(users) != 1:
+                raise PermissionError(
+                    "Tài khoản Zalo chưa được gắn duy nhất với nhân viên ĐHVT của nhóm."
+                )
+            user_id = users[0].id
     else:
         routes = tuple(
             RouteScope(
@@ -73,11 +93,15 @@ def resolve_scope(db: Session, group: ZaloGroup, message: ZaloMessage) -> ScopeC
 
 
 def plan_scope(scope: ScopeContext) -> ColumnElement[bool]:
-    """Ép phạm vi trên SQL; group_id mặc định không phải quyền xem dữ liệu khách."""
+    """Ép phạm vi trên SQL: ưu tiên RouteMap/carrier_id, nếu chưa gắn thì kiểm tra nhóm test mặc định hoặc group_id."""
     if scope.role == "DHVT":
-        return true() if scope.user_id else false()
+        return true()
     if scope.role == "CARRIER":
-        return TransportPlan.carrier_id == scope.carrier_id if scope.carrier_id else false()
+        if scope.carrier_id:
+            return TransportPlan.carrier_id == scope.carrier_id
+        if is_default_carrier_group(scope.zalo_group_id):
+            return true()
+        return TransportPlan.group_id == scope.zalo_group_id
     conditions = []
     for route in scope.routes:
         terms = [TransportPlan.customer_id == route.customer_id]
@@ -92,4 +116,6 @@ def plan_scope(scope: ScopeContext) -> ColumnElement[bool]:
             )
             terms.append(func.lower(TransportPlan.order_type).in_(aliases))
         conditions.append(and_(*terms))
-    return or_(*conditions) if conditions else false()
+    if conditions:
+        return or_(*conditions)
+    return TransportPlan.group_id == scope.zalo_group_id

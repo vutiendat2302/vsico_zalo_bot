@@ -818,7 +818,14 @@ class ExtractionHandler:
         # 8. Lưu từng xe (`truck_records`) và từng container (`container_jobs`)
         truck_cache: dict[tuple[Optional[str], Optional[str], Optional[str], Optional[str]], TruckRecord] = {}
         has_review_or_error = False
-        is_auto_group = False
+        source_grp = carrier_ctx.source_group
+        source_mode = (
+            SendMode(source_grp.send_mode).value
+            if source_grp and source_grp.send_mode
+            else SendMode.AUTO.value
+        )
+        is_auto_group = source_mode == SendMode.AUTO.value
+        target_carrier_group = message.group_id
         is_test_msg = carrier_ctx.is_test_msg
 
         for idx, line in enumerate(validated_lines):
@@ -1089,6 +1096,20 @@ class ExtractionHandler:
 
             if routing_blocked_type:
                 has_review_or_error = True
+                is_carrier_cont_defect = (
+                    routing_blocked_type == "SHIPPING_NOT_FOUND"
+                    and (not line.container_no or line.check_digit_valid is False)
+                )
+                if is_carrier_cont_defect:
+                    # Lỗi thiếu số container hoặc sai check-digit ISO 6346: Bot tự nhắc nhà xe, không bắt ĐHVT duyệt ngay
+                    container_job.validation_status = (
+                        ValidationStatus.INVALID.value
+                        if line.check_digit_valid is False
+                        else ValidationStatus.NEEDS_REVIEW.value
+                    )
+                    container_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
+                    continue
+
                 container_job.validation_status = ValidationStatus.NEEDS_REVIEW.value
                 container_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
                 carrier_obj = (
@@ -1130,14 +1151,11 @@ class ExtractionHandler:
 
             # Xác định chế độ gửi của nhóm (send_mode): 'AUTO' hoặc 'MANUAL'
             target_grp = db.get(ZaloGroup, target_grp_id) if target_grp_id else None
-            source_grp = carrier_ctx.source_group
 
             target_mode = (SendMode(target_grp.send_mode).value if target_grp and target_grp.send_mode else SendMode.AUTO.value)
-            source_mode = (SendMode(source_grp.send_mode).value if source_grp and source_grp.send_mode else SendMode.AUTO.value)
             is_auto_group = (target_mode == SendMode.AUTO.value) and (source_mode == SendMode.AUTO.value)
 
             target_carrier_group = message.group_id
-            is_test_msg = carrier_ctx.is_test_msg
 
             paused_grp_name = (
                 source_grp.name

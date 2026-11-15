@@ -102,10 +102,6 @@ def execute(
     spec = REGISTRY.get(call.intent)
     if not spec or scope.role not in spec.allowed_roles:
         raise PermissionError("Công cụ không được phép trong vai trò hiện tại.")
-    if (scope.role == "DHVT" and not scope.user_id) or (
-        scope.role == "CARRIER" and not scope.carrier_id
-    ):
-        raise PermissionError("Thiếu danh tính được xác thực.")
     if call.route_source == "llm" and not spec.read_only:
         raise PermissionError("AI không được trực tiếp yêu cầu thay đổi dữ liệu.")
     if call.needs_clarification or call.confidence < 0.8:

@@ -121,7 +121,7 @@ flowchart TD
     H -- "Quote tin của Bot,<br/>có câu hỏi chờ (bot_replies)" --> R_BOT["Khớp bot_replies qua quote_msg_id<br/>Đóng câu hỏi chờ"] --> MERGE
     H -- "Là câu hỏi, có tag Bot, chat riêng,<br/>hoặc quote Bot (không có câu hỏi chờ)" --> Q1["Gom ngữ cảnh ngắn<br/>LLM gọi tool tra cứu theo group_id"]
     Q1 --> Q2["Trả lời vào nhóm hoặc người hỏi"] --> Z
-    H -- "Khớp F1 / F2 / F3, đủ trường" --> P1["Backend NLP bóc tách<br/>Không gọi LLM"] --> V
+    H -- "Khớp F1 / F2 / F3, đủ trường" --> P1["Backend NLP bóc tách (PhoBERT + Từ điển danh mục + RapidFuzz)<br/>Không gọi LLM"] --> V
     H -- "Rời rạc, thiếu trường,<br/>quote tin nhà xe, sửa, hủy" --> R0{"Kiểu tin"}
 
     R0 -- "Kiểu 1: quote tin của nhà xe" --> R1["Lấy tin gốc và chuyến gắn với quote"]
@@ -1139,11 +1139,14 @@ flowchart TD
 - Mọi lượt gọi tích hợp tới TMS được ghi vết chi tiết tại `tms_sync_logs`, bao gồm dữ liệu gửi, phản hồi và số lần thử lại (Retry).
 - Tin nhắn gửi ra nền tảng Zalo được kiểm soát qua bộ điều tiết tần suất **Token Bucket** (`ZaloOutboundThrottler`) với giới hạn 10 request/giây và bộ đệm tức thời 20 tokens, kết hợp thuật toán lùi thời gian theo hàm mũ (Exponential Backoff) khi nhận mã lỗi `HTTP 429` để bảo vệ tài khoản không bị Zalo khóa do nghi vấn spam. Nếu gửi thất bại 3 lần liên tiếp, hệ thống tự động chuyển trạng thái tin sang lỗi và sinh cảnh báo cho ĐHVT xử lý thủ công.
 
-## 3. Việc cần chốt thêm
+## 3. Các quy chuẩn đã chốt và triển khai trong phiên bản v1.0.0
 
-| Nội dung                                                                           | Trạng thái |
-| :---------------------------------------------------------------------------------- | :----------- |
-| Danh sách chính xác các trường được phép hiển thị cho khách hàng      | Chưa chốt  |
-| Thời gian lưu `raw_payload` và file ảnh trước khi xóa mềm                 | Chưa chốt  |
-| Cách xác thực chữ ký webhook khi chuyển từ Zalo OA sang cầu nối `zca-js` | Chưa chốt  |
-| Chính sách khóa tài khoản và hết hạn phiên đăng nhập Web                | Chưa chốt  |
+| Nội dung                                                                           | Trạng thái | Quy chuẩn triển khai thực tế trong hệ thống (v1.0.0) |
+| :---------------------------------------------------------------------------------- | :----------- | :--------------------------------------------------- |
+| Tầng bóc tách NLP nội bộ (`backend/src/parsing/local_nlp_extractor.py`)            | Đã chốt    | Kết hợp **PhoBERT** (tách từ ghép tiếng Việt & nhận diện thực thể BIO NER `PER`/`LOC`/`ORG`), **Từ điển danh mục** (`vehicles`, `drivers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`), **RapidFuzz** và giải quyết đồng tham chiếu (`"xe trên"`, `"tài xế đó"`). |
+| Động cơ đối chiếu kế hoạch 6 nhánh (`backend/src/handlers/plan_resolution_engine.py`) | Đã chốt | Phân loại `TH1` (Khớp tự động), `TH2` (Nhiều ứng viên `candidate_plans`), `TH3` (Chưa khớp / Tự học `WarehouseAlias`), `TH4` (Thiếu thông tin), `TH5` (Mâu thuẫn nhà xe/đội xe), `TH6` (Cảnh báo vỏ container) và đồng bộ nguyên tử `RO -> LO`. |
+| Công cụ tra cứu thống kê cho ĐHVT (`backend/src/assistant/tools_dhvt.py`)          | Đã chốt    | Hỗ trợ tra cứu tổng số lệnh, **số lệnh đóng (`LO`), số lệnh trả (`RO`)**, số lệnh đã có xe/chưa có xe trên toàn hệ thống hoặc **theo từng vùng miền (`Miền Bắc`, `Miền Trung`, `Miền Nam`) và từng tỉnh/thành phố**; chặn tuyệt đối lệnh ghi qua `BLOCK_WRITE`. |
+| Danh sách chính xác các trường được phép hiển thị cho khách hàng                   | Đã chốt    | Chỉ hiển thị biển số đầu kéo/rơ-moóc, tên tài xế, SĐT tài xế, số container, số chì (seal), kho giao/nhận và trạng thái điều xe trong phạm vi `route_maps`. |
+| Thời gian lưu `raw_payload` và file ảnh trước khi xóa mềm                          | Đã chốt    | Lưu trữ tập trung trên MinIO qua bảng `files` (`bucket`, `object_key`, `sha256`), cấp quyền xem qua Presigned URL ngắn hạn. |
+| Xác thực chữ ký webhook và đồng bộ nhóm từ `oa-bridge` / `zca-js`                  | Đã chốt    | Xác thực qua `X-Webhook-Secret` và tự động đồng bộ nhóm thực tế (`SOURCE`, `TARGET`, `DHVT`, `DIRECT_CHAT`) từ `GET /api/bot/groups` vào bảng `zalo_groups`. |
+| Chính sách khóa phiên bản và xác thực phiên đăng nhập Web                          | Đã chốt    | Sử dụng JWT trong `httpOnly` cookie kết hợp RBAC (`admin` / `dhvt`) và khóa lạc quan `expected_version` (trả `409 Conflict` khi xung đột phiên bản). |

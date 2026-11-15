@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     # 5. Cấu hình Zalo Outbound Bridge (zca-js bot_api_server)
     ZALO_BRIDGE_URL: str = "http://localhost:3000"
     AUTO_DISPATCH_OUTBOUND: bool = True
+    DEFAULT_CARRIER_GROUP_ID: str = "3632c4cbeaa503fb5ab4"
 
     # 6. Cấu hình PaddleOCR Tự Host (Local Self-Hosted PaddleOCR)
     OCR_ENABLED: bool = True
