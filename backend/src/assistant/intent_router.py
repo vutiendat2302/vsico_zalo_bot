@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from .schemas import Entities, Role, ToolCall
 
-PLATE_RE = re.compile(r"\b\d{2}[A-Z]{1,2}[- .]?\d{3}[- .]?\d{2}\b", re.IGNORECASE)
+PLATE_RE = re.compile(r"\b\d{2}[A-Z]{1,2}(?:[- ./]?\d{3}[- .]?\d{2}|[- ./]?\d{4,5})\b", re.IGNORECASE)
 CONTAINER_RE = re.compile(r"\b[A-Z]{4}\d{7}\b", re.IGNORECASE)
 ZALO_MENTION_RE = re.compile(r"\[@\d+\]")
 

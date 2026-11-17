@@ -52,14 +52,21 @@ def plans_statement(scope: ScopeContext, e: Entities) -> Select[tuple[TransportP
             stmt = stmt.where(func.lower(TransportPlan.order_type).in_(["tra", "return", "ro"]))
     if e.plate_no:
         plate = compact_plate(e.plate_no)
-        column = func.upper(
+        truck_col = func.upper(
             func.replace(
                 func.replace(func.replace(TransportPlan.planned_truck_plate, "-", ""), ".", ""),
                 " ",
                 "",
             )
         )
-        stmt = stmt.where(column == plate)
+        trailer_col = func.upper(
+            func.replace(
+                func.replace(func.replace(TransportPlan.planned_trailer_plate, "-", ""), ".", ""),
+                " ",
+                "",
+            )
+        )
+        stmt = stmt.where(or_(truck_col == plate, trailer_col == plate))
     if e.assigned is not None:
         empty = or_(
             TransportPlan.planned_truck_plate.is_(None),

@@ -98,6 +98,7 @@ erDiagram
     carriers |o--o{ zalo_info : "nhóm Zalo nhà xe"
     carriers |o--o{ transport_plans : "nhà xe phụ trách"
     carriers ||--o{ vehicles : "sở hữu đội xe"
+    carriers ||--o{ trailers : "sở hữu rơ-moóc"
     carriers ||--o{ drivers : "quản lý tài xế"
     customers ||--o{ customer_aliases : "bí danh khách hàng"
     warehouses ||--o{ warehouse_aliases : "bí danh kho (tự học / thủ công)"
@@ -334,6 +335,18 @@ erDiagram
         int vehicle_type "1=Đầu kéo, 2=Rơ-moóc"
         boolean is_active
     }
+    trailers {
+        bigint id PK "Snowflake ID"
+        bigint tms_mooc_id UK
+        bigint tms_carrier_id
+        bigint carrier_id FK
+        string license_plate "Biển số rơ-moóc"
+        string normalized_plate "Biển số chuẩn hóa"
+        int mooc_type "Loại rơ-moóc (1, 2)"
+        string model "Hãng / quy cách"
+        text note "Ghi chú"
+        boolean is_active
+    }
     drivers {
         bigint id PK "Snowflake ID"
         bigint tms_driver_id UK
@@ -382,8 +395,8 @@ erDiagram
 
 ### 3.2 Schema
 
-Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân chia theo **4 nhóm chức năng chính**:
-1. **Nhóm 1 — Danh mục, Bí danh & Cấu hình định tuyến (10 bảng)**: `zalo_info` (`zalo_groups`), `users`, `carriers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`, `vehicles`, `drivers`, `route_maps`.
+Hệ thống quản lý tổng cộng **24 bảng dữ liệu** được phân chia theo **4 nhóm chức năng chính**:
+1. **Nhóm 1 — Danh mục, Bí danh & Cấu hình định tuyến (11 bảng)**: `zalo_info` (`zalo_groups`), `users`, `carriers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`, `vehicles`, `trailers`, `drivers`, `route_maps`.
 2. **Nhóm 2 — Kế hoạch Vận chuyển & Đồng bộ TMS (2 bảng)**: `transport_plans`, `tms_sync_logs`.
 3. **Nhóm 3 — Tiếp nhận, Bóc tách NLP/AI & Thực thi Vận tải (5 bảng)**: `zalo_messages`, `files`, `extraction_runs`, `truck_records`, `container_jobs`.
 4. **Nhóm 4 — Hội thoại, Ca Duyệt & Kiểm toán (6 bảng)**: `message_drafts`, `bot_replies`, `outbound_messages`, `outbound_message_items`, `review_cases`, `activity_logs`.
@@ -572,6 +585,7 @@ Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân c
 | `carrier_id`          | `BigInteger`     | **FK** (`carriers.id`), Nullable, **Index**   | `NULL`    | ID nhà xe phụ trách chuyến này (liên kết trực tiếp với `carriers.id` và khớp `zalo_info.carrier_id`)           |
 | `fleet_partner`       | `String(255)`    | Nullable                                                    | `NULL`    | Tên đội xe / đối tác vận tải trong file kế hoạch (VD: `'Tuấn Hưng'`, `'Phương Anh HP'`)                                  |
 | `planned_truck_plate` | `String(64)`     | Nullable                                                    | `NULL`    | Số xe kế hoạch dự kiến điều (VD: `'29C-445.41'`)                                                                         |
+| `planned_trailer_plate` | `String(64)`   | Nullable                                                    | `NULL`    | Biển số rơ-moóc kế hoạch (VD: `'15R-123.45'`)                                                                             |
 | `car_name`            | `String(255)`    | Nullable, **Index**                                   | `NULL`    | Tên đội xe / Nhà xe hiển thị trong file kế hoạch (VD: `'Phương Anh HP'`)                                           |
 | `number_truck`        | `String(64)`     | Nullable                                                    | `NULL`    | Biển số xe được dự kiến điều (VD: `'29C-445.41'`)                                                                   |
 | `delivery_address`    | `Text`           | Nullable                                                    | `NULL`    | Địa chỉ chi tiết điểm đóng hoặc trả hàng                                                                            |

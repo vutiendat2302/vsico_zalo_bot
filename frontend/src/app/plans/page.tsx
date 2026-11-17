@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
-import { X } from "lucide-react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
+import { RefreshCw, X } from "lucide-react";
 import { toast } from "@/components/shared/Toast";
 import {
   TransportPlanItem,
@@ -11,8 +11,11 @@ import {
   createTransportPlan,
   updateTransportPlan,
   deleteTransportPlan,
+  syncTransportPlansFromTms,
 } from "@/lib/api";
+import { getTmsAutoSyncStatus, TmsAutoSyncStatus } from "@/features/master/api";
 import { PlanDetailModal } from "@/features/plans/components/PlanDetailModal";
+import { formatSyncTime, todayVnIso } from "@/lib/utils";
 
 export default function PlansPage() {
   const [plans, setPlans] = useState<TransportPlanItem[]>([]);
@@ -24,8 +27,8 @@ export default function PlansPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  // Filters
-  const [planDate, setPlanDate] = useState<string>("2026-11-09");
+  // Filters (mặc định ngày hôm nay theo giờ Việt Nam để khớp dữ liệu đồng bộ TMS)
+  const [planDate, setPlanDate] = useState<string>(() => todayVnIso());
   const [containerNo, setContainerNo] = useState<string>("");
   const [customerName, setCustomerName] = useState<string>("");
   const [orderType, setOrderType] = useState<string>("");
@@ -33,18 +36,20 @@ export default function PlansPage() {
   const [driverName, setDriverName] = useState<string>("");
   const [searchKeyword, setSearchKeyword] = useState<string>("");
 
-  // Modals & Upload State
+  // Modals & Upload / Sync State
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingPlan, setEditingPlan] = useState<Partial<TransportPlanItem> | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<TransportPlanItem | null>(null);
   const [importing, setImporting] = useState(false);
+  const [syncingTms, setSyncingTms] = useState(false);
+  const [autoSyncStatus, setAutoSyncStatus] = useState<TmsAutoSyncStatus | null>(null);
   const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Create Form State
   const [newPlan, setNewPlan] = useState({
-    plan_date: "2026-11-09",
+    plan_date: todayVnIso(),
     stt: "",
     route_name: "",
     cargo_io_type: "I",
@@ -61,6 +66,7 @@ export default function PlansPage() {
     full_depot: "PTSC",
     fleet_partner: "",
     planned_truck_plate: "",
+    planned_trailer_plate: "",
     driver_name: "",
     driver_phone: "",
     delivery_address: "",
@@ -91,6 +97,15 @@ export default function PlansPage() {
     }
   };
 
+  const refreshSyncStatus = useCallback(async () => {
+    try {
+      const st = await getTmsAutoSyncStatus();
+      setAutoSyncStatus(st);
+    } catch {
+      // Bỏ qua lỗi đọc trạng thái nền
+    }
+  }, []);
+
   useEffect(() => {
     setCurrentPage(1);
     loadPlans(1, pageSize);
@@ -99,6 +114,34 @@ export default function PlansPage() {
   useEffect(() => {
     loadPlans(currentPage, pageSize);
   }, [currentPage, pageSize]);
+
+  useEffect(() => {
+    refreshSyncStatus();
+    const timer = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        loadPlans(currentPage, pageSize);
+        refreshSyncStatus();
+      }
+    }, 60 * 1000);
+    return () => clearInterval(timer);
+  }, [currentPage, pageSize, planDate, orderType, containerNo, customerName, truckPlate, driverName, searchKeyword, refreshSyncStatus]);
+
+  const handleSyncFromTms = async () => {
+    const targetDate = planDate || todayVnIso();
+    setSyncingTms(true);
+    try {
+      const res = await syncTransportPlansFromTms({ plan_date: targetDate, region: 1 });
+      toast.success(res.message);
+      if (!planDate) {
+        setPlanDate(targetDate);
+      }
+      await Promise.all([loadPlans(1, pageSize), refreshSyncStatus()]);
+    } catch (err: any) {
+      toast.error(err?.message || "Lỗi đồng bộ kế hoạch từ TMS");
+    } finally {
+      setSyncingTms(false);
+    }
+  };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,6 +226,27 @@ export default function PlansPage() {
         </h1>
 
         <div className="flex flex-wrap items-center gap-2">
+          {autoSyncStatus && (
+            <span
+              className="text-[11px] text-slate-500 hidden sm:inline tabular-nums mr-1"
+              title={autoSyncStatus.last_error || "Tự động đồng bộ nền từ TMS"}
+            >
+              {autoSyncStatus.enabled
+                ? `Tự động ${autoSyncStatus.interval_minutes}p · ${formatSyncTime(autoSyncStatus.last_success_at)}`
+                : "Tự động tắt"}
+            </span>
+          )}
+
+          <button
+            type="button"
+            onClick={handleSyncFromTms}
+            disabled={syncingTms}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-sm text-xs font-medium transition disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncingTms ? "animate-spin" : ""}`} />
+            <span>{syncingTms ? "Đang đồng bộ..." : "Đồng bộ TMS"}</span>
+          </button>
+
           <label className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-900 border border-slate-200 rounded-sm text-xs font-medium cursor-pointer transition">
             <span>{importing ? "Đang import..." : "Import Excel / CSV"}</span>
             <input
@@ -251,7 +315,16 @@ export default function PlansPage() {
         className="bg-white border border-slate-200 p-4 rounded-sm grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 text-xs"
       >
         <div>
-          <label className="block text-slate-600 mb-1 font-medium">Ngày kế hoạch:</label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-slate-600 font-medium">Ngày kế hoạch:</label>
+            <button
+              type="button"
+              onClick={() => setPlanDate(todayVnIso())}
+              className="text-[11px] text-purple-700 hover:underline font-medium"
+            >
+              Hôm nay
+            </button>
+          </div>
           <input
             type="date"
             value={planDate}
@@ -366,6 +439,7 @@ export default function PlansPage() {
                 <th className="py-2.5 px-3">Khách hàng</th>
                 <th className="py-2.5 px-3">Tài xế</th>
                 <th className="py-2.5 px-3">Biển số xe</th>
+                <th className="py-2.5 px-3">Rơ-moóc</th>
                 <th className="py-2.5 px-3">Nhóm Zalo</th>
                 <th className="py-2.5 px-3">Tuyến</th>
                 <th className="py-2.5 px-3">Địa chỉ</th>
@@ -375,7 +449,7 @@ export default function PlansPage() {
             <tbody className="divide-y divide-slate-200 font-normal">
               {plans.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-10 text-center text-slate-500">
+                  <td colSpan={10} className="py-10 text-center text-slate-500">
                     Không có dữ liệu kế hoạch.
                   </td>
                 </tr>
@@ -398,6 +472,9 @@ export default function PlansPage() {
                     </td>
                     <td className="py-2.5 px-3 whitespace-nowrap font-mono text-slate-900">
                       {p.planned_truck_plate || "—"}
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap font-mono text-slate-700">
+                      {p.planned_trailer_plate || "—"}
                     </td>
                     <td className="py-2.5 px-3 whitespace-nowrap">
                       <span
@@ -673,6 +750,16 @@ export default function PlansPage() {
                     className="w-full bg-white border border-slate-300 rounded-sm p-2 text-slate-900 font-mono"
                   />
                 </div>
+                <div>
+                  <label className="block mb-1 font-medium text-slate-600">Biển số rơ-moóc:</label>
+                  <input
+                    type="text"
+                    placeholder="VD: 15R-123.45"
+                    value={newPlan.planned_trailer_plate}
+                    onChange={(e) => setNewPlan({ ...newPlan, planned_trailer_plate: e.target.value })}
+                    className="w-full bg-white border border-slate-300 rounded-sm p-2 text-slate-900 font-mono"
+                  />
+                </div>
               </div>
 
               <div>
@@ -890,6 +977,18 @@ export default function PlansPage() {
                     value={editingPlan.planned_truck_plate || ""}
                     onChange={(e) =>
                       setEditingPlan({ ...editingPlan, planned_truck_plate: e.target.value })
+                    }
+                    className="w-full bg-white border border-slate-300 rounded-sm p-2 text-slate-900 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block mb-1 font-medium text-slate-600">Biển số rơ-moóc:</label>
+                  <input
+                    type="text"
+                    placeholder="VD: 15R-123.45"
+                    value={editingPlan.planned_trailer_plate || ""}
+                    onChange={(e) =>
+                      setEditingPlan({ ...editingPlan, planned_trailer_plate: e.target.value })
                     }
                     className="w-full bg-white border border-slate-300 rounded-sm p-2 text-slate-900 font-mono"
                   />

@@ -25,6 +25,7 @@ Thư mục này chứa toàn bộ tài liệu đặc tả kiểm thử API qua P
 | 14 | [`14_tro_ly_van_tai_phase1.md`](./14_tro_ly_van_tai_phase1.md) | **Trợ Lý Vận Tải Đa Vai Trò (Phase 1)**: Kiểm thử hội thoại trợ lý cho Khách hàng, Nhà xe và ĐHVT. | Port 8000 & 8001 |
 | 15 | [`15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md`](./15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md) | **NLP Nội Bộ (`RapidFuzz + Từ Điển Danh Mục + PhoBERT`), Đối Chiếu 6 Nhánh & Thống Kê Vùng/Tỉnh ĐHVT**: Đồng bộ nhóm thật OA Bridge, tách từ ghép PhoBERT, NER `PER`/`LOC`, đồng tham chiếu, ghép `RO -> LO` và thống kê lệnh đóng/trả theo vùng/tỉnh trên Postman. | Port 8000, 8001, 3000 |
 | 16 | [`16_kiem_thu_bo_25000_proxy_tung_sheet.md`](./16_kiem_thu_bo_25000_proxy_tung_sheet.md) | **Kiểm Thử Proxy 25.000 Kịch Bản Theo Từng Sheet, Family & Postman Sandbox**: Hướng dẫn chạy toàn bộ 25.000 test (`run_proxy_25000_eval.py`), chạy lọc từng sheet / family / `Test ID` / `--only-fail`, đọc 26 chỉ số CSV/Excel và test mẫu 1–12+ chuyến trên `POST /api/sandbox/simulate`. | CLI Proxy & Port 8000 |
+| 17 | [`17_tms_dispatch_assignment.md`](./17_tms_dispatch_assignment.md) | **Tích Hợp Cập Nhật Điều Phối Sang TMS (`dispatch-assignment`)**: Kiểm thử trực tiếp API `POST /api/integrations/zalo/dispatch-assignment`, cập nhật từng phần, chuẩn hóa biển số có dấu chấm, hội thoại nhiều lượt, tách riêng LO/RO và đối soát `tms_sync_logs` / `activity_logs`. | Port 8000 & TMS |
 
 ---
 

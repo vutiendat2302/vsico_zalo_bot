@@ -156,6 +156,29 @@ class Vehicle(Base):
     )
 
 
+class Trailer(Base):
+    """Danh mục Rơ-moóc (Moóc) chuẩn đồng bộ từ phần mềm TMS (`GET /carrier-moocs`)."""
+
+    __tablename__ = "trailers"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    tms_mooc_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
+    tms_carrier_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
+    carrier_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("carriers.id"), nullable=True, index=True
+    )
+    license_plate: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    normalized_plate: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    mooc_type: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class Driver(Base):
     """Danh mục Tài xế chuẩn đồng bộ từ PM TMS."""
 
@@ -254,6 +277,7 @@ class TransportPlan(Base):
     estimated_drop_time: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="Giờ dự kiến hạ hàng")
     fleet_partner: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Đội xe: Tuấn Hưng, Phương Anh HP...")
     planned_truck_plate: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="Số xe kế hoạch: 29C-445.41...")
+    planned_trailer_plate: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="Biển số rơ-moóc kế hoạch: 15R-123.45...")
     delivery_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="Địa chỉ đóng/ trả hàng")
     group_id: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, index=True, default="b0301d81c0ee29b070ff", comment="Group ID Zalo nhận thông báo"

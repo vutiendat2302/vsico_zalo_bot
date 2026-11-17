@@ -12,7 +12,7 @@ Tuân thủ nghiêm ngặt nguyên tắc Template Isolation (Mục 1.6 - AGENTS.
 
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 from src.domain.models import ExtractedContainerLine
@@ -41,6 +41,25 @@ def format_masked_phone(phone: Optional[str]) -> str:
     if not phone:
         return ""
     return str(phone).strip()
+
+
+def format_plan_date_display(plan_date_val: Any) -> str:
+    """Định dạng ngày kế hoạch vận chuyển sang chuẩn DD/MM/YYYY."""
+    if not plan_date_val:
+        return ""
+    if isinstance(plan_date_val, datetime):
+        return plan_date_val.strftime("%d/%m/%Y")
+    if isinstance(plan_date_val, date):
+        return plan_date_val.strftime("%d/%m/%Y")
+    s = str(plan_date_val).strip()
+    if not s:
+        return ""
+    if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", s):
+        return s
+    try:
+        return date.fromisoformat(s[:10]).strftime("%d/%m/%Y")
+    except ValueError:
+        return s
 
 
 def format_arrival_time_display(eta_val: Any) -> str:
@@ -111,10 +130,10 @@ class TemplateEngine:
         if loai_clean == "tra":
             return (
                 "VSICO - THÔNG BÁO XE TRẢ HÀNG\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
                 "- Số chì: {so_chi}\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Lái xe: {tai_xe} - SĐT: {sdt}\n"
                 "- Điểm trả: {diem_tra}\n"
                 "- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}\n"
@@ -122,13 +141,13 @@ class TemplateEngine:
         elif loai_clean == "capnhat":
             return (
                 "VSICO - THÔNG BÁO CẬP NHẬT THÔNG TIN XE\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "Cập nhật thông tin xe cho cont {so_cont}:\n"
                 "Các thông tin thay đổi:\n{thay_doi}\n\n"
                 "Thông tin xe hiện tại:\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
                 "- Số chì: {so_chi}\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Lái xe: {tai_xe} - SĐT: {sdt}\n"
                 "- Điểm đến: {diem_den}\n"
                 "- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}\n"
@@ -136,20 +155,20 @@ class TemplateEngine:
         elif loai_clean == "huy":
             return (
                 "VSICO - THÔNG BÁO HỦY CHUYẾN\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "Chuyến xe đã được xác nhận hủy:\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Điểm đến: {diem_den}\n"
                 "- Lý do: {ly_do}{dong_ghi_chu}\n"
             )
         else:
             return (
                 "VSICO - THÔNG BÁO XE ĐÓNG HÀNG\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
                 "- Số chì: {so_chi}\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Lái xe: {tai_xe} - SĐT: {sdt}\n"
                 "- Điểm đóng: {diem_dong}\n"
                 "- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}\n"
@@ -164,17 +183,26 @@ class TemplateEngine:
         """Điền dữ liệu thực tế vào mẫu thông báo."""
         tpl = self.get_template(loai, customer_id)
         bien_so_fmt = format_license_plate_display(context.get("bien_so") or context.get("truck_plate"))
+        mooc_fmt = format_license_plate_display(context.get("ro_mooc") or context.get("mooc") or context.get("trailer_plate"))
+        dong_mooc = f"\n- Biển số rơ-moóc: {mooc_fmt}" if mooc_fmt else ""
         sdt_fmt = str(context.get("sdt") or context.get("driver_phone") or "").strip()
         gio_den_fmt = format_arrival_time_display(context.get("gio_den") or context.get("eta"))
+        ke_hoach_ngay_fmt = format_plan_date_display(context.get("ke_hoach_ngay") or context.get("plan_date"))
+        dong_ke_hoach_ngay = f"\nKế hoạch ngày: {ke_hoach_ngay_fmt}" if ke_hoach_ngay_fmt else ""
 
         note = context.get("ghi_chu") or context.get("note")
         dong_ghi_chu = f"\n- Ghi chú: {note}" if note else ""
 
         mapping = {
             "ten_khach_hang": context.get("ten_khach_hang") or context.get("customer_name") or "Quý khách hàng",
+            "ke_hoach_ngay": ke_hoach_ngay_fmt,
+            "dong_ke_hoach_ngay": dong_ke_hoach_ngay,
             "so_cont": context.get("so_cont") or context.get("container_no") or "",
             "so_chi": context.get("so_chi") or context.get("seal_no") or "Chưa có",
             "bien_so": bien_so_fmt,
+            "ro_mooc": mooc_fmt,
+            "mooc": mooc_fmt,
+            "dong_mooc": dong_mooc,
             "tai_xe": context.get("tai_xe") or context.get("driver_name") or "",
             "sdt": sdt_fmt,
             "diem_tra": context.get("diem_tra") or context.get("warehouse_name") or context.get("location") or "Theo kế hoạch",
@@ -261,6 +289,7 @@ class OutboundTemplateBuilder:
         customer_name: Optional[str] = None,
         warehouse_name: Optional[str] = None,
         customer_id: Optional[str] = None,
+        plan_date: Optional[Any] = None,
     ) -> str:
         """Tạo nội dung thông báo gửi nhóm khách hàng theo mẫu chuẩn."""
         engine = TemplateEngine()
@@ -268,10 +297,12 @@ class OutboundTemplateBuilder:
 
         ctx = {
             "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
+            "ke_hoach_ngay": plan_date or line.plan_date,
             "so_cont": line.container_no,
             "kich_thuoc": line.canonical_cont_size or line.container_size or "40DC",
             "so_chi": line.seal_no,
             "bien_so": line.truck_plate or line.plate_compact,
+            "ro_mooc": line.trailer_plate,
             "tai_xe": line.driver_name,
             "sdt": line.driver_phone,
             "diem_tra": warehouse_name or line.warehouse_hint or "Kho khách hàng",
@@ -289,16 +320,19 @@ class OutboundTemplateBuilder:
         customer_name: Optional[str] = None,
         warehouse_name: Optional[str] = None,
         customer_id: Optional[str] = None,
+        plan_date: Optional[Any] = None,
     ) -> str:
         """Tạo nội dung thông báo CẬP NHẬT thông tin xe gửi khách hàng khi có thay đổi."""
         engine = TemplateEngine()
         changes_str = "\n".join(changes_list) if changes_list else "- Cập nhật thông tin điều vận"
         ctx = {
             "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
+            "ke_hoach_ngay": plan_date or line.plan_date,
             "so_cont": line.container_no,
             "kich_thuoc": line.canonical_cont_size or line.container_size or "40DC",
             "so_chi": line.seal_no or "Chưa có",
             "bien_so": line.truck_plate or line.plate_compact,
+            "ro_mooc": line.trailer_plate,
             "tai_xe": line.driver_name,
             "sdt": line.driver_phone,
             "diem_den": warehouse_name or line.warehouse_hint or "Kho khách hàng",
@@ -318,14 +352,17 @@ class OutboundTemplateBuilder:
         customer_name: Optional[str] = None,
         warehouse_name: Optional[str] = None,
         customer_id: Optional[str] = None,
+        plan_date: Optional[Any] = None,
     ) -> str:
         """Tạo nội dung thông báo HỦY CHUYẾN gửi khách hàng sau khi ĐHVT xác nhận."""
         engine = TemplateEngine()
         ctx = {
             "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
+            "ke_hoach_ngay": plan_date or line.plan_date,
             "so_cont": line.container_no,
             "kich_thuoc": line.canonical_cont_size or line.container_size or "40DC",
             "bien_so": line.truck_plate or line.plate_compact,
+            "ro_mooc": line.trailer_plate,
             "diem_den": warehouse_name or line.warehouse_hint or "Kho khách hàng",
             "ly_do": reason,
             "ghi_chu": line.note,

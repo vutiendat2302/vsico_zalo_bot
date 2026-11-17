@@ -158,7 +158,7 @@ class TripParser:
         # Khối có nhãn tường minh, bảng/dấu phân cách rõ hoặc mã lệnh kèm thực thể chính -> tin cậy cao (tránh gọi AI thừa)
         has_structured_cues = source_format in ("F1", "F2", "F3") or bool(
             re.search(
-                r"[|｜\t;·•→—:/]|(?:^|[\s(\[])(?:xe|bks|biển(?:\s*số)?|bien(?:\s*so)?|cont|container|số\s*công|so\s*cong|tài\s*xế|tai\s*xe|tài|tx|lx|sđt|sdt|đt|seal|chì|booking|\bbk\b|lệnh|lenh|\b(?:ro|lo)\d{3,6})\b",
+                r"[|｜\t;·•→—:/\\]|(?:^|[\s(\[])(?:xe|bks|biển(?:\s*số)?|bien(?:\s*so)?|cont|container|số\s*công|so\s*cong|tài\s*xế|tai\s*xe|tài|tx|lx|sđt|sdt|đt|seal|chì|booking|\bbk\b|lệnh|lenh|\b(?:ro|lo)\d{3,6})\b",
                 block_text,
                 flags=re.IGNORECASE,
             )
@@ -493,6 +493,8 @@ class TripParser:
                 return None
             if cls._PLATE_REGEX.search(s) or cls._CONTAINER_STD_REGEX.search(s):
                 return None
+            if re.search(r"\b(?:LO|RO)\d+\b", s, re.IGNORECASE):
+                return None
             if stop_words_regex.search(s):
                 return None
             # Chấp nhận tên chuẩn không chứa số, hoặc họ tên 2+ từ có biệt danh 1-2 số ở cuối (VD: "Lê Văn Duy 88")
@@ -506,7 +508,7 @@ class TripParser:
         # Kiểu 1: Có nhãn rõ ràng trên dòng ("Tên lái xe:", "Tài xế:", "Tài ...", "TX ...", "👤 ...")
         # Ưu tiên cụm cập nhật tường minh ("tài ... đổi thành <Tên>", "tài xế mới: <Tên>") trước khi quét nhãn chung
         update_drv_m = re.search(
-            r"(?:tài(?:\s*xế)?|lái\s*xe)\b[^\n/|｜;]{0,45}?\b(?:đổi\s*(?:thành|sang|qua)|doi\s*(?:thanh|sang|qua)|mới\s*[:\-]?)\s+([^\n/|｜;\t,\[\]()\"'*#—–·•→]+)",
+            r"(?:tài(?:\s*xế)?|lái\s*xe)\b[^\n/\\|｜;]{0,45}?\b(?:đổi\s*(?:thành|sang|qua)|doi\s*(?:thanh|sang|qua)|mới\s*[:\-]?)\s+([^\n/\\|｜;\t,\[\]()\"'*#—–·•→]+)",
             sanitized_text,
             flags=re.IGNORECASE,
         )
@@ -517,8 +519,8 @@ class TripParser:
 
         # Duyệt tuần tự tất cả các nhãn để tránh cụm sai như "tài liệu" che khuất nhãn "tài xế ..." đứng sau
         labeled_re = re.compile(
-            r"(?:^|[\s/|｜;\t,\[\(—–·•→#])(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
-            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b|\btài\b|\btai\b)(?:\s*[:\-]\s*|\s+)([^\n/|｜;\t,\]\)\"*#—–·•→]+)",
+            r"(?:^|[\s/\\|｜;\t,\[\(—–·•→#])(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
+            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b|\btài\b|\btai\b)(?:\s*[:\-]\s*|\s+)([^\n/\\|｜;\t,\]\)\"*#—–·•→]+)",
             flags=re.IGNORECASE,
         )
         for labeled in labeled_re.finditer(sanitized_text):
@@ -541,10 +543,10 @@ class TripParser:
         ordered_lines = sorted(all_lines, key=lambda ln: 0 if (raw_truck_plate and raw_truck_plate.lower() in ln.lower()) else 1)
 
         for line in ordered_lines:
-            if re.search(r"[/|｜\t;·•→—–#]|(?:\s+-\s+)|,", line):
+            if re.search(r"[/\\|｜\t;·•→—–#]|(?:\s+-\s+)|,", line):
                 parts = [
                     p.strip()
-                    for p in re.split(r"\s*[/|｜\t;·•→—–#]+\s*|\s+-\s+|\s*,\s*", line)
+                    for p in re.split(r"\s*[/\\|｜\t;·•→—–#]+\s*|\s+-\s+|\s*,\s*", line)
                     if p.strip()
                 ]
                 for part in parts:
@@ -569,6 +571,7 @@ class TripParser:
             rem = line
             if raw_truck_plate:
                 rem = rem.replace(raw_truck_plate, " | ")
+            rem = re.sub(r"\b(?:LO|RO)\d{3,8}\b", " | ", rem, flags=re.IGNORECASE)
             rem = re.sub(r"(?:rơ\s*moóc|mooc|rm)\s*[:\-]?\s*[0-9A-Za-z.\-]+", " | ", rem, flags=re.IGNORECASE)
             rem = re.sub(r"(?:sđt|sdt|đt|dt)?\s*[:\-]?\s*(?:\+?84[\s.\-]?|0)\d[\d\s.\-*xX]{7,11}[\d*xX]", " | ", rem, flags=re.IGNORECASE)
             for c in containers:

@@ -3,7 +3,7 @@
  * Chỉ hỗ trợ đọc, tìm kiếm, lọc và phân trang từ Backend MySQL.
  */
 
-import { getAuthToken } from "@/lib/auth";
+import { getAuthToken, redirectToLoginOnUnauthorized } from "@/lib/auth";
 import { TransportPlanItem } from "@/lib/api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -61,6 +61,28 @@ export interface VehicleItem {
   is_active: boolean;
 }
 
+export interface TrailerItem {
+  id: Id;
+  tms_mooc_id: string;
+  tms_carrier_id: string | null;
+  carrier_id: Id | null;
+  carrier_name: string | null;
+  carrier_short_name: string | null;
+  license_plate: string;
+  normalized_plate: string;
+  mooc_type: number | null;
+  model: string | null;
+  note: string | null;
+  is_active: boolean;
+  synced_at: string | null;
+}
+
+export interface PaginatedTrailersResponse extends PaginatedResponse<TrailerItem> {
+  filter_options?: {
+    models: string[];
+  };
+}
+
 export interface CustomerItem {
   id: Id;
   tms_customer_id: string;
@@ -100,6 +122,9 @@ async function fetchMasterJson<T>(path: string, params?: Record<string, string |
   });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      redirectToLoginOnUnauthorized();
+    }
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || err.message || "Không thể tải dữ liệu danh mục");
   }
@@ -138,6 +163,40 @@ export async function getVehicles(params: {
   per_page?: number;
 }): Promise<PaginatedResponse<VehicleItem>> {
   return fetchMasterJson<PaginatedResponse<VehicleItem>>("/api/master/vehicles", params);
+}
+
+export async function getTrailers(params: {
+  search?: string;
+  mooc_type?: string;
+  model?: string;
+  carrier_id?: string;
+  is_active?: string;
+  page?: number;
+  per_page?: number;
+}): Promise<PaginatedTrailersResponse> {
+  return fetchMasterJson<PaginatedTrailersResponse>("/api/master/trailers", params);
+}
+
+export async function syncTrailersFromTms(): Promise<{
+  ok: boolean;
+  message: string;
+  fetched: number;
+  created: number;
+  updated: number;
+}> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/master/trailers/sync`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      redirectToLoginOnUnauthorized();
+    }
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || err.message || "Không thể đồng bộ rơ-moóc từ TMS");
+  }
+  return res.json();
 }
 
 export async function getCustomers(params: {
@@ -220,4 +279,20 @@ export async function getMasterTransportPlans(params: {
   container_warning?: string;
 }): Promise<MasterTransportPlansResponse> {
   return fetchMasterJson<MasterTransportPlansResponse>("/api/master/transport-plans", params);
+}
+
+export interface TmsAutoSyncStatus {
+  ok: boolean;
+  enabled: boolean;
+  credentials_configured: boolean;
+  running: boolean;
+  is_syncing: boolean;
+  interval_minutes: number;
+  last_success_at: string | null;
+  next_run_at: string | null;
+  last_error: string | null;
+}
+
+export async function getTmsAutoSyncStatus(): Promise<TmsAutoSyncStatus> {
+  return fetchMasterJson<TmsAutoSyncStatus>("/api/plans/tms-sync-status");
 }

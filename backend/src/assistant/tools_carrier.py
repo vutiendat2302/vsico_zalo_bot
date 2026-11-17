@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from src.domain.rules import clean_phone, compact_plate, validate_iso6346
+from src.domain.rules import clean_phone, clean_plate, compact_plate, validate_iso6346
 from src.infrastructure.models import (
     ActivityLog,
     BotReply,
@@ -28,6 +28,8 @@ from .response_formatter import NOT_FOUND, format_plans
 from .schemas import AssistantReply, ScopeContext, ToolCall
 from .scope_resolver import is_default_carrier_group, plan_scope, resolve_scope
 from .tools_customer import summary
+
+ORDER_CODE_MULTI_RE = re.compile(r"\b(?:RO|LO)\d{3,8}\b", re.IGNORECASE)
 
 DRAFT_KIND = "assistant_vehicle_change"
 
@@ -130,16 +132,22 @@ def create_request(
 
 
 def proposed_changes(db: Session, scope: ScopeContext, text: str) -> dict[str, Any]:
-    """Chỉ lấy trường tường minh và tên/SĐT duy nhất trong danh mục nhà xe."""
+    """Chỉ lấy trường tường minh từ tin nhắn; chuẩn hóa SĐT `0/+84/84` và không đoán ID khi trùng tên."""
     result = {}
     plates = PLATE_RE.findall(text)
     if plates:
-        result["planned_truck_plate"] = plates[-1].upper()
-    phones = re.findall(r"(?<!\d)0\d{9}(?!\d)", text)
+        raw_p = re.sub(r"\s+", " ", plates[-1].strip()).upper()
+        result["planned_truck_plate"] = clean_plate(raw_p) or raw_p
+    raw_phones = re.findall(r"(?<!\d)(?:\+?84[\s.\-]?|0)\d(?:[\s.\-]?\d){8}(?!\d)", text)
+    phones = [
+        cleaned
+        for raw_ph in raw_phones
+        if (cleaned := clean_phone(raw_ph)) and re.fullmatch(r"0\d{9}", cleaned)
+    ]
     if len(set(phones)) > 1:
         raise ValueError("Có nhiều SĐT; vui lòng ghi rõ một tài xế cần cập nhật.")
     if phones:
-        result["driver_phone"] = clean_phone(phones[0])
+        result["driver_phone"] = phones[0]
     conts = CONTAINER_RE.findall(text)
     if conts:
         if not validate_iso6346(conts[-1]):
@@ -157,6 +165,7 @@ def proposed_changes(db: Session, scope: ScopeContext, text: str) -> dict[str, A
         value = re.split(
             r"\b(?:sđt|sdt|cont|chì|chi|seal|nhé|nhe|hẹn|hen)\b", name[1], flags=re.IGNORECASE
         )[0].strip()
+        value = re.sub(r"^(?:sang|là|la|thành|thanh)\s+", "", value, flags=re.IGNORECASE).strip()
         if value:
             result["driver_name"] = value
     if scope.carrier_id:
@@ -181,23 +190,20 @@ def proposed_changes(db: Session, scope: ScopeContext, text: str) -> dict[str, A
         )
         or (result.get("driver_phone") and clean_phone(d.phone) == result["driver_phone"])
     ]
-    if len(matches) > 1:
-        raise ValueError(
-            "Tên/SĐT khớp nhiều tài xế trong danh mục; vui lòng ghi họ tên và SĐT đầy đủ."
-        )
     if len(matches) == 1:
         d = matches[0]
         if result.get("driver_name") and not (
             normalize(d.full_name) == normalize(result["driver_name"])
             or normalize(d.full_name).endswith(" " + normalize(result["driver_name"]))
         ):
-            raise ValueError("SĐT thuộc tài xế khác trong danh mục; vui lòng kiểm tra lại tên.")
+            # Nếu SĐT khớp duy nhất tài xế nhưng tên không khớp, giữ nguyên cả hai để TMS xác thực.
+            return result
         if (
             result.get("driver_phone")
             and d.phone
             and clean_phone(d.phone) != result["driver_phone"]
         ):
-            raise ValueError("Tên tài xế và SĐT không khớp danh mục; vui lòng kiểm tra lại.")
+            return result
         result.setdefault("driver_name", d.full_name)
         if d.phone:
             result.setdefault("driver_phone", clean_phone(d.phone))
@@ -280,32 +286,18 @@ def apply_change(
             changes,
             "Nhà xe báo lệch cont/chì gốc của lệnh trả.",
         )
-    # Kiểm tra danh mục và khóa xe để tuần tự hóa hai thay đổi đồng thời trên cùng đầu kéo.
+    # Khóa xe trong danh mục nhà xe (nếu có) và kiểm tra trùng xe cùng ngày; không từ chối chỉ vì thiếu `vehicle_id`.
     if plate := changes.get("planned_truck_plate"):
         target_cid = scope.carrier_id or plan.carrier_id
-        if target_cid or is_default_carrier_group(scope.zalo_group_id):
-            veh_stmt = (
-                select(Vehicle)
-                .where(Vehicle.is_active.is_(True), Vehicle.vehicle_type == 1)
-                .order_by(Vehicle.id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-            if target_cid:
-                veh_stmt = veh_stmt.where(Vehicle.carrier_id == target_cid)
-            vehicles = list(db.scalars(veh_stmt).all())
-        else:
-            vehicles = []
-        matched = [v for v in vehicles if compact_plate(v.plate_no) == compact_plate(plate)]
-        if len(matched) != 1:
-            return create_request(
-                db,
-                scope,
-                message,
-                plan,
-                "PLAN_FIELD_CONFLICT",
-                changes,
-                "Xe mới chưa xác minh duy nhất trong danh mục nhà xe.",
+        if target_cid:
+            list(
+                db.scalars(
+                    select(Vehicle)
+                    .where(Vehicle.is_active.is_(True), Vehicle.vehicle_type == 1, Vehicle.carrier_id == target_cid)
+                    .order_by(Vehicle.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).all()
             )
         other_plans = list(
             db.scalars(
@@ -361,12 +353,25 @@ def apply_change(
                 changes,
                 "Container đã có trên lệnh khác; cần kiểm tra ghép chặng.",
             )
+    before_values = {k: getattr(plan, k) for k in changes}
+    prev_container_no = plan.container_no
     diff = [{"field": k, "old": getattr(plan, k), "new": v} for k, v in changes.items()]
     for k, v in changes.items():
         setattr(plan, k, v)
     plan.version += 1
     plan.tms_sync_status = "PENDING"
     job = create_job_snapshot(db, message, plan, changes)
+    from src.handlers.plan_sync_service import mask_pii_payload, sync_plan_to_tms
+
+    sync_status = sync_plan_to_tms(
+        db,
+        plan,
+        job=job,
+        changed_fields=changes,
+        before_values=before_values,
+        previous_container_no=prev_container_no,
+        actor_id=scope.sender_id,
+    )
     db.add(
         ActivityLog(
             id=snowflake.generate(),
@@ -378,18 +383,27 @@ def apply_change(
                 "message_id": str(message.id),
                 "job_id": str(job.id),
                 "version": plan.version,
-                "updated_fields": diff,
+                "updated_fields": mask_pii_payload({"items": diff}).get("items", []),
                 "confirmation": "carrier",
-                "tms_sync_status": "PENDING",
+                "tms_sync_status": sync_status,
             },
         )
     )
     from .mutation_outbound import prepare_notification
 
     notification = prepare_notification(db, scope, message, plan, job)
+    tms_note = (
+        "Đã đồng bộ TMS thành công."
+        if sync_status == "SYNCED"
+        else (
+            "Đồng bộ TMS FAILED (đã lưu hàng đợi xử lý lại)."
+            if sync_status == "FAILED"
+            else "Đồng bộ TMS đang PENDING."
+        )
+    )
     return AssistantReply(
         text=f"Đã cập nhật {plan.order_code or plan.container_no or plan.id} vào kế hoạch nội bộ (phiên bản {plan.version}). "
-        f"Đồng bộ TMS đang PENDING. {notification}",
+        f"{tms_note} {notification}",
         plan_ids=[str(plan.id)],
     )
 
@@ -465,6 +479,171 @@ def confirm_change(db: Session, scope: ScopeContext, message: ZaloMessage) -> As
     return reply
 
 
+def _process_single_carrier_write(
+    db: Session,
+    scope: ScopeContext,
+    message: ZaloMessage,
+    intent_name: str,
+    plan: TransportPlan,
+    segment_text: str,
+) -> AssistantReply:
+    """Thực thi cập nhật/đề xuất cho một kế hoạch duy nhất từ một đoạn văn bản."""
+    if intent_name == "carrier_report_issue_or_cancel":
+        return create_request(db, scope, message, plan, "CARRIER_CANCEL_OR_ISSUE", changes={})
+    changes = proposed_changes(db, scope, segment_text)
+    changes = {k: v for k, v in changes.items() if getattr(plan, k) != v}
+    if not changes:
+        return AssistantReply(
+            text="Chưa có trường thay đổi rõ ràng; vui lòng ghi biển số mới, tài xế, SĐT, cont hoặc chì."
+        )
+    if intent_name == "carrier_supplement_trip" and all(not getattr(plan, k) for k in changes):
+        return apply_change(db, scope, message, plan, changes)
+    now = datetime.now()
+    draft = MessageDraft(
+        id=snowflake.generate(),
+        zalo_info_id=scope.group_id,
+        carrier_id=scope.carrier_id,
+        group_id=scope.zalo_group_id,
+        sender_id=scope.sender_id,
+        status="WAITING_REPLY",
+        entities={
+            "kind": DRAFT_KIND,
+            "plan_id": str(plan.id),
+            "version": plan.version,
+            "changes": changes,
+        },
+        first_message_id=message.id,
+        last_message_id=message.id,
+        message_count=1,
+        expires_at=now + timedelta(minutes=15),
+    )
+    db.add(draft)
+    diff = "; ".join(f"{k}: {getattr(plan, k) or 'Trống'} → {v}" for k, v in changes.items())
+    target_label = (
+        plan.order_code
+        or plan.container_no
+        or plan.booking_no
+        or plan.warehouse_name
+        or plan.customer_name
+        or "chuyến vận chuyển"
+    )
+    return AssistantReply(
+        text=f"Đề xuất thay đổi cho {target_label}: {diff}.\n"
+        "Chưa ghi thay đổi. Nhắn “xác nhận” (hoặc quote lại tin này) trong 15 phút để tiếp tục."
+    )
+
+
+def _merge_waiting_draft(
+    db: Session, scope: ScopeContext, message: ZaloMessage
+) -> AssistantReply | None:
+    """Gộp thông tin bổ sung dần từ lượt chat sau vào nháp `WAITING_REPLY` duy nhất còn hạn."""
+    now = datetime.now()
+    drafts = list(
+        db.scalars(
+            select(MessageDraft)
+            .where(
+                MessageDraft.group_id == scope.zalo_group_id,
+                MessageDraft.sender_id == scope.sender_id,
+                MessageDraft.carrier_id == scope.carrier_id,
+                MessageDraft.status == "WAITING_REPLY",
+                MessageDraft.entities["kind"].as_string() == DRAFT_KIND,
+            )
+            .order_by(MessageDraft.id.desc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    live = []
+    for d in drafts:
+        if d.expires_at.replace(tzinfo=None) <= now:
+            d.status = "EXPIRED"
+        else:
+            live.append(d)
+    if len(live) != 1:
+        return None
+    draft = live[0]
+    changes = proposed_changes(db, scope, message.message_text or "")
+    if not changes:
+        return None
+    plan = db.scalar(
+        select(TransportPlan)
+        .where(plan_scope(scope), TransportPlan.id == int(draft.entities["plan_id"]))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not plan or plan.version != draft.entities.get("version"):
+        draft.status = "EXPIRED"
+        return AssistantReply(
+            text="Kế hoạch đã thay đổi phiên bản; vui lòng gửi lại mã lệnh và thay đổi."
+        )
+    merged_changes = {**(draft.entities.get("changes") or {}), **changes}
+    draft.entities = {**draft.entities, "changes": merged_changes}
+    draft.last_message_id = message.id
+    draft.message_count = (draft.message_count or 1) + 1
+    draft.expires_at = now + timedelta(minutes=15)
+    diff = "; ".join(
+        f"{k}: {getattr(plan, k) or 'Trống'} → {v}" for k, v in merged_changes.items()
+    )
+    target_label = plan.order_code or plan.container_no or str(plan.id)
+    return AssistantReply(
+        text=f"Đã bổ sung vào đề xuất #{draft.id} cho {target_label}: {diff}.\n"
+        "Chưa ghi thay đổi. Nhắn “xác nhận” trong 15 phút để tiếp tục."
+    )
+
+
+def _run_multi_order_updates(
+    db: Session, scope: ScopeContext, message: ZaloMessage, call: ToolCall
+) -> AssistantReply:
+    """Tách và xử lý độc lập từng lệnh khi một tin nhắn chứa nhiều mã `LO.../RO...`."""
+    segments = [ln.strip() for ln in (message.message_text or "").splitlines() if ln.strip()]
+    results: list[str] = []
+    plan_ids: list[str] = []
+    needs_review = False
+    for seg in segments:
+        seg_codes = ORDER_CODE_MULTI_RE.findall(seg)
+        if len(seg_codes) > 1:
+            results.append("Mỗi dòng chỉ nên ghi một mã lệnh để tránh cập nhật nhầm.")
+            continue
+        if not seg_codes:
+            continue
+        code = seg_codes[0].upper()
+        seg_e = call.entities.model_copy(deep=True)
+        seg_e.order_code = code
+        seg_e.container_no = None
+        seg_e.plate_no = None
+        plans = list(
+            db.scalars(
+                plans_statement(scope, seg_e)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).all()
+        )
+        if len(plans) != 1:
+            results.append(
+                f"{code}: Không tìm thấy một kế hoạch duy nhất."
+                if not plans
+                else f"{code}: Có nhiều kế hoạch trùng mã; vui lòng ghi rõ ngày."
+            )
+            continue
+        plan = plans[0]
+        seg_changes = proposed_changes(db, scope, seg)
+        seg_changes = {k: v for k, v in seg_changes.items() if getattr(plan, k) != v}
+        sub_intent = (
+            "carrier_supplement_trip"
+            if seg_changes and all(not getattr(plan, k) for k in seg_changes)
+            else "carrier_request_vehicle_update"
+        )
+        sub_reply = _process_single_carrier_write(db, scope, message, sub_intent, plan, seg)
+        results.append(f"[{code}] {sub_reply.text}")
+        plan_ids.extend(sub_reply.plan_ids)
+        needs_review = needs_review or sub_reply.needs_review
+    return AssistantReply(
+        text="\n".join(results) or NOT_FOUND,
+        plan_ids=plan_ids,
+        needs_review=needs_review,
+    )
+
+
 def run_carrier(
     db: Session, scope: ScopeContext, call: ToolCall, message: ZaloMessage
 ) -> AssistantReply:
@@ -472,6 +651,15 @@ def run_carrier(
     name = call.intent
     if name == "CONFIRM":
         return confirm_change(db, scope, message)
+    if name == "carrier_append_draft":
+        merged = _merge_waiting_draft(db, scope, message)
+        if merged is not None:
+            return merged
+        return AssistantReply(
+            text="Không có đề xuất đang chờ phù hợp. Vui lòng ghi mã lệnh hoặc số container."
+        )
+    if name == "carrier_multi_order_update":
+        return _run_multi_order_updates(db, scope, message, call)
     if name == "carrier_get_summary":
         return summary(db, scope, call)
     if name == "carrier_list_pending_cases":
@@ -499,6 +687,9 @@ def run_carrier(
         "carrier_supplement_trip",
         "carrier_report_issue_or_cancel",
     ):
+        multi_codes = {c.upper() for c in ORDER_CODE_MULTI_RE.findall(message.message_text or "")}
+        if len(multi_codes) > 1 and name != "carrier_report_issue_or_cancel":
+            return _run_multi_order_updates(db, scope, message, call)
         plans = resolve_update_target(db, scope, call, message)
         if len(plans) != 1:
             return AssistantReply(
@@ -506,49 +697,8 @@ def run_carrier(
                 if not plans
                 else "Có nhiều chuyến phù hợp; vui lòng ghi mã lệnh và ngày cần sửa."
             )
-        plan = plans[0]
-        if name == "carrier_report_issue_or_cancel":
-            return create_request(db, scope, message, plan, "CARRIER_CANCEL_OR_ISSUE", changes={})
-        changes = proposed_changes(db, scope, message.message_text or "")
-        changes = {k: v for k, v in changes.items() if getattr(plan, k) != v}
-        if not changes:
-            return AssistantReply(
-                text="Chưa có trường thay đổi rõ ràng; vui lòng ghi biển số mới, tài xế, SĐT, cont hoặc chì."
-            )
-        if name == "carrier_supplement_trip" and all(not getattr(plan, k) for k in changes):
-            return apply_change(db, scope, message, plan, changes)
-        now = datetime.now()
-        draft = MessageDraft(
-            id=snowflake.generate(),
-            zalo_info_id=scope.group_id,
-            carrier_id=scope.carrier_id,
-            group_id=scope.zalo_group_id,
-            sender_id=scope.sender_id,
-            status="WAITING_REPLY",
-            entities={
-                "kind": DRAFT_KIND,
-                "plan_id": str(plan.id),
-                "version": plan.version,
-                "changes": changes,
-            },
-            first_message_id=message.id,
-            last_message_id=message.id,
-            message_count=1,
-            expires_at=now + timedelta(minutes=15),
-        )
-        db.add(draft)
-        diff = "; ".join(f"{k}: {getattr(plan, k) or 'Trống'} → {v}" for k, v in changes.items())
-        target_label = (
-            plan.order_code
-            or plan.container_no
-            or plan.booking_no
-            or plan.warehouse_name
-            or plan.customer_name
-            or "chuyến vận chuyển"
-        )
-        return AssistantReply(
-            text=f"Đề xuất thay đổi cho {target_label}: {diff}.\n"
-            "Chưa ghi thay đổi. Nhắn “xác nhận” (hoặc quote lại tin này) trong 15 phút để tiếp tục."
+        return _process_single_carrier_write(
+            db, scope, message, name, plans[0], message.message_text or ""
         )
     stmt = plans_statement(scope, call.entities)
     if name == "carrier_list_incomplete_plans":
@@ -607,6 +757,47 @@ def run_carrier(
             )
         reply.text = "\n".join(rows) or NOT_FOUND
     return reply
+
+
+def classify_partial_carrier_dispatch(
+    db: Session, group: ZaloGroup, message: ZaloMessage, call: ToolCall
+) -> str | None:
+    """Định tuyến các tin cập nhật bộ phận hoặc đa lệnh của nhà xe trước khi rơi về báo xe đầy đủ."""
+    text = message.message_text or ""
+    multi_codes = {c.upper() for c in ORDER_CODE_MULTI_RE.findall(text)}
+    if len(multi_codes) > 1 and (group.carrier_id or is_default_carrier_group(group.zalo_group_id)):
+        return "carrier_multi_order_update"
+    if report_changes_existing_plan(db, group, message, call):
+        return "carrier_request_vehicle_update"
+    try:
+        scope = resolve_scope(db, group, message)
+    except PermissionError:
+        return None
+    if call.entities.order_code and (scope.carrier_id or is_default_carrier_group(scope.zalo_group_id)):
+        changes = proposed_changes(db, scope, text)
+        if changes:
+            e_ord = call.entities.model_copy(deep=True)
+            e_ord.plate_no = e_ord.container_no = None
+            plans = list(db.scalars(plans_statement(scope, e_ord)).all())
+            if len(plans) == 1:
+                if all(not getattr(plans[0], k) for k in changes):
+                    return "carrier_supplement_trip"
+                return "carrier_request_vehicle_update"
+    if not (call.entities.order_code or call.entities.container_no):
+        now = datetime.now()
+        has_live_draft = db.scalar(
+            select(MessageDraft.id).where(
+                MessageDraft.group_id == scope.zalo_group_id,
+                MessageDraft.sender_id == scope.sender_id,
+                MessageDraft.carrier_id == scope.carrier_id,
+                MessageDraft.status == "WAITING_REPLY",
+                MessageDraft.expires_at > now,
+                MessageDraft.entities["kind"].as_string() == DRAFT_KIND,
+            )
+        )
+        if has_live_draft and proposed_changes(db, scope, text):
+            return "carrier_append_draft"
+    return None
 
 
 def report_changes_existing_plan(

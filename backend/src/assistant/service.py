@@ -54,11 +54,12 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
             message.message_text, role, message.zalo_sent_at or message.created_at
         )
         if role == "CARRIER" and initial.intent == "REPORT_DISPATCH":
-            from .tools_carrier import report_changes_existing_plan
+            from .tools_carrier import classify_partial_carrier_dispatch
 
-            if not report_changes_existing_plan(db, group, message, initial):
+            routed_intent = classify_partial_carrier_dispatch(db, group, message, initial)
+            if not routed_intent:
                 return False
-            initial.intent = "carrier_request_vehicle_update"
+            initial.intent = routed_intent
         scope = resolve_scope(db, group, message)
         call = initial
         if call.intent == "carrier_supplement_trip" and message.quote_msg_id:

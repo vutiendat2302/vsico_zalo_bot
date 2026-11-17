@@ -9,9 +9,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   ReviewCaseItem,
+  TransportPlanItem,
   approveReviewCase,
   claimReviewCase,
   getReviewCases,
+  getTransportPlans,
   rejectReviewCase,
 } from "@/lib/api";
 import { getClientSession } from "@/lib/auth";
@@ -61,9 +63,13 @@ export default function ReviewsPage() {
 
   const [approveTarget, setApproveTarget] = useState<ReviewCaseItem | null>(null);
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
+  const [availablePlans, setAvailablePlans] = useState<TransportPlanItem[]>([]);
+  const [planSearch, setPlanSearch] = useState<string>("");
+  const [loadingPlans, setLoadingPlans] = useState<boolean>(false);
   const [approveCont, setApproveCont] = useState("");
   const [approveSeal, setApproveSeal] = useState("");
   const [approvePlate, setApprovePlate] = useState("");
+  const [approveTrailer, setApproveTrailer] = useState("");
   const [approveDriver, setApproveDriver] = useState("");
   const [approvePhone, setApprovePhone] = useState("");
 
@@ -127,12 +133,43 @@ export default function ReviewsPage() {
       r.candidate_plans?.[0]?.plan_id ||
       "";
     setSelectedPlanId(defaultPid ? String(defaultPid) : "");
+    setPlanSearch("");
     setApproveCont(r.container_details?.container_no || "");
     setApproveSeal(r.container_details?.seal_no || "");
     setApprovePlate(r.container_details?.truck_plate || "");
+    setApproveTrailer(r.container_details?.trailer_plate || "");
     setApproveDriver(r.container_details?.driver_name || "");
     setApprovePhone(r.container_details?.driver_phone || "");
   };
+
+  useEffect(() => {
+    if (!approveTarget) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        setLoadingPlans(true);
+        const res = await getTransportPlans({
+          q: planSearch.trim() || undefined,
+          limit: 100,
+        });
+        if (!cancelled) {
+          setAvailablePlans(res.plans || []);
+        }
+      } catch {
+        if (!cancelled) {
+          setAvailablePlans([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingPlans(false);
+        }
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [approveTarget, planSearch]);
 
   const handleConfirmApprove = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -144,10 +181,11 @@ export default function ReviewsPage() {
       const res = await approveReviewCase(approveTarget.id, {
         operator_name: getOperatorName(),
         save_warehouse_habit: true,
-        ...(selectedPlanId.trim() ? { selected_plan_id: Number(selectedPlanId.trim()) } : {}),
+        ...(selectedPlanId.trim() ? { selected_plan_id: selectedPlanId.trim() } : {}),
         ...(approveCont.trim() ? { container_no: approveCont.trim() } : {}),
         ...(approveSeal.trim() ? { seal_no: approveSeal.trim() } : {}),
         ...(approvePlate.trim() ? { truck_plate: approvePlate.trim() } : {}),
+        ...(approveTrailer.trim() ? { trailer_plate: approveTrailer.trim() } : {}),
         ...(approveDriver.trim() ? { driver_name: approveDriver.trim() } : {}),
         ...(approvePhone.trim() ? { driver_phone: approvePhone.trim() } : {}),
       });
@@ -490,26 +528,62 @@ export default function ReviewsPage() {
               {approveTarget.reason}
             </div>
 
-            {approveTarget.candidate_plans && approveTarget.candidate_plans.length > 0 && (
-              <div>
-                <label className="block text-slate-600 mb-1 font-medium">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="block text-slate-600 font-medium">
                   Chọn kế hoạch đồng bộ (tự động lưu thói quen kho)
                 </label>
-                <select
-                  value={selectedPlanId}
-                  onChange={(e) => setSelectedPlanId(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 font-mono text-slate-900 focus:outline-none focus:border-purple-700"
-                >
-                  <option value="">-- Tự động đối chiếu --</option>
-                  {approveTarget.candidate_plans.map((cand) => (
-                    <option key={cand.plan_id} value={cand.plan_id}>
-                      {cand.order_code || `#${cand.plan_id}`} | {cand.customer_name || "—"} |{" "}
-                      {cand.warehouse_name || "—"} (Điểm: {cand.score ?? 0})
-                    </option>
-                  ))}
-                </select>
+                {loadingPlans && (
+                  <span className="text-[11px] text-slate-400">Đang tải kế hoạch...</span>
+                )}
               </div>
-            )}
+              <input
+                type="text"
+                value={planSearch}
+                onChange={(e) => setPlanSearch(e.target.value)}
+                placeholder="Tìm nhanh theo mã lệnh (LO/RO), tên khách, kho hoặc cont..."
+                className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-purple-700"
+              />
+              <select
+                value={selectedPlanId}
+                onChange={(e) => setSelectedPlanId(e.target.value)}
+                className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 font-mono text-slate-900 focus:outline-none focus:border-purple-700"
+              >
+                <option value="">-- Tự động đối chiếu --</option>
+                {approveTarget.candidate_plans && approveTarget.candidate_plans.length > 0 && (
+                  <optgroup label="Kế hoạch gợi ý">
+                    {approveTarget.candidate_plans.map((cand) => (
+                      <option key={`cand-${cand.plan_id}`} value={cand.plan_id}>
+                        {cand.order_code || `#${cand.plan_id}`} | {cand.customer_name || "—"} |{" "}
+                        {cand.warehouse_name || "—"} (Điểm: {cand.score ?? 0})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {availablePlans.length > 0 && (
+                  <optgroup label="Danh sách kế hoạch">
+                    {availablePlans
+                      .filter(
+                        (p) =>
+                          !(approveTarget.candidate_plans || []).some(
+                            (cand) => String(cand.plan_id) === String(p.id)
+                          )
+                      )
+                      .map((p) => {
+                        const typeLabel = p.order_type === "dong" ? "Đóng" : p.order_type === "tra" ? "Trả" : p.order_type;
+                        const contLabel = p.container_no || "Chưa cont";
+                        const truckLabel = p.planned_truck_plate || "Chưa xe";
+                        return (
+                          <option key={p.id} value={p.id}>
+                            {p.order_code || `#${p.id}`} ({typeLabel}) | {contLabel} |{" "}
+                            {p.customer_name || "—"} | {p.warehouse_name || "—"} | {truckLabel}
+                          </option>
+                        );
+                      })}
+                  </optgroup>
+                )}
+              </select>
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -540,6 +614,15 @@ export default function ReviewsPage() {
                 />
               </div>
               <div>
+                <label className="block text-slate-600 mb-1 font-medium">Biển số rơ-moóc</label>
+                <input
+                  type="text"
+                  value={approveTrailer}
+                  onChange={(e) => setApproveTrailer(e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 font-mono text-slate-900 focus:outline-none focus:border-purple-700"
+                />
+              </div>
+              <div>
                 <label className="block text-slate-600 mb-1 font-medium">Tài xế</label>
                 <input
                   type="text"
@@ -548,7 +631,7 @@ export default function ReviewsPage() {
                   className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-purple-700"
                 />
               </div>
-              <div className="col-span-2">
+              <div>
                 <label className="block text-slate-600 mb-1 font-medium">Số điện thoại</label>
                 <input
                   type="text"

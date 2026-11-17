@@ -22,6 +22,7 @@ from src.infrastructure.models import (
     CustomerAlias,
     Driver,
     MessageDraft,
+    Trailer,
     TransportPlan,
     TruckRecord,
     Vehicle,
@@ -617,6 +618,17 @@ def enrich_local(
         if carrier_id
         else []
     )
+    trailers = list(
+        db.scalars(
+            select(Trailer).where(
+                *(
+                    [Trailer.carrier_id == carrier_id, Trailer.is_active.is_(True)]
+                    if carrier_id
+                    else [Trailer.is_active.is_(True)]
+                )
+            )
+        ).all()
+    )
     norm_text = f"{normalized(raw_text)} {normalized(quoted_text)}"
     phobert = PhoBertLocalNlpEngine.get_instance()
     pb_analysis = phobert.analyze(raw_text)
@@ -708,6 +720,27 @@ def enrich_local(
                 line.field_evidences["truck_plate"] = "carrier_vehicle_suffix"
             elif len(candidates) > 1 and "ambiguous_plate" not in line.unresolved_fields:
                 line.unresolved_fields.append("ambiguous_plate")
+
+        # Đối sánh Biển số rơ-moóc viết tắt (4-5 số cuối sau từ khóa mooc/rm) từ danh mục `trailers`
+        if not line.trailer_plate and trailers:
+            mooc_short = re.findall(
+                r"\b(?:mooc|rơ\s*moóc|ro\s*mooc|rm)\s*[:\-]?\s*(\d{3}[.]?\d{2}|\d{4,5})\b",
+                raw_text,
+                flags=re.IGNORECASE,
+            )
+            if mooc_short:
+                tr_cands = [
+                    t
+                    for t in trailers
+                    if any(
+                        (t.normalized_plate or "").endswith(re.sub(r"\D", "", tok))
+                        for tok in mooc_short
+                    )
+                ]
+                if len(tr_cands) == 1:
+                    line.trailer_plate = clean_plate(tr_cands[0].license_plate) or tr_cands[0].license_plate
+                    line.extraction_tier = "TIER_2_LOCAL_NLP"
+                    line.field_evidences["trailer_plate"] = "carrier_trailer_suffix"
 
         # Đối sánh Từ điển danh mục (Khách hàng, Kho, Alias, Kế hoạch) bằng RapidFuzz
         _match_catalog_gazetteer(db, line, carrier_id, raw_text, dates)

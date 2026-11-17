@@ -22,11 +22,14 @@ def plan_line(p: TransportPlan) -> str:
         if p.order_type.lower() in ("tra", "return", "ro")
         else p.order_type
     )
+    vehicle_str = p.planned_truck_plate or "Chưa có xe"
+    if p.planned_trailer_plate:
+        vehicle_str = f"{vehicle_str} / Mooc {p.planned_trailer_plate}"
     return (
         f"{p.order_code or p.container_no or p.booking_no or p.warehouse_name or p.customer_name or 'Chuyến'} | {kind} | "
         f"{p.warehouse_name or p.delivery_address or 'Chưa có kho'} | "
         f"{p.required_time or p.eta or 'Chưa có giờ'} | "
-        f"{p.planned_truck_plate or 'Chưa có xe'} | {p.driver_name or 'Chưa có tài xế'}"
+        f"{vehicle_str} | {p.driver_name or 'Chưa có tài xế'}"
     )
 
 

@@ -54,10 +54,25 @@ def api_client(db_session: Session) -> Generator[TestClient, None, None]:
 
 @pytest.fixture(autouse=True)
 def isolate_background_workers(monkeypatch):
-    """Không cho test khởi chạy worker hoặc seed trên dữ liệu vận hành thật."""
+    """Không cho test khởi chạy worker, gọi TMS thật, gửi Zalo thật hoặc seed trên dữ liệu vận hành thật."""
+    from uuid import uuid4
+    from src.config.settings import settings
     from src.infrastructure.fifo_queue import fifo_queue
+    from src.infrastructure.zalo_dispatcher import ZaloDispatcher
     import importlib
     app_module = importlib.import_module("src.api.app")
     monkeypatch.setattr(fifo_queue, "start_background_worker", lambda: None)
     monkeypatch.setattr(fifo_queue, "stop_background_worker", lambda: None)
     monkeypatch.setattr(app_module, "seed_initial_users", lambda: None)
+    monkeypatch.setattr(settings, "TMS_WRITE_ENABLED", False)
+    monkeypatch.setattr(settings, "AUTO_DISPATCH_OUTBOUND", False)
+    monkeypatch.setattr(
+        ZaloDispatcher,
+        "send_to_group",
+        classmethod(lambda cls, *a, **kw: (True, f"pytest_mock_{uuid4().hex[:10]}", None)),
+    )
+    monkeypatch.setattr(
+        ZaloDispatcher,
+        "send_to_user",
+        classmethod(lambda cls, *a, **kw: (True, f"pytest_mock_{uuid4().hex[:10]}", None)),
+    )

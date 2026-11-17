@@ -31,6 +31,8 @@ CARRIER_TOOLS = (
     "carrier_supplement_trip",
     "carrier_request_vehicle_update",
     "carrier_fix_recent_submission",
+    "carrier_append_draft",
+    "carrier_multi_order_update",
     "carrier_list_pending_cases",
     "carrier_report_issue_or_cancel",
     "carrier_get_summary",
@@ -57,6 +59,8 @@ WRITE_TOOLS = frozenset(
         "carrier_supplement_trip",
         "carrier_request_vehicle_update",
         "carrier_fix_recent_submission",
+        "carrier_append_draft",
+        "carrier_multi_order_update",
         "carrier_report_issue_or_cancel",
         "CONFIRM",
     }

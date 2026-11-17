@@ -10,6 +10,7 @@ Cung cấp các endpoint tra cứu, tìm kiếm và lọc dữ liệu đồng b�
 """
 
 import math
+import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,10 +20,12 @@ from sqlalchemy.orm import Session
 
 from src.api.plans import parse_date_str
 from src.api.schemas import TransportPlanOut
+from src.handlers.tms_auto_sync import sync_trailers_from_tms, tms_auto_sync
 from src.handlers.tms_plan_sync_service import build_master_plan_summary
 from src.infrastructure.database import get_db
-from src.infrastructure.models import Carrier, Customer, Driver, TransportPlan, User, Vehicle, Warehouse
+from src.infrastructure.models import Carrier, Customer, Driver, Trailer, TransportPlan, User, Vehicle, Warehouse
 from src.infrastructure.security import get_current_user
+from src.infrastructure.tms_client import TmsApiError
 
 router = APIRouter(prefix="/api/master", tags=["8. Dữ Liệu Danh Mục TMS (Master Data)"])
 
@@ -144,6 +147,37 @@ class PaginatedVehiclesResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class TrailerOut(BaseModel):
+    """Thông tin rơ-moóc (moóc) chuẩn đồng bộ từ TMS."""
+
+    model_config = ConfigDict(from_attributes=True, coerce_numbers_to_str=True)
+
+    id: str
+    tms_mooc_id: str
+    tms_carrier_id: Optional[str] = None
+    carrier_id: Optional[str] = None
+    carrier_name: Optional[str] = None
+    carrier_short_name: Optional[str] = None
+    license_plate: str
+    normalized_plate: str
+    mooc_type: Optional[int] = None
+    model: Optional[str] = None
+    note: Optional[str] = None
+    is_active: bool
+    synced_at: Optional[str] = None
+
+
+class PaginatedTrailersResponse(BaseModel):
+    """Phản hồi phân trang danh sách rơ-moóc kèm danh sách model lọc."""
+
+    items: list[TrailerOut]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+    filter_options: dict[str, list[str]] = {"models": []}
 
 
 class PaginatedCustomersResponse(BaseModel):
@@ -396,6 +430,134 @@ def list_vehicles(
     )
 
 
+@router.get("/trailers", response_model=PaginatedTrailersResponse)
+def list_trailers(
+    search: Optional[str] = Query(
+        default=None,
+        description="Tìm theo biển số rơ-moóc, model, ghi chú hoặc tên/mã nhà xe",
+    ),
+    mooc_type: Optional[int] = Query(default=None, description="Lọc theo loại rơ-moóc (1, 2)"),
+    model: Optional[str] = Query(default=None, description="Lọc theo hãng/quy cách model"),
+    carrier_id: Optional[str] = Query(default=None, description="Lọc theo ID nhà xe nội bộ"),
+    is_active: Optional[bool] = Query(default=None, description="Lọc theo trạng thái hoạt động"),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> PaginatedTrailersResponse:
+    """Tra cứu danh sách rơ-moóc có phân trang, tìm kiếm và bộ lọc đầy đủ."""
+    stmt = select(
+        Trailer,
+        Carrier.name.label("carrier_name"),
+        Carrier.short_name.label("carrier_short_name"),
+    ).outerjoin(Carrier, Trailer.carrier_id == Carrier.id)
+    count_stmt = select(func.count(Trailer.id)).outerjoin(
+        Carrier, Trailer.carrier_id == Carrier.id
+    )
+
+    if search and search.strip():
+        raw_kw = search.strip()
+        kw = f"%{raw_kw}%"
+        norm_kw = f"%{re.sub(r'[^A-Za-z0-9]', '', raw_kw).upper()}%"
+        cond = or_(
+            Trailer.license_plate.ilike(kw),
+            Trailer.normalized_plate.ilike(norm_kw),
+            Trailer.model.ilike(kw),
+            Trailer.note.ilike(kw),
+            Carrier.name.ilike(kw),
+            Carrier.short_name.ilike(kw),
+            Carrier.code.ilike(kw),
+        )
+        stmt = stmt.where(cond)
+        count_stmt = count_stmt.where(cond)
+
+    if mooc_type is not None:
+        stmt = stmt.where(Trailer.mooc_type == mooc_type)
+        count_stmt = count_stmt.where(Trailer.mooc_type == mooc_type)
+
+    if model and model.strip():
+        clean_model = model.strip()
+        stmt = stmt.where(Trailer.model == clean_model)
+        count_stmt = count_stmt.where(Trailer.model == clean_model)
+
+    if carrier_id and carrier_id.strip():
+        try:
+            cid = int(carrier_id.strip())
+            stmt = stmt.where(Trailer.carrier_id == cid)
+            count_stmt = count_stmt.where(Trailer.carrier_id == cid)
+        except ValueError:
+            pass
+
+    if is_active is not None:
+        stmt = stmt.where(Trailer.is_active == is_active)
+        count_stmt = count_stmt.where(Trailer.is_active == is_active)
+
+    total = db.scalar(count_stmt) or 0
+    rows = db.execute(
+        stmt.order_by(Trailer.license_plate.asc()).offset((page - 1) * per_page).limit(per_page)
+    ).all()
+
+    distinct_models = sorted(
+        {
+            m
+            for m in db.scalars(
+                select(Trailer.model).where(Trailer.model.is_not(None), Trailer.model != "")
+            ).all()
+            if m
+        }
+    )
+
+    items = [
+        TrailerOut(
+            id=str(tr.id),
+            tms_mooc_id=str(tr.tms_mooc_id),
+            tms_carrier_id=str(tr.tms_carrier_id) if tr.tms_carrier_id is not None else None,
+            carrier_id=str(tr.carrier_id) if tr.carrier_id is not None else None,
+            carrier_name=carrier_name,
+            carrier_short_name=carrier_short_name,
+            license_plate=tr.license_plate,
+            normalized_plate=tr.normalized_plate,
+            mooc_type=tr.mooc_type,
+            model=tr.model,
+            note=tr.note,
+            is_active=tr.is_active,
+            synced_at=tr.synced_at.isoformat() if tr.synced_at else None,
+        )
+        for tr, carrier_name, carrier_short_name in rows
+    ]
+
+    return PaginatedTrailersResponse(
+        items=items,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=_calc_total_pages(total, per_page),
+        filter_options={"models": distinct_models},
+    )
+
+
+@router.post("/trailers/sync", response_model=dict[str, Any])
+def sync_trailers_manual(
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Kéo và cập nhật ngay toàn bộ danh mục rơ-moóc từ hệ thống TMS về MySQL."""
+    try:
+        stats = sync_trailers_from_tms(db, tms_auto_sync.get_client())
+        db.commit()
+    except TmsApiError as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "message": (
+            f"Đã đồng bộ {stats['fetched']} rơ-moóc từ TMS "
+            f"(thêm mới {stats['created']}, cập nhật {stats['updated']})."
+        ),
+        **stats,
+    }
+
+
 @router.get("/customers", response_model=PaginatedCustomersResponse)
 def list_customers(
     search: Optional[str] = Query(default=None, description="Tìm theo tên khách hàng"),
@@ -598,6 +760,7 @@ def _matches_master_plan_filters(
                 row.province_name,
                 row.forwarder_name,
                 row.planned_truck_plate,
+                row.planned_trailer_plate,
                 row.driver_name,
             )
             if x
@@ -628,6 +791,8 @@ def get_master_transport_plans(
             status_code=400,
             detail=f"Định dạng ngày không hợp lệ: '{plan_date}'. Vui lòng dùng 'YYYY-MM-DD' hoặc 'DD/MM/YYYY'.",
         )
+
+    tms_auto_sync.track_date(p_date, region)
 
     all_rows = list(
         db.scalars(

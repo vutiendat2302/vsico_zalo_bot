@@ -101,6 +101,7 @@ export interface TransportPlanItem {
   estimated_drop_time?: string | null;
   fleet_partner?: string | null;
   planned_truck_plate?: string | null;
+  planned_trailer_plate?: string | null;
   driver_name?: string | null;
   driver_phone?: string | null;
   delivery_address?: string | null;
@@ -243,6 +244,7 @@ export interface ReviewCaseItem {
     customer_hint?: string | null;
     warehouse_hint?: string | null;
     truck_plate?: string | null;
+    trailer_plate?: string | null;
     driver_name?: string | null;
     driver_phone?: string | null;
     validation_status?: string | null;
@@ -501,6 +503,7 @@ export async function approveReviewCase(
     seal_no?: string;
     order_type?: string;
     truck_plate?: string;
+    trailer_plate?: string;
     driver_name?: string;
     driver_phone?: string;
     cancel_reason?: string;

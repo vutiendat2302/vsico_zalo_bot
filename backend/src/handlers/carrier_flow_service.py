@@ -40,7 +40,11 @@ from contextlib import nullcontext
 from src.domain.models import ExtractedContainerLine
 from src.domain.rules import clean_container, clean_phone, clean_plate, compact_plate
 from src.handlers.dhvt_service import DhvtNotificationService
-from src.handlers.plan_sync_service import resolve_plan_detailed, sync_job_to_local_plan
+from src.handlers.plan_sync_service import (
+    resolve_plan_detailed,
+    sync_job_to_local_plan,
+    sync_plan_to_tms,
+)
 from src.infrastructure.ai_service_client import AIServiceClient
 from src.infrastructure.minio_client import minio_storage
 from src.infrastructure.models import (
@@ -103,6 +107,7 @@ class CarrierPlanCheck:
     is_carrier_mismatch: bool = False
     is_shipping_missing: bool = False
     reason: str | None = None
+    candidate_plans: list[TransportPlan] = field(default_factory=list)
 
 
 class CarrierFlowService:
@@ -408,6 +413,7 @@ class CarrierFlowService:
         job: ContainerJob,
         source_group: ZaloGroup | None,
         is_test_msg: bool,
+        allow_tms_sync: bool = True,
     ) -> bool:
         """Đồng bộ ContainerJob lên TransportPlan cục bộ (điền trống/cập nhật) hoặc tạo ReviewCase nếu xung đột."""
         if not source_group or not source_group.is_active:
@@ -421,6 +427,17 @@ class CarrierFlowService:
                 allow_plan_override=False,
                 actor_id="vsico_bot",
             )
+            if outcome.mode in ("FILLED", "UPDATED") and allow_tms_sync:
+                prev_cont = outcome.before_values.get("container_no") if "container_no" in outcome.before_values else plan_res.plan.container_no
+                sync_plan_to_tms(
+                    db=db,
+                    plan=plan_res.plan,
+                    job=job,
+                    changed_fields=outcome.changed_fields,
+                    before_values=outcome.before_values,
+                    previous_container_no=prev_cont,
+                    allow_container_override=False,
+                )
             if outcome.mode == "CONFLICT":
                 plan_has_driver = bool(plan_res.plan.planned_truck_plate or plan_res.plan.driver_name)
                 reasons_str = "; ".join(outcome.conflict_reasons) or "Xung đột dữ liệu cố định trên kế hoạch."
@@ -551,6 +568,63 @@ class CarrierFlowService:
             for p in plans
         ]
 
+    @staticmethod
+    def _filter_plans_by_order_type(
+        plans: list[TransportPlan],
+        order_type: str | None,
+    ) -> list[TransportPlan]:
+        """Lọc thu hẹp danh sách kế hoạch theo loại lệnh (`dong` / `tra`) khi có chỉ dẫn."""
+        if len(plans) <= 1 or not order_type:
+            return plans
+        norm_o = normalize_vi_text(order_type)
+        want_dong = norm_o in ("dong", "load", "export", "xuat")
+        want_tra = norm_o in ("tra", "return", "import", "nhap")
+        if not (want_dong or want_tra):
+            return plans
+        matched = [
+            p
+            for p in plans
+            if (normalize_vi_text(p.order_type) in ("dong", "load", "export", "xuat")) == want_dong
+        ]
+        return matched or plans
+
+    @staticmethod
+    def _filter_empty_slots_by_hints(
+        slots: list[TransportPlan],
+        line: ExtractedContainerLine,
+        matched_cust_id: int | None,
+    ) -> list[TransportPlan]:
+        """Thu hẹp các lệnh chưa có số container theo khách hàng và từ khóa tên kho/khách."""
+        if not slots:
+            return []
+        result = list(slots)
+        if matched_cust_id:
+            by_cust = [p for p in result if p.customer_id == matched_cust_id]
+            if by_cust:
+                result = by_cust
+
+        hint_tokens: list[str] = []
+        for raw_hint in (line.customer_hint, line.warehouse_hint):
+            norm_h = normalize_vi_text(raw_hint or "")
+            if norm_h:
+                for tok in norm_h.split():
+                    if len(tok) >= 3 and tok not in ("kho", "cong", "hang", "dong", "tra", "nhap", "xuat"):
+                        hint_tokens.append(tok)
+
+        if len(result) > 1 and hint_tokens:
+            scored: list[tuple[int, TransportPlan]] = []
+            for p in result:
+                haystack = normalize_vi_text(
+                    f"{p.customer_name or ''} {p.warehouse_name or ''} {p.delivery_address or ''}"
+                )
+                score = sum(1 for tok in set(hint_tokens) if tok in haystack)
+                if score > 0:
+                    scored.append((score, p))
+            if scored:
+                max_score = max(s for s, _ in scored)
+                result = [p for s, p in scored if s == max_score]
+        return result
+
     @classmethod
     def verify_plan_and_carrier(
         cls,
@@ -559,93 +633,103 @@ class CarrierFlowService:
         carrier_ctx: CarrierContext,
         matched_cust_id: int | None,
     ) -> CarrierPlanCheck:
-        """Kiểm tra khớp kế hoạch vận chuyển (`transport_plans`, kể cả slot trống cont J2 và kế hoạch chưa gán nhà xe)."""
+        """Kiểm tra khớp kế hoạch vận chuyển (`transport_plans`, kể cả slot trống cont J2 và lệnh chưa gán nhà xe)."""
         if not line.container_no:
             return CarrierPlanCheck(is_shipping_missing=True, reason="Thiếu số container.")
 
         norm_cont = line.container_no.strip().upper()
+        carrier_id = carrier_ctx.numeric_carrier_id
 
-        if carrier_ctx.numeric_carrier_id is None:
-            stmt_any = select(TransportPlan).where(TransportPlan.container_no == norm_cont)
-            if line.transport_plan_id:
-                stmt_any = stmt_any.where(TransportPlan.id == line.transport_plan_id)
-            if matched_cust_id:
-                stmt_any = stmt_any.where(TransportPlan.customer_id == matched_cust_id)
-            plans_any = list(db.scalars(stmt_any).all())
-            if len(plans_any) == 1:
-                return CarrierPlanCheck(matched_plan=plans_any[0])
-            if len(plans_any) > 1:
-                return CarrierPlanCheck(
-                    is_shipping_missing=True,
-                    reason="Tìm thấy nhiều dòng kế hoạch trùng số container; cần ĐHVT chọn 1 dòng trên Web.",
+        stmt = select(TransportPlan).where(TransportPlan.container_no == norm_cont)
+        if carrier_id is not None:
+            stmt = stmt.where(
+                or_(
+                    TransportPlan.carrier_id == carrier_id,
+                    TransportPlan.carrier_id.is_(None),
                 )
-            return CarrierPlanCheck(
-                is_shipping_missing=True,
-                reason="Không tìm thấy kế hoạch vận chuyển cho số container này.",
             )
-
-        stmt = select(TransportPlan).where(
-            TransportPlan.container_no == norm_cont,
-            or_(
-                TransportPlan.carrier_id == carrier_ctx.numeric_carrier_id,
-                TransportPlan.carrier_id.is_(None),
-            ),
-        )
         if line.transport_plan_id:
             stmt = stmt.where(TransportPlan.id == line.transport_plan_id)
         if matched_cust_id:
             stmt = stmt.where(TransportPlan.customer_id == matched_cust_id)
-        plans = list(db.scalars(stmt).all())
+
+        plans = cls._filter_plans_by_order_type(list(db.scalars(stmt).all()), line.order_type)
         if len(plans) == 1:
             return CarrierPlanCheck(matched_plan=plans[0])
         if len(plans) > 1:
             return CarrierPlanCheck(
                 is_shipping_missing=True,
-                reason="Tìm thấy nhiều dòng kế hoạch trùng số container của nhà xe; cần ĐHVT chọn 1 dòng trên Web.",
+                reason="Tìm thấy nhiều dòng kế hoạch trùng số container; cần ĐHVT chọn 1 dòng trên Web.",
+                candidate_plans=plans[:10],
             )
 
-        other = db.scalar(
-            select(TransportPlan.id)
-            .where(
-                TransportPlan.container_no == norm_cont,
-                TransportPlan.carrier_id.is_not(None),
-                TransportPlan.carrier_id != carrier_ctx.numeric_carrier_id,
+        if carrier_id is not None:
+            other = db.scalar(
+                select(TransportPlan.id)
+                .where(
+                    TransportPlan.container_no == norm_cont,
+                    TransportPlan.carrier_id.is_not(None),
+                    TransportPlan.carrier_id != carrier_id,
+                )
+                .limit(1)
             )
-            .limit(1)
-        )
-        if other:
-            return CarrierPlanCheck(is_carrier_mismatch=True, reason="Kế hoạch không thuộc nhà xe gửi tin.")
+            if other:
+                return CarrierPlanCheck(is_carrier_mismatch=True, reason="Kế hoạch không thuộc nhà xe gửi tin.")
 
-        # Bước J2: Tìm kế hoạch chưa cấp số container thuộc đúng nhà xe (ưu tiên lọc theo khách và loại lệnh)
-        empty_stmt = select(TransportPlan).where(
-            TransportPlan.carrier_id == carrier_ctx.numeric_carrier_id,
-            or_(TransportPlan.container_no.is_(None), TransportPlan.container_no == ""),
-        )
-        if matched_cust_id:
-            empty_stmt = empty_stmt.where(TransportPlan.customer_id == matched_cust_id)
-        empty_slots = list(db.scalars(empty_stmt.order_by(TransportPlan.id.desc())).all())
-        if len(empty_slots) > 1 and line.order_type:
-            norm_o = normalize_vi_text(line.order_type)
-            want_dong = norm_o in ("dong", "load", "export", "xuat")
-            order_filtered = [
-                p
-                for p in empty_slots
-                if (normalize_vi_text(p.order_type) in ("dong", "load", "export", "xuat")) == want_dong
-            ]
-            if order_filtered:
-                empty_slots = order_filtered
-
-        if len(empty_slots) == 1:
-            return CarrierPlanCheck(matched_plan=empty_slots[0])
-        if len(empty_slots) > 1:
-            return CarrierPlanCheck(
-                is_shipping_missing=True,
-                reason="Tìm thấy nhiều dòng kế hoạch chưa có container của nhà xe; cần ĐHVT chọn 1 dòng trên Web.",
+        # Bước J2: Tìm kế hoạch chưa cấp số container (ưu tiên lệnh đóng LO khi khớp khách/kho/nhà xe)
+        can_match_empty_slot = carrier_id is not None or bool(matched_cust_id or line.warehouse_hint or line.customer_hint)
+        empty_candidates: list[TransportPlan] = []
+        if can_match_empty_slot:
+            empty_stmt = select(TransportPlan).where(
+                or_(TransportPlan.container_no.is_(None), TransportPlan.container_no == "")
             )
+            if carrier_id is not None:
+                empty_stmt = empty_stmt.where(TransportPlan.carrier_id == carrier_id)
+            if matched_cust_id:
+                empty_stmt = empty_stmt.where(TransportPlan.customer_id == matched_cust_id)
+            raw_slots = list(db.scalars(empty_stmt.order_by(TransportPlan.plan_date.desc(), TransportPlan.id.desc()).limit(100)).all())
+            slots_by_type = cls._filter_plans_by_order_type(raw_slots, line.order_type or "dong")
+            empty_slots = cls._filter_empty_slots_by_hints(slots_by_type, line, matched_cust_id)
+            empty_candidates = empty_slots[:10]
+
+            # Nếu chỉ có 1 lệnh rỗng khớp và đã có tín hiệu thu hẹp (nhà xe, khách hoặc kho khớp từ khóa), gán thẳng.
+            has_narrowing_signal = carrier_id is not None or matched_cust_id is not None or bool(line.warehouse_hint or line.customer_hint)
+            if len(empty_slots) == 1 and has_narrowing_signal:
+                if carrier_id is not None or matched_cust_id is not None or (
+                    empty_slots[0].warehouse_name
+                    and any(
+                        tok in normalize_vi_text(empty_slots[0].warehouse_name)
+                        for tok in normalize_vi_text(line.warehouse_hint or "").split()
+                        if len(tok) >= 4
+                    )
+                ):
+                    return CarrierPlanCheck(matched_plan=empty_slots[0])
+
+            if len(empty_slots) > 1:
+                return CarrierPlanCheck(
+                    is_shipping_missing=True,
+                    reason="Tìm thấy nhiều dòng kế hoạch chưa có container phù hợp; cần ĐHVT chọn 1 dòng trên Web.",
+                    candidate_plans=empty_candidates,
+                )
+
+        if not empty_candidates:
+            # Gợi ý tối đa 10 lệnh đóng chưa có số cont mới nhất để ĐHVT chọn nhanh trên Web.
+            fallback_stmt = (
+                select(TransportPlan)
+                .where(or_(TransportPlan.container_no.is_(None), TransportPlan.container_no == ""))
+                .order_by(TransportPlan.plan_date.desc(), TransportPlan.id.desc())
+                .limit(10)
+            )
+            empty_candidates = list(db.scalars(fallback_stmt).all())
 
         return CarrierPlanCheck(
             is_shipping_missing=True,
-            reason="Không có duy nhất kế hoạch thuộc nhà xe; cần ĐHVT đối chiếu trên Web.",
+            reason=(
+                "Không có duy nhất kế hoạch thuộc nhà xe; cần ĐHVT đối chiếu trên Web."
+                if carrier_id is not None
+                else "Không tìm thấy kế hoạch vận chuyển cho số container này."
+            ),
+            candidate_plans=empty_candidates,
         )
 
     @classmethod
@@ -1097,6 +1181,7 @@ class CarrierFlowService:
         # 3. Hợp nhất dữ liệu thay đổi trên nền dữ liệu cũ & tính danh sách khác biệt
         prev_truck = target_job.truck_record
         old_plate = prev_truck.truck_plate if prev_truck else None
+        old_trailer = prev_truck.trailer_plate if prev_truck else None
         old_driver = prev_truck.driver_name if prev_truck else None
         old_phone = prev_truck.driver_phone if prev_truck else None
         old_seal = target_job.seal_no
@@ -1115,6 +1200,8 @@ class CarrierFlowService:
         changes_list: list[str] = []
         if (compact_plate(old_plate) or "") != (compact_plate(merged_line.truck_plate) or ""):
             changes_list.append(f"- Biển số xe: {old_plate or 'Chưa có'} -> {merged_line.truck_plate}")
+        if (compact_plate(old_trailer) or "") != (compact_plate(merged_line.trailer_plate) or "") and merged_line.trailer_plate:
+            changes_list.append(f"- Biển số rơ-moóc: {old_trailer or 'Chưa có'} -> {merged_line.trailer_plate}")
         if " ".join((old_driver or "").lower().split()) != " ".join((merged_line.driver_name or "").lower().split()):
             changes_list.append(f"- Lái xe: {old_driver or 'Chưa có'} -> {merged_line.driver_name}")
         if re.sub(r"\D", "", old_phone or "") != re.sub(r"\D", "", merged_line.driver_phone or ""):
@@ -1232,6 +1319,10 @@ class CarrierFlowService:
         wh_obj = db.get(Warehouse, updated_job.warehouse_id) if updated_job.warehouse_id else None
         cust_name = cust_obj.name if cust_obj else (merged_line.customer_hint or "Quý khách hàng")
         wh_name = wh_obj.name if wh_obj else (merged_line.warehouse_hint or "Kho khách hàng")
+        if not merged_line.plan_date:
+            plan_res = resolve_plan_detailed(db, updated_job)
+            if plan_res.plan and plan_res.plan.plan_date:
+                merged_line.plan_date = plan_res.plan.plan_date.isoformat()
 
         update_text = OutboundTemplateBuilder.build_update_notification(
             line=merged_line,
@@ -1239,6 +1330,7 @@ class CarrierFlowService:
             customer_name=cust_name,
             warehouse_name=wh_name,
             customer_id=cust_obj.tms_customer_id if cust_obj else None,
+            plan_date=merged_line.plan_date,
         )
         target_gid, target_zalo_gid = cls.find_target_zalo_group_safe(
             db=db,
@@ -1266,23 +1358,24 @@ class CarrierFlowService:
             db.refresh(message)
             return message
 
-        # 5b. Đồng bộ lên bảng kế hoạch vận chuyển cục bộ (điền trống hoặc cập nhật xe/tài xế)
+        target_grp = db.get(ZaloGroup, target_gid)
+        is_manual = (target_grp and target_grp.send_mode == SendMode.MANUAL.value) or (
+            carrier_ctx.source_group and carrier_ctx.source_group.send_mode == SendMode.MANUAL.value
+        )
+
+        # 5b. Đồng bộ lên bảng kế hoạch vận chuyển cục bộ (chỉ đẩy TMS ngay khi không cần duyệt MANUAL)
         if not cls.sync_job_with_local_plan_or_review(
             db=db,
             job=updated_job,
             source_group=carrier_ctx.source_group,
             is_test_msg=carrier_ctx.is_test_msg,
+            allow_tms_sync=not is_manual,
         ):
             updated_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
             message.processing_status = MessageStatus.NEEDS_REVIEW.value
             db.commit()
             db.refresh(message)
             return message
-
-        target_grp = db.get(ZaloGroup, target_gid)
-        is_manual = (target_grp and target_grp.send_mode == SendMode.MANUAL.value) or (
-            carrier_ctx.source_group and carrier_ctx.source_group.send_mode == SendMode.MANUAL.value
-        )
 
         out_status = OutboundStatus.PENDING_APPROVAL.value if is_manual else OutboundStatus.PENDING_SEND.value
         now = datetime.now(UTC)
@@ -1400,6 +1493,10 @@ class CarrierFlowService:
             target_job.customer_id = cust_id
 
         plan_check = cls.verify_plan_and_carrier(db, merged_line, carrier_ctx, target_job.customer_id)
+        if plan_check.matched_plan is not None:
+            merged_line.transport_plan_id = merged_line.transport_plan_id or plan_check.matched_plan.id
+            if plan_check.matched_plan.plan_date:
+                merged_line.plan_date = plan_check.matched_plan.plan_date.isoformat()
         is_simple_cont_defect = (
             plan_check.is_shipping_missing
             and not plan_check.is_carrier_mismatch
@@ -1503,6 +1600,7 @@ class CarrierFlowService:
             customer_name=cust_obj.name if cust_obj else (merged_line.customer_hint or "Quý khách hàng"),
             warehouse_name=wh_obj.name if wh_obj else (merged_line.warehouse_hint or "Kho khách hàng"),
             customer_id=cust_obj.tms_customer_id if cust_obj else None,
+            plan_date=merged_line.plan_date,
         )
         target_gid, target_zalo_gid = cls.find_target_zalo_group_safe(
             db=db,
@@ -1532,22 +1630,23 @@ class CarrierFlowService:
             db.refresh(message)
             return message
 
+        target_grp = db.get(ZaloGroup, target_gid)
+        is_manual = (target_grp and target_grp.send_mode == SendMode.MANUAL.value) or (
+            carrier_ctx.source_group and carrier_ctx.source_group.send_mode == SendMode.MANUAL.value
+        )
+
         if not cls.sync_job_with_local_plan_or_review(
             db=db,
             job=target_job,
             source_group=carrier_ctx.source_group,
             is_test_msg=carrier_ctx.is_test_msg,
+            allow_tms_sync=not is_manual,
         ):
             target_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
             message.processing_status = MessageStatus.NEEDS_REVIEW.value
             db.commit()
             db.refresh(message)
             return message
-
-        target_grp = db.get(ZaloGroup, target_gid)
-        is_manual = (target_grp and target_grp.send_mode == SendMode.MANUAL.value) or (
-            carrier_ctx.source_group and carrier_ctx.source_group.send_mode == SendMode.MANUAL.value
-        )
 
         out_status = OutboundStatus.PENDING_APPROVAL.value if is_manual else OutboundStatus.PENDING_SEND.value
         outbound = OutboundMessage(

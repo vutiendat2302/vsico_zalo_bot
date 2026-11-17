@@ -209,6 +209,7 @@ class TransportPlanBase(BaseModel):
     estimated_drop_time: Optional[str] = Field(default=None, description="Giờ dự kiến hạ hàng")
     fleet_partner: Optional[str] = Field(default=None, description="Đội xe phân công (VD: 'Tuấn Hưng', 'Phương Anh HP')")
     planned_truck_plate: Optional[str] = Field(default=None, description="Số xe dự kiến (VD: '29C-445.41')")
+    planned_trailer_plate: Optional[str] = Field(default=None, description="Biển số rơ-moóc dự kiến (VD: '15R-123.45')")
     delivery_address: Optional[str] = Field(default=None, description="Địa chỉ đóng/ trả hàng kèm liên hệ thủ kho")
     group_id: Optional[str] = Field(
         default="b0301d81c0ee29b070ff",
@@ -240,6 +241,7 @@ class TransportPlanCreate(BaseModel):
     estimated_drop_time: Optional[str] = None
     fleet_partner: Optional[str] = None
     planned_truck_plate: Optional[str] = None
+    planned_trailer_plate: Optional[str] = None
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     delivery_address: Optional[str] = None
@@ -271,6 +273,7 @@ class TransportPlanUpdate(BaseModel):
     estimated_drop_time: Optional[str] = None
     fleet_partner: Optional[str] = None
     planned_truck_plate: Optional[str] = None
+    planned_trailer_plate: Optional[str] = None
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     delivery_address: Optional[str] = None
@@ -287,6 +290,7 @@ class PlanVehicleUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
     planned_truck_plate: Optional[str] = Field(default=None, max_length=64)
+    planned_trailer_plate: Optional[str] = Field(default=None, max_length=64)
     driver_name: Optional[str] = Field(default=None, max_length=128)
     driver_phone: Optional[str] = Field(default=None, pattern=r"^0[0-9]{9}$")
     container_no: Optional[str] = Field(default=None, max_length=16)

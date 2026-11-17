@@ -37,6 +37,7 @@ from src.handlers.plan_sync_service import (
     resolve_plan_detailed,
     sync_combined_ro_to_lo_plans,
     sync_job_to_local_plan,
+    sync_plan_to_tms,
 )
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
@@ -256,6 +257,7 @@ def list_review_cases(
                     "customer_hint": job.customer_hint if job else None,
                     "warehouse_hint": job.warehouse_hint if job else None,
                     "truck_plate": (truck_rec.truck_plate if truck_rec else None) or details_dict.get("truck_plate"),
+                    "trailer_plate": (truck_rec.trailer_plate if truck_rec else None) or details_dict.get("trailer_plate"),
                     "driver_name": (truck_rec.driver_name if truck_rec else None) or details_dict.get("driver_name"),
                     "driver_phone": (truck_rec.driver_phone if truck_rec else None) or details_dict.get("driver_phone"),
                     "validation_status": job.validation_status if job else None,
@@ -701,6 +703,7 @@ def _approve_cancel_request_case(
         )
         line = ExtractedContainerLine(
             line_no=job.line_no or 1,
+            plan_date=plan.plan_date.isoformat() if plan and plan.plan_date else None,
             container_no=job.container_no or (plan.container_no if plan else None),
             container_size=job.container_size or (plan.container_size if plan else None),
             seal_no=job.seal_no or (plan.seal_no if plan else None),
@@ -708,6 +711,7 @@ def _approve_cancel_request_case(
             warehouse_hint=wh_hint,
             customer_hint=cust_hint,
             truck_plate=(tr.truck_plate if tr else None) or (plan.planned_truck_plate if plan else None),
+            trailer_plate=(tr.trailer_plate if tr else None) or (plan.planned_trailer_plate if plan else None),
             driver_name=(tr.driver_name if tr else None) or (plan.driver_name if plan else None),
             driver_phone=(tr.driver_phone if tr else None) or (plan.driver_phone if plan else None),
             note="; ".join(note_parts) if note_parts else None,
@@ -721,6 +725,7 @@ def _approve_cancel_request_case(
                 customer_name=cust_obj.name if cust_obj else (cust_hint or "Quý khách hàng"),
                 warehouse_name=wh_obj.name if wh_obj else (wh_hint or "Kho khách hàng"),
                 customer_id=cust_obj.tms_customer_id if cust_obj else None,
+                plan_date=plan.plan_date if plan else None,
             )
         )
         target_gid = _resolve_cancel_target_group_id(
@@ -768,6 +773,7 @@ def _approve_cancel_request_case(
             note_parts = [p for p in [f"Lệnh {plan.order_code}" if plan.order_code else None, f"Booking {plan.booking_no}" if plan.booking_no else None] if p]
             line = ExtractedContainerLine(
                 line_no=1,
+                plan_date=plan.plan_date.isoformat() if plan.plan_date else None,
                 container_no=plan.container_no,
                 container_size=plan.container_size,
                 seal_no=plan.seal_no,
@@ -775,6 +781,7 @@ def _approve_cancel_request_case(
                 warehouse_hint=plan.warehouse_name or plan.delivery_address,
                 customer_hint=plan.customer_name,
                 truck_plate=plan.planned_truck_plate,
+                trailer_plate=plan.planned_trailer_plate,
                 driver_name=plan.driver_name,
                 driver_phone=plan.driver_phone,
                 note="; ".join(note_parts) if note_parts else None,
@@ -788,6 +795,7 @@ def _approve_cancel_request_case(
                     customer_name=cust_obj.name if cust_obj else (plan.customer_name or "Quý khách hàng"),
                     warehouse_name=wh_obj.name if wh_obj else (plan.warehouse_name or "Kho khách hàng"),
                     customer_id=cust_obj.tms_customer_id if cust_obj else None,
+                    plan_date=plan.plan_date,
                 )
             )
             target_gid = _resolve_cancel_target_group_id(
@@ -1029,8 +1037,11 @@ def approve_review_case(
     )
 
     synced_plan_ids: list[int] = []
+    tms_sync_statuses: dict[str, str] = {}
     pending_send_ids: list[int] = []
     habit_recorded_any = False
+
+    explicit_cont_override = bool(payload and payload.container_no and payload.container_no.strip())
 
     for job in jobs_to_update:
         fields_changed, habit_recorded = _apply_payload_edits_to_job(db, job, payload)
@@ -1098,6 +1109,32 @@ def approve_review_case(
                     allow_plan_override=True,
                 )
                 synced_plan_ids.extend([ro_out.plan_id, lo_out.plan_id])
+                if ro_out.mode in ("FILLED", "UPDATED"):
+                    tms_sync_statuses[str(ro_p.id)] = sync_plan_to_tms(
+                        db,
+                        ro_p,
+                        job=job,
+                        changed_fields=ro_out.changed_fields,
+                        before_values=ro_out.before_values,
+                        allow_container_override=False,
+                        actor_id=actor,
+                    )
+                if lo_out.mode in ("FILLED", "UPDATED"):
+                    prev_c = (
+                        lo_out.before_values.get("container_no")
+                        if "container_no" in lo_out.before_values
+                        else lo_p.container_no
+                    )
+                    tms_sync_statuses[str(lo_p.id)] = sync_plan_to_tms(
+                        db,
+                        lo_p,
+                        job=job,
+                        changed_fields=lo_out.changed_fields,
+                        before_values=lo_out.before_values,
+                        previous_container_no=prev_c,
+                        allow_container_override=explicit_cont_override,
+                        actor_id=actor,
+                    )
             else:
                 sync_out = sync_job_to_local_plan(
                     db=db,
@@ -1107,6 +1144,35 @@ def approve_review_case(
                     actor_id=actor,
                 )
                 synced_plan_ids.append(sync_out.plan_id)
+                pending_names = (
+                    (job.raw_fields or {}).get("tms_pending_fields")
+                    if isinstance(job.raw_fields, dict)
+                    else None
+                )
+                if sync_out.mode in ("FILLED", "UPDATED"):
+                    prev_c = (
+                        sync_out.before_values.get("container_no")
+                        if "container_no" in sync_out.before_values
+                        else selected_plan.container_no
+                    )
+                    tms_sync_statuses[str(selected_plan.id)] = sync_plan_to_tms(
+                        db,
+                        selected_plan,
+                        job=job,
+                        changed_fields=sync_out.changed_fields,
+                        before_values=sync_out.before_values,
+                        previous_container_no=prev_c,
+                        allow_container_override=explicit_cont_override,
+                        actor_id=actor,
+                    )
+                elif pending_names:
+                    tms_sync_statuses[str(selected_plan.id)] = sync_plan_to_tms(
+                        db,
+                        selected_plan,
+                        job=job,
+                        allow_container_override=explicit_cont_override,
+                        actor_id=actor,
+                    )
 
         out_stmt = (
             select(OutboundMessage)
@@ -1152,6 +1218,11 @@ def approve_review_case(
         raw_f = job.raw_fields if isinstance(job.raw_fields, dict) else {}
         rebuilt_line = ExtractedContainerLine(
             line_no=job.line_no or 1,
+            plan_date=(
+                selected_plan.plan_date.isoformat()
+                if selected_plan and selected_plan.plan_date
+                else raw_f.get("plan_date")
+            ),
             container_no=job.container_no,
             container_size=job.container_size,
             seal_no=job.seal_no,
@@ -1159,7 +1230,7 @@ def approve_review_case(
             warehouse_hint=wh_obj.name if wh_obj else job.warehouse_hint,
             customer_hint=cust_obj.name if cust_obj else job.customer_hint,
             truck_plate=tr.truck_plate if tr else None,
-            trailer_plate=tr.trailer_plate if tr else None,
+            trailer_plate=(tr.trailer_plate if tr else None) or (selected_plan.planned_trailer_plate if selected_plan else None),
             driver_name=tr.driver_name if tr else None,
             driver_phone=tr.driver_phone if tr else None,
             eta_time=raw_f.get("eta"),
@@ -1169,6 +1240,7 @@ def approve_review_case(
             customer_name=cust_obj.name if cust_obj else (job.customer_hint or "Quý khách hàng"),
             warehouse_name=wh_obj.name if wh_obj else (job.warehouse_hint or "Kho khách hàng"),
             customer_id=cust_obj.tms_customer_id if cust_obj else None,
+            plan_date=selected_plan.plan_date if selected_plan else None,
         )
 
         if not out_messages:
@@ -1251,6 +1323,7 @@ def approve_review_case(
         "action": "APPROVED",
         "resolved_by": actor,
         "synced_plan_ids": synced_plan_ids,
+        "tms_sync_statuses": tms_sync_statuses,
         "warehouse_habit_saved": habit_recorded_any,
         "outbound_ids": pending_send_ids,
     }

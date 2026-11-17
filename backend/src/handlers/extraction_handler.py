@@ -40,6 +40,7 @@ from src.domain.models import ExtractedContainerLine
 from src.domain.rules import compact_plate
 from src.handlers.carrier_flow_service import CarrierFlowService
 from src.handlers.dhvt_service import DhvtNotificationService
+from src.handlers.plan_sync_service import resolve_trailer_from_catalog
 from src.infrastructure.models import (
     BotReply,
     Carrier,
@@ -190,6 +191,10 @@ class ExtractionHandler:
                     line.container_size = plan.container_size
                 if plan.group_id:
                     line.target_group_id = str(plan.group_id).strip()
+                if plan.plan_date:
+                    line.plan_date = plan.plan_date.isoformat()
+                if plan.planned_trailer_plate and not line.trailer_plate:
+                    line.trailer_plate = plan.planned_trailer_plate
 
                 line.match_source = "transport_plan"
                 return wh_id, cust_id, False, False, False
@@ -676,6 +681,11 @@ class ExtractionHandler:
         for line in validated_lines:
             line.carrier_id = carrier_ctx.numeric_carrier_id
 
+        # Tra cứu danh mục rơ-moóc (`trailers`) để chuẩn hóa mooc & tránh nhận nhầm mooc không mang chữ R/RM thành đầu kéo
+        for idx_ln, ln in enumerate(validated_lines):
+            if resolve_trailer_from_catalog(db, ln, carrier_ctx.numeric_carrier_id):
+                validated_lines[idx_ln] = ContainerValidator.validate_line(ln)
+
         # Ca đóng chưa có cont hoặc tham chiếu chưa rõ đi qua bộ đề xuất an toàn.
         from dataclasses import asdict
         from src.handlers.plan_resolution_engine import PlanResolutionEngine, order_kind
@@ -954,6 +964,8 @@ class ExtractionHandler:
                 prev_tr = prev_sent_job.truck_record
                 prev_norm_plate = compact_plate(prev_tr.truck_plate) or ""
                 curr_norm_plate = compact_plate(line.truck_plate or line.plate_compact or line.raw_truck_plate) or ""
+                prev_norm_trailer = compact_plate(prev_tr.trailer_plate) or ""
+                curr_norm_trailer = compact_plate(line.trailer_plate) or ""
                 prev_norm_driver = " ".join((prev_tr.driver_name or "").lower().split())
                 curr_norm_driver = " ".join((line.driver_name or "").lower().split())
                 prev_norm_phone = re.sub(r"\D", "", prev_tr.driver_phone or "")
@@ -963,6 +975,7 @@ class ExtractionHandler:
 
                 if (
                     prev_norm_plate == curr_norm_plate
+                    and prev_norm_trailer == curr_norm_trailer
                     and prev_norm_driver == curr_norm_driver
                     and prev_norm_phone == curr_norm_phone
                     and prev_norm_seal == curr_norm_seal
@@ -971,7 +984,7 @@ class ExtractionHandler:
                     is_duplicate = True
                     message_kind = "duplicate"
                 else:
-                    # Có thay đổi xe / lái xe / số chì -> Gửi thông báo CẬP NHẬT
+                    # Có thay đổi xe / rơ-moóc / lái xe / số chì -> Gửi thông báo CẬP NHẬT
                     is_update = True
                     message_kind = "update"
                     container_job.is_update = True
@@ -980,6 +993,8 @@ class ExtractionHandler:
                     curr_plate_disp = (line.truck_plate or line.plate_compact or "").strip()
                     if prev_norm_plate != curr_norm_plate:
                         changes_list.append(f"- Biển số xe: {prev_plate_disp or 'Chưa có'} -> {curr_plate_disp}")
+                    if prev_norm_trailer != curr_norm_trailer and line.trailer_plate:
+                        changes_list.append(f"- Biển số rơ-moóc: {(prev_tr.trailer_plate or 'Chưa có')} -> {line.trailer_plate}")
                     if prev_norm_driver != curr_norm_driver:
                         changes_list.append(f"- Lái xe: {prev_tr.driver_name or 'Chưa có'} -> {line.driver_name}")
                     if prev_norm_phone != curr_norm_phone:
@@ -1033,6 +1048,12 @@ class ExtractionHandler:
                     enrichment_updated = True
                 if not line.target_group_id and mp.group_id:
                     line.target_group_id = mp.group_id
+                if mp.plan_date and line.plan_date != mp.plan_date.isoformat():
+                    line.plan_date = mp.plan_date.isoformat()
+                    enrichment_updated = True
+                if mp.planned_trailer_plate and not line.trailer_plate:
+                    line.trailer_plate = mp.planned_trailer_plate
+                    enrichment_updated = True
                 if not line.transport_plan_id:
                     line.transport_plan_id = mp.id
                     cur_raw = dict(container_job.raw_fields or {}) if isinstance(container_job.raw_fields, dict) else {}
@@ -1117,6 +1138,23 @@ class ExtractionHandler:
                     if (carrier_ctx.source_group and carrier_ctx.source_group.carrier_id)
                     else None
                 )
+                case_details = line.to_dict()
+                if getattr(plan_check, "candidate_plans", None):
+                    case_details["candidate_plans"] = [
+                        {
+                            "plan_id": str(cp.id),
+                            "order_code": cp.order_code,
+                            "order_type": cp.order_type,
+                            "customer_name": cp.customer_name,
+                            "warehouse_name": cp.warehouse_name or cp.delivery_address,
+                            "container_no": cp.container_no,
+                            "version": cp.version,
+                            "score": 80,
+                            "evidences": ["matching_slot" if not cp.container_no else "container_match"],
+                            "exclusions": [],
+                        }
+                        for cp in plan_check.candidate_plans[:10]
+                    ]
                 DhvtNotificationService.create_or_merge_review_case(
                     db=db,
                     message_id=message.id,
@@ -1125,7 +1163,7 @@ class ExtractionHandler:
                     container_job_id=container_job.id,
                     container_no=container_job.container_no,
                     carrier_name=carrier_obj.name if carrier_obj else None,
-                    details=line.to_dict(),
+                    details=case_details,
                     suggestion="ĐHVT kiểm tra nhà xe/kế hoạch/RouteMap và duyệt trên Web.",
                     priority="HIGH" if routing_blocked_type in ("CARRIER_MISMATCH", "UNREGISTERED_CARRIER_GROUP") else "NORMAL",
                     is_test_msg=carrier_ctx.is_test_msg,
@@ -1133,7 +1171,13 @@ class ExtractionHandler:
                 )
                 continue
 
-            # Đồng bộ dữ liệu hợp lệ lên bảng TransportPlan cục bộ (kể cả khi outbound bị đánh dấu trùng nhưng plan vẫn trống)
+            # Xác định chế độ gửi của nhóm (send_mode): 'AUTO' hoặc 'MANUAL'
+            target_grp = db.get(ZaloGroup, target_grp_id) if target_grp_id else None
+
+            target_mode = (SendMode(target_grp.send_mode).value if target_grp and target_grp.send_mode else SendMode.AUTO.value)
+            is_auto_group = (target_mode == SendMode.AUTO.value) and (source_mode == SendMode.AUTO.value)
+
+            # Đồng bộ dữ liệu hợp lệ lên bảng TransportPlan cục bộ (chỉ đẩy TMS ngay khi AUTO)
             if (
                 is_complete
                 and line.validation_status == ValidationStatus.VALID.value
@@ -1143,17 +1187,12 @@ class ExtractionHandler:
                     job=container_job,
                     source_group=carrier_ctx.source_group,
                     is_test_msg=carrier_ctx.is_test_msg,
+                    allow_tms_sync=is_auto_group,
                 ):
                     has_review_or_error = True
                     container_job.validation_status = ValidationStatus.NEEDS_REVIEW.value
                     container_job.routing_status = RoutingStatus.NEEDS_REVIEW.value
                     continue
-
-            # Xác định chế độ gửi của nhóm (send_mode): 'AUTO' hoặc 'MANUAL'
-            target_grp = db.get(ZaloGroup, target_grp_id) if target_grp_id else None
-
-            target_mode = (SendMode(target_grp.send_mode).value if target_grp and target_grp.send_mode else SendMode.AUTO.value)
-            is_auto_group = (target_mode == SendMode.AUTO.value) and (source_mode == SendMode.AUTO.value)
 
             target_carrier_group = message.group_id
 

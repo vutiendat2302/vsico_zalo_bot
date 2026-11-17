@@ -27,14 +27,61 @@ from src.domain.enums import (
 from src.infrastructure.models import (
     ActivityLog,
     BotReply,
+    Carrier,
     ContainerJob,
     OutboundMessage,
     ReviewCase,
+    TransportPlan,
+    TruckRecord,
     WarehouseAlias,
     ZaloGroup,
+    ZaloMessage,
 )
 from src.infrastructure.snowflake import snowflake
 from src.infrastructure.zalo_dispatcher import ZaloDispatcher
+
+
+_CASE_TYPE_LABELS: dict[str, str] = {
+    "OUTBOUND_PENDING_APPROVAL": "Duyệt gửi thông báo khách hàng",
+    "ROUTING_NOT_FOUND": "Chưa xác định nhóm khách hàng",
+    "MISSING_INFO": "Thiếu thông tin điều phối",
+    "WAREHOUSE_LOW_CONFIDENCE": "Cần xác nhận kho đóng/trả",
+    "AMBIGUOUS_PLAN": "Nhiều kế hoạch trùng khớp",
+    "PLAN_CONFLICT": "Xung đột thông tin kế hoạch",
+    "INVALID_CONTAINER_CHECKDIGIT": "Sai số container (ISO 6346)",
+    "DUPLICATE_OR_CONFLICT": "Trùng lặp / xung đột dữ liệu",
+    "CARRIER_CHANGE_REQUEST": "Nhà xe đề nghị đổi thông tin",
+    "CARRIER_CANCEL_OR_ISSUE": "Nhà xe báo hủy / sự cố",
+    "CARRIER_CORRECTION_OVERDUE": "Nhà xe quá hạn bổ sung",
+    "OTHER": "Cần ĐHVT kiểm tra",
+}
+
+_ORDER_TYPE_LABELS: dict[str, str] = {
+    "dong": "Đóng hàng",
+    "tra": "Trả hàng",
+    "answer": "Trả lời",
+}
+
+
+def _to_int_id(value: Any) -> Optional[int]:
+    """Chuyển đổi giá trị ID dạng chuỗi/số sang số nguyên an toàn."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_order_label(order_code: Optional[str], order_type: Optional[str]) -> Optional[str]:
+    """Hiển thị mã lệnh kèm tên loại lệnh tiếng Việt gọn gàng."""
+    type_label = _ORDER_TYPE_LABELS.get((order_type or "").strip().lower())
+    code = (order_code or "").strip().upper()
+    if code and type_label:
+        return f"{code} ({type_label})"
+    if code:
+        return code
+    return type_label
 
 
 def _normalize_alias_key(text: str) -> str:
@@ -78,25 +125,166 @@ class DhvtNotificationService:
         return f"{base}{clean_path}"
 
     @classmethod
+    def _resolve_review_case_context(
+        cls,
+        db: Optional[Session],
+        case_obj: ReviewCase,
+        container_no: Optional[str] = None,
+        carrier_name: Optional[str] = None,
+    ) -> dict[str, Optional[str]]:
+        """Tra cứu tên hiển thị thân thiện (mã lệnh, khách, kho, nhà xe, xe/tài xế) cho ca duyệt."""
+        details = dict(case_obj.details or {})
+        cont = (container_no or details.get("container_no") or "").strip().upper() or None
+        order_code: Optional[str] = str(details.get("order_code") or "").strip() or None
+        order_type: Optional[str] = str(details.get("order_type") or "").strip() or None
+        customer_name: Optional[str] = str(details.get("customer_name") or "").strip() or None
+        warehouse_name: Optional[str] = str(details.get("warehouse_name") or "").strip() or None
+        resolved_carrier: Optional[str] = (carrier_name or str(details.get("carrier_name") or "")).strip() or None
+        truck_plate: Optional[str] = str(details.get("truck_plate") or "").strip() or None
+        driver_name: Optional[str] = str(details.get("driver_name") or "").strip() or None
+        target_group_name: Optional[str] = None
+
+        if db is None:
+            return {
+                "order_label": _format_order_label(order_code, order_type),
+                "container_no": cont,
+                "customer_name": customer_name,
+                "warehouse_name": warehouse_name,
+                "carrier_name": resolved_carrier,
+                "vehicle_driver": " - ".join(p for p in (truck_plate, driver_name) if p) or None,
+            }
+
+        plan_id = _to_int_id(details.get("transport_plan_id"))
+        plan = db.get(TransportPlan, plan_id) if plan_id else None
+        if plan:
+            order_code = order_code or (plan.order_code or None)
+            order_type = order_type or (plan.order_type or None)
+            cont = cont or (plan.container_no or "").strip().upper() or None
+            customer_name = customer_name or (plan.customer_name or None)
+            warehouse_name = warehouse_name or (plan.warehouse_name or plan.delivery_address or None)
+            resolved_carrier = resolved_carrier or (plan.carrier_name or plan.fleet_partner or None)
+            truck_plate = truck_plate or (plan.planned_truck_plate or None)
+            driver_name = driver_name or (plan.driver_name or None)
+            if not resolved_carrier and plan.carrier_id:
+                c_obj = db.get(Carrier, plan.carrier_id)
+                if c_obj and c_obj.name:
+                    resolved_carrier = c_obj.name
+
+        if case_obj.container_job_id:
+            job = db.get(ContainerJob, case_obj.container_job_id)
+            if job:
+                cont = cont or (job.container_no or "").strip().upper() or None
+                order_type = order_type or (job.order_type or None)
+                customer_name = customer_name or (job.customer_hint or None)
+                warehouse_name = warehouse_name or (job.warehouse_hint or None)
+                if job.truck_record_id:
+                    tr = db.get(TruckRecord, job.truck_record_id)
+                    if tr:
+                        truck_plate = truck_plate or (tr.truck_plate or None)
+                        driver_name = driver_name or (tr.driver_name or None)
+
+        outbound_id = _to_int_id(details.get("outbound_message_id"))
+        if outbound_id:
+            outbound = db.get(OutboundMessage, outbound_id)
+            if outbound and outbound.target_group_id:
+                tg = db.get(ZaloGroup, outbound.target_group_id)
+                if tg and tg.name:
+                    target_group_name = tg.name
+
+        if not resolved_carrier:
+            carrier_id = _to_int_id(details.get("carrier_id"))
+            if carrier_id:
+                c_obj = db.get(Carrier, carrier_id)
+                if c_obj and c_obj.name:
+                    resolved_carrier = c_obj.name
+
+        if not resolved_carrier and case_obj.message_id:
+            msg = db.get(ZaloMessage, case_obj.message_id)
+            if msg and msg.group_id:
+                src_grp = db.scalar(
+                    select(ZaloGroup).where(ZaloGroup.zalo_group_id == msg.group_id)
+                )
+                if src_grp:
+                    if src_grp.carrier_name:
+                        resolved_carrier = src_grp.carrier_name
+                    else:
+                        grp_carrier_id = _to_int_id(src_grp.carrier_id)
+                        if grp_carrier_id:
+                            c_obj = db.get(Carrier, grp_carrier_id)
+                            if c_obj and c_obj.name:
+                                resolved_carrier = c_obj.name
+                    if not resolved_carrier and (src_grp.group_role or "").upper() == "SOURCE":
+                        resolved_carrier = src_grp.name or None
+
+        customer_display = customer_name or target_group_name
+        if warehouse_name and len(warehouse_name) > 70:
+            warehouse_name = warehouse_name[:67].rstrip() + "..."
+        vehicle_driver = " - ".join(p for p in (truck_plate, driver_name) if p) or None
+
+        return {
+            "order_label": _format_order_label(order_code, order_type),
+            "container_no": cont,
+            "customer_name": customer_display,
+            "warehouse_name": warehouse_name,
+            "carrier_name": resolved_carrier,
+            "vehicle_driver": vehicle_driver,
+        }
+
+    @classmethod
     def render_review_case_alert(
         cls,
         case_obj: ReviewCase,
+        db: Optional[Session] = None,
         container_no: Optional[str] = None,
         carrier_name: Optional[str] = None,
         suggestion: Optional[str] = None,
         priority: str = "NORMAL",
     ) -> str:
-        """Form 1: Thông báo ca cần duyệt mới/cập nhật gửi nhóm Zalo ĐHVT (chỉ đọc, duyệt trên Web)."""
-        link = cls._web_url(f"/reviews?highlight={case_obj.id}")
-        lines = [
-            f"[VSICO - CA CAN DUYET #{case_obj.id}]",
-            f"Loai ca: {case_obj.case_type} | Muc do: {priority}",
-            f"Container: {container_no or 'Chua xac dinh'} | Nha xe: {carrier_name or 'Chua ro'}",
-            f"Ly do: {case_obj.reason}",
+        """Form 1: Thông báo ca cần duyệt gọn gàng bằng tiếng Việt, chỉ hiển thị tên/mã nghiệp vụ."""
+        link = cls._web_url("/reviews")
+        case_label = _CASE_TYPE_LABELS.get(case_obj.case_type, case_obj.case_type)
+        header = (
+            f"[VSICO - ƯU TIÊN CAO] Ca cần duyệt - {case_label}"
+            if (priority or "").upper() == "HIGH"
+            else f"[VSICO] Ca cần duyệt - {case_label}"
+        )
+        ctx = cls._resolve_review_case_context(
+            db=db,
+            case_obj=case_obj,
+            container_no=container_no,
+            carrier_name=carrier_name,
+        )
+
+        lines = [header]
+        order_parts = [
+            f"Lệnh: {ctx['order_label']}" if ctx.get("order_label") else "",
+            f"Cont: {ctx['container_no']}" if ctx.get("container_no") else "",
         ]
+        order_line = " | ".join(p for p in order_parts if p)
+        if order_line:
+            lines.append(order_line)
+
+        party_parts = [
+            f"Khách hàng: {ctx['customer_name']}" if ctx.get("customer_name") else "",
+            f"Kho: {ctx['warehouse_name']}" if ctx.get("warehouse_name") else "",
+        ]
+        party_line = " | ".join(p for p in party_parts if p)
+        if party_line:
+            lines.append(party_line)
+
+        transport_parts = [
+            f"Nhà xe: {ctx['carrier_name']}" if ctx.get("carrier_name") else "",
+            f"Xe: {ctx['vehicle_driver']}" if ctx.get("vehicle_driver") else "",
+        ]
+        transport_line = " | ".join(p for p in transport_parts if p)
+        if transport_line:
+            lines.append(transport_line)
+
+        if case_obj.reason:
+            lines.append(f"Lý do: {case_obj.reason}")
         if suggestion:
-            lines.append(f"Goi y: {suggestion}")
-        lines.append(f"Xu ly tren Web (Khong duyet qua Zalo): {link}")
+            lines.append(f"Gợi ý: {suggestion}")
+        lines.append(f"Xử lý trên Web: {link}")
         return "\n".join(lines)
 
     @classmethod
@@ -108,14 +296,15 @@ class DhvtNotificationService:
         reason: str,
     ) -> str:
         """Form 2: Thông báo tin gửi khách đang chờ duyệt trên Web gửi nhóm Zalo ĐHVT."""
-        link = cls._web_url(f"/results?highlight={outbound.id}")
-        cont_str = ", ".join(c for c in containers if c) or "N/A"
+        link = cls._web_url("/results")
+        cont_str = ", ".join(c for c in containers if c) or "Chưa rõ"
+        order_label = _format_order_label(None, outbound.order_type) or outbound.order_type
         lines = [
-            f"[VSICO - TIN CHO DUYET #{outbound.id}]",
-            f"Nhom khach hang: {target_group_name}",
-            f"Container: {cont_str} | Lenh: {outbound.order_type}",
-            f"Ly do cho: {reason}",
-            f"Duyet phat hanh tren Web: {link}",
+            "[VSICO - TIN CHO DUYET]",
+            f"Nhóm khách hàng: {target_group_name}",
+            f"Container: {cont_str} | Lệnh: {order_label}",
+            f"Lý do chờ: {reason}",
+            f"Duyệt phát hành trên Web: {link}",
         ]
         return "\n".join(lines)
 
@@ -129,9 +318,9 @@ class DhvtNotificationService:
         """Form 3: Cảnh báo hệ thống / lỗi gửi Zalo / lỗi TMS / quá hạn gửi nhóm Zalo ĐHVT."""
         link = cls._web_url(web_path)
         return (
-            f"[VSICO - CANH BAO HE THONG - {title}]\n"
+            f"[VSICO - CẢNH BÁO HỆ THỐNG] {title}\n"
             f"{body}\n"
-            f"Kiem tra tren Web: {link}"
+            f"Kiểm tra trên Web: {link}"
         )
 
     @classmethod
@@ -232,6 +421,7 @@ class DhvtNotificationService:
         if notify_zalo:
             alert_text = cls.render_review_case_alert(
                 case_obj=rc,
+                db=db,
                 container_no=container_no,
                 carrier_name=carrier_name,
                 suggestion=suggestion,
@@ -455,25 +645,28 @@ class DhvtNotificationService:
             details["last_reminded_at"] = now.isoformat()
             rc.details = details
             reminded_reviews += 1
+            case_label = _CASE_TYPE_LABELS.get(rc.case_type, rc.case_type)
+            cont_label = str((rc.details or {}).get("container_no") or "").strip()
+            case_desc = f"{case_label} - Cont {cont_label}" if cont_label else case_label
             if remind_count >= 2:
                 admin_escalations += 1
                 cls.notify_system_alert(
                     db=db,
                     title="LEO THANG ADMIN - CA DUYET QUA HAN",
-                    body=f"Ca duyệt #{rc.id} ({rc.case_type}) đã quá hạn xử lý lần {remind_count}. Lý do: {rc.reason}",
+                    body=f"Ca duyệt ({case_desc}) đã quá hạn xử lý lần {remind_count}. Lý do: {rc.reason}",
                     entity_type="review_case",
                     entity_id=str(rc.id),
-                    web_path=f"/reviews?highlight={rc.id}",
+                    web_path="/reviews",
                     is_test_msg=is_test_msg,
                 )
             else:
                 cls.notify_system_alert(
                     db=db,
                     title="NHAC CA CHO DUYET QUA HAN",
-                    body=f"Ca duyệt #{rc.id} ({rc.case_type}) đang chờ ĐHVT xử lý hơn 30 phút.",
+                    body=f"Ca duyệt ({case_desc}) đang chờ ĐHVT xử lý hơn 30 phút.",
                     entity_type="review_case",
                     entity_id=str(rc.id),
-                    web_path=f"/reviews?highlight={rc.id}",
+                    web_path="/reviews",
                     is_test_msg=is_test_msg,
                 )
 
@@ -505,25 +698,26 @@ class DhvtNotificationService:
             if recent_rem:
                 continue
             reminded_outbounds += 1
+            group_label = ob.target_group.name if ob.target_group and ob.target_group.name else "Khách hàng"
             if existing_rem >= 1:
                 admin_escalations += 1
                 cls.notify_system_alert(
                     db=db,
                     title="LEO THANG ADMIN - TIN CHO DUYET QUA HAN",
-                    body=f"Tin gửi khách #{ob.id} đã chờ duyệt quá 2 lượt nhắc.",
+                    body=f"Tin gửi nhóm {group_label} đã chờ duyệt quá 2 lượt nhắc.",
                     entity_type="outbound_message",
                     entity_id=str(ob.id),
-                    web_path=f"/results?highlight={ob.id}",
+                    web_path="/results",
                     is_test_msg=is_test_msg,
                 )
             else:
                 cls.notify_system_alert(
                     db=db,
                     title="NHAC TIN CHO DUYET QUA HAN",
-                    body=f"Tin gửi khách #{ob.id} đang ở trạng thái chờ duyệt quá 30 phút.",
+                    body=f"Tin gửi nhóm {group_label} đang ở trạng thái chờ duyệt quá 30 phút.",
                     entity_type="outbound_message",
                     entity_id=str(ob.id),
-                    web_path=f"/results?highlight={ob.id}",
+                    web_path="/results",
                     is_test_msg=is_test_msg,
                 )
 

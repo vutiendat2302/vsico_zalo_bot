@@ -91,16 +91,24 @@ class Settings(BaseSettings):
     # 9. Cấu hình Xác thực JWT & RBAC (ĐHVT & Admin Login)
     JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
 
     # 10. Cấu hình Tích hợp TMS (be-tms API)
     TMS_BASE_URL: str = "http://localhost:8080/api"
     TMS_USERNAME: str = ""
     TMS_PASSWORD: str = ""
+    TMS_ZALO_INTEGRATION_TOKEN: str = ""
     TMS_TIMEOUT_SECONDS: int = 15
     TMS_SYNC_ENABLED: bool = False
     TMS_WRITE_ENABLED: bool = False
-    TMS_WRITE_ENDPOINT: str = "/transport-plan/update-dispatch"
+    TMS_WRITE_ENDPOINT: str = "/api/integrations/zalo/dispatch-assignment"
+    TMS_AUTO_SYNC_ENABLED: bool = True
+    TMS_AUTO_SYNC_INTERVAL_MINUTES: int = 5
+    TMS_AUTO_SYNC_MASTER_INTERVAL_MINUTES: int = 360
+    TMS_AUTO_SYNC_REGIONS: str = "1"
+    TMS_AUTO_SYNC_DAYS_BACK: int = 0
+    TMS_AUTO_SYNC_DAYS_AHEAD: int = 1
+    TMS_TOKEN_MAX_AGE_MINUTES: int = 120
 
     # 11. Cấu hình AI Microservice Nội bộ (ai-service)
     AI_SERVICE_URL: str = "http://127.0.0.1:8001"

@@ -32,6 +32,7 @@ from src.api.users import router as users_router
 from src.api.webhook import router as webhook_router
 from src.domain.enums import GroupRole, SendMode, UserRole
 from src.handlers.extraction_handler import ExtractionHandler
+from src.handlers.tms_auto_sync import tms_auto_sync
 from src.infrastructure.database import SessionLocal, get_db
 from src.infrastructure.fifo_queue import fifo_queue
 from src.infrastructure.models import ContainerJob, TruckRecord, User, ZaloGroup, ZaloMessage
@@ -93,9 +94,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     seed_initial_users()
     fifo_queue.start_background_worker()
+    tms_auto_sync.start()
     try:
         yield
     finally:
+        tms_auto_sync.stop()
         fifo_queue.stop_background_worker()
 
 
@@ -240,6 +243,7 @@ def create_app() -> FastAPI:
             "total_trucks_extracted": truck_count,
             "total_containers_extracted": cont_count,
             "fifo_queue": fifo_queue.stats(),
+            "tms_auto_sync": tms_auto_sync.status(),
         }
 
     application.add_middleware(

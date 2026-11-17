@@ -159,6 +159,7 @@ export function PlanDetailModal({ plan, onClose }: PlanDetailModalProps) {
         <DetailField label="Trạng thái TMS" value={formatDispatchState(plan.dispatch_state)} />
         <DetailField label="Đội xe / Nhà xe" value={plan.fleet_partner || plan.carrier_name || "—"} />
         <DetailField label="Biển số xe" value={plan.planned_truck_plate || "—"} />
+        <DetailField label="Biển số rơ-moóc" value={plan.planned_trailer_plate || "—"} />
         <DetailField label="Tài xế" value={plan.driver_name || "—"} />
         <DetailField label="SĐT tài xế" value={plan.driver_phone || "—"} />
         <DetailField label="Cán bộ giao nhận" value={plan.operator_staff || "—"} />
