@@ -24,6 +24,7 @@ from src.infrastructure.models import (
     ReviewCase,
     TransportPlan,
     TruckRecord,
+    ZaloGroup,
     ZaloMessage,
 )
 from src.infrastructure.throttler import outbound_throttler
@@ -111,16 +112,30 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
     )
     recent_records = list(db.scalars(recent_msgs_query).all())
 
+    recent_group_ids = {m.group_id for m in recent_records if m.group_id}
+    group_name_map: dict[str, str] = {}
+    if recent_group_ids:
+        groups = list(
+            db.scalars(
+                select(ZaloGroup).where(ZaloGroup.zalo_group_id.in_(recent_group_ids))
+            ).all()
+        )
+        group_name_map = {g.zalo_group_id: g.name for g in groups if g.name}
+
     recent_out = []
     for m in recent_records:
         plates = [t.truck_plate for t in m.truck_records if t.truck_plate]
         conts = [c.container_no for c in m.container_jobs if c.container_no]
         customers = [c.customer_hint for c in m.container_jobs if c.customer_hint]
+        resolved_group_name = group_name_map.get(m.group_id)
+        if not resolved_group_name and m.group_id and str(m.group_id).startswith("direct_"):
+            resolved_group_name = f"Tin nhắn trực tiếp ({m.sender_name or 'Khách'})"
         recent_out.append(
             {
                 "id": str(m.id),
                 "zalo_message_id": m.zalo_message_id,
                 "group_id": m.group_id,
+                "group_name": resolved_group_name,
                 "sender_name": m.sender_name or m.sender_id,
                 "raw_text": m.message_text,
                 "sent_at": m.zalo_sent_at.isoformat() if m.zalo_sent_at else m.received_at.isoformat(),

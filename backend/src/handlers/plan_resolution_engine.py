@@ -23,6 +23,8 @@ class Candidate:
     customer_name: str | None = None
     warehouse_name: str | None = None
     container_no: str | None = None
+    plan_date: str | None = None
+    required_time: str | None = None
 
 
 @dataclass
@@ -91,6 +93,17 @@ def _fuzzy_customer_match(hint: str | None, customer_name: str | None) -> bool:
     return max(fuzz.WRatio(h_norm, c_norm), fuzz.token_set_ratio(h_norm, c_norm)) >= 86.0
 
 
+def _warning_label_vi(warn_code: str | None) -> str:
+    """Dịch mã cảnh báo vỏ trả sang nhãn tiếng Việt tự nhiên, không lộ mã nội bộ."""
+    mapping = {
+        "empty_drop": "chỉ định hạ rỗng (không tự ghép đóng hàng)",
+        "over_combined": "vượt số lượng ghép kết hợp",
+        "other_requested": "đã được đơn vị khác đăng ký",
+        "soc": "vỏ thuộc sở hữu chủ hàng",
+    }
+    return mapping.get((warn_code or "").strip().lower(), "cảnh báo cấm ghép vỏ trả")
+
+
 def _is_reuse_blocked(plan: Any) -> tuple[bool, str]:
     """Kiểm tra vỏ từ lệnh trả có bị cấm ghép sang lệnh đóng hay không."""
     warning = getattr(plan, "container_warning", None)
@@ -125,6 +138,14 @@ class PlanResolutionEngine:
             warehouse_name=getattr(plan, "warehouse_name", None)
             or getattr(plan, "delivery_address", None),
             container_no=getattr(plan, "container_no", None),
+            plan_date=(
+                plan.plan_date.isoformat()
+                if getattr(plan, "plan_date", None) and hasattr(plan.plan_date, "isoformat")
+                else (str(getattr(plan, "plan_date", "")) or None)
+            ),
+            required_time=getattr(plan, "required_time", None)
+            or getattr(plan, "estimated_drop_time", None)
+            or getattr(plan, "eta", None),
         )
         p_cont = clean_container(getattr(plan, "container_no", None))
         p_kind = order_kind(getattr(plan, "order_type", None))
@@ -270,7 +291,7 @@ class PlanResolutionEngine:
                         selected_plan_id=str(lo_plan.id),
                         secondary_plan_id=str(ro_plan.id),
                         candidates=[cand],
-                        reason=f"Vỏ trả {cont} có cảnh báo cấm ghép ({warn_code}); cần ĐHVT duyệt.",
+                        reason=f"Vỏ trả {cont} đang có {_warning_label_vi(warn_code)}; cần ĐHVT xác nhận trước khi ghép lệnh đóng.",
                     )
                 cand_lo = cls._score_candidate(line, lo_plan, carrier_id, dates, cont, "LO", "LO")
                 cand_ro = cls._score_candidate(line, ro_plan, carrier_id, dates, cont, "RO", "RO")
@@ -305,7 +326,7 @@ class PlanResolutionEngine:
                         selected_plan_id=str(lo_plan.id),
                         secondary_plan_id=str(ro_plan.id),
                         candidates=[cand_lo, cand_ro],
-                        reason=f"Vỏ {cont} có cảnh báo ({warn_code}) trên lệnh trả; cần ĐHVT duyệt.",
+                        reason=f"Vỏ {cont} trên lệnh trả đang có {_warning_label_vi(warn_code)}; cần ĐHVT xác nhận.",
                     )
                 return Resolution(
                     "AUTO_COMMIT",
@@ -348,7 +369,7 @@ class PlanResolutionEngine:
                     "TH3_BLOCKED_CONTAINER_WARNING",
                     secondary_plan_id=str(ro_plan.id),
                     candidates=[ro_cand],
-                    reason=f"Vỏ trả {cont} có cảnh báo cấm ghép ({warn_code}); không tự ghép sang lệnh đóng.",
+                    reason=f"Vỏ trả {cont} đang có {_warning_label_vi(warn_code)}; hệ thống không tự ghép sang lệnh đóng.",
                 )
 
             open_lo_plans = [

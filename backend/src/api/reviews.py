@@ -11,6 +11,7 @@ Quản lý hàng đợi ca rà soát cho nhân viên Điều hành vận tải (
 
 from contextlib import nullcontext
 from datetime import UTC, datetime
+import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -30,10 +31,14 @@ from src.domain.enums import (
     ValidationStatus,
 )
 from src.domain.models import ExtractedContainerLine
-from src.domain.rules import clean_container, clean_phone, clean_plate
+from src.domain.rules import clean_container, clean_phone, clean_plate, compact_plate, is_valid_phone_list
+from src.domain.short_link import decode_short_token
 from src.handlers.carrier_flow_service import CarrierFlowService
-from src.handlers.dhvt_service import DhvtNotificationService
+from src.handlers.dhvt_service import DhvtNotificationService, humanize_reason_text
+from src.validation.validators import ContainerValidator
 from src.handlers.plan_sync_service import (
+    extract_plan_expected_time,
+    resolve_job_expected_time,
     resolve_plan_detailed,
     sync_combined_ro_to_lo_plans,
     sync_job_to_local_plan,
@@ -48,9 +53,11 @@ from src.infrastructure.models import (
     OutboundMessage,
     OutboundMessageItem,
     ReviewCase,
+    Trailer,
     TransportPlan,
     TruckRecord,
     User,
+    Vehicle,
     Warehouse,
     ZaloGroup,
     ZaloMessage,
@@ -101,6 +108,10 @@ class ReviewApprovePayload(BaseModel):
     save_warehouse_habit: bool = Field(default=True, description="Lưu alias kho thành thói quen cho các lần sau")
     notify_carrier: bool = Field(default=True, description="Gửi xác nhận kết quả duyệt về nhóm nhà xe nếu là nhóm thật")
     operator_name: Optional[str] = Field(default=None)
+    skip_dhvt_zalo_broadcast: bool = Field(
+        default=False,
+        description="Bỏ qua broadcast Zalo ĐHVT khi phản hồi đã gửi trực tiếp trong nhóm ĐHVT",
+    )
 
 
 class RejectPayload(BaseModel):
@@ -111,6 +122,10 @@ class RejectPayload(BaseModel):
         description="Lý do từ chối",
     )
     operator_name: Optional[str] = Field(default=None)
+    skip_dhvt_zalo_broadcast: bool = Field(
+        default=False,
+        description="Bỏ qua broadcast Zalo ĐHVT khi phản hồi đã gửi trực tiếp trong nhóm ĐHVT",
+    )
 
 
 def _is_real_source_message(orig_msg: Optional[ZaloMessage]) -> bool:
@@ -164,10 +179,229 @@ def _ensure_not_locked_by_other(
         )
 
 
+def _load_outbound_previews_for_cases(
+    db: Session,
+    cases: list[ReviewCase],
+) -> dict[int, dict[str, Any]]:
+    """Nạp hàng loạt bản nháp/thông báo gửi khách gắn với các ca rà soát."""
+    if not cases:
+        return {}
+
+    explicit_om_ids: set[int] = set()
+    job_ids: set[int] = set()
+    for c in cases:
+        if c.container_job_id:
+            job_ids.add(c.container_job_id)
+        details = c.details if isinstance(c.details, dict) else {}
+        om_raw = details.get("outbound_message_id")
+        if om_raw is not None:
+            try:
+                explicit_om_ids.add(int(om_raw))
+            except (ValueError, TypeError):
+                pass
+
+    om_by_id: dict[int, OutboundMessage] = {}
+    if explicit_om_ids:
+        for om in db.scalars(select(OutboundMessage).where(OutboundMessage.id.in_(explicit_om_ids))).all():
+            om_by_id[om.id] = om
+
+    om_by_job: dict[int, list[OutboundMessage]] = {}
+    if job_ids:
+        rows = db.execute(
+            select(OutboundMessageItem.container_job_id, OutboundMessage)
+            .join(OutboundMessage, OutboundMessage.id == OutboundMessageItem.outbound_message_id)
+            .where(OutboundMessageItem.container_job_id.in_(job_ids))
+            .order_by(OutboundMessage.id.desc())
+        ).all()
+        for jid, om in rows:
+            om_by_id.setdefault(om.id, om)
+            om_by_job.setdefault(jid, []).append(om)
+
+    tg_ids = {om.target_group_id for om in om_by_id.values() if om.target_group_id}
+    tg_names: dict[int, str] = (
+        {
+            g.id: (g.name or g.zalo_group_id)
+            for g in db.scalars(select(ZaloGroup).where(ZaloGroup.id.in_(tg_ids))).all()
+        }
+        if tg_ids
+        else {}
+    )
+
+    priority_statuses = {
+        OutboundStatus.PENDING_APPROVAL.value,
+        "cho_duyet",
+        OutboundStatus.FAILED.value,
+        "that_bai",
+        OutboundStatus.PENDING_SEND.value,
+    }
+    previews: dict[int, dict[str, Any]] = {}
+    for c in cases:
+        chosen: Optional[OutboundMessage] = None
+        details = c.details if isinstance(c.details, dict) else {}
+        if details.get("outbound_message_id") is not None:
+            try:
+                chosen = om_by_id.get(int(details["outbound_message_id"]))
+            except (ValueError, TypeError):
+                chosen = None
+        if chosen is None and c.container_job_id:
+            candidates = [
+                om
+                for om in om_by_job.get(c.container_job_id, [])
+                if om.status not in (OutboundStatus.CANCELLED.value, "huy", OutboundStatus.IGNORED_DUPLICATE.value)
+            ]
+            for om in candidates:
+                if om.status in priority_statuses:
+                    chosen = om
+                    break
+            if chosen is None and candidates:
+                chosen = candidates[0]
+        if chosen is not None:
+            previews[c.id] = {
+                "id": str(chosen.id),
+                "status": chosen.status,
+                "message_kind": chosen.message_kind,
+                "target_group_name": tg_names.get(chosen.target_group_id),
+                "content": chosen.content,
+                "last_error": chosen.last_error,
+            }
+    return previews
+
+
+_INCOMPLETE_REVIEW_CASE_TYPES = {
+    "missing_fields",
+    "MISSING_FIELDS",
+    "invalid_check_digit",
+    "INVALID_CHECK_DIGIT",
+    "UPDATE_INCOMPLETE",
+    "AMBIGUOUS_SUPPLEMENT",
+    "MISSING_CONTAINER_FOR_UPDATE",
+}
+
+_ACTION_EXEMPT_CASE_TYPES = {
+    "CANCEL_REQUEST",
+    "CARRIER_CANCEL_OR_ISSUE",
+    "CUSTOMER_CHANGE_REQUEST",
+    "OUTBOUND_SEND_FAILED",
+}
+
+
+def _is_review_ready_5_fields(
+    *,
+    eff_truck: Optional[str],
+    eff_trailer: Optional[str],
+    eff_cont: Optional[str],
+    eff_driver: Optional[str],
+    eff_phone: Optional[str],
+) -> bool:
+    """Kiểm tra ca duyệt đã đầy đủ và hợp lệ cả 5 trường bắt buộc của nhà xe hay chưa."""
+    probe = ExtractedContainerLine(
+        truck_plate=clean_plate(eff_truck) if eff_truck else None,
+        trailer_plate=clean_plate(eff_trailer) if eff_trailer else None,
+        container_no=clean_container(eff_cont) if eff_cont else None,
+        driver_name=eff_driver.strip() if eff_driver else None,
+        driver_phone=clean_phone(eff_phone) if eff_phone else None,
+    )
+    ContainerValidator.validate_line(probe)
+    is_complete, _missing = OutboundTemplateBuilder.check_core_fields_completeness(probe)
+    return is_complete
+
+
+def _build_review_customer_output_preview(
+    case_obj: ReviewCase,
+    details_dict: dict[str, Any],
+    linked_plan: Optional[TransportPlan],
+    *,
+    eff_cont: Optional[str],
+    eff_size: Optional[str],
+    eff_seal: Optional[str],
+    eff_order: Optional[str],
+    eff_cust_hint: Optional[str],
+    eff_wh_hint: Optional[str],
+    eff_truck: Optional[str],
+    eff_trailer: Optional[str],
+    eff_driver: Optional[str],
+    eff_phone: Optional[str],
+    eff_eta: Optional[str],
+    eff_cust_tms_id: Optional[str] = None,
+    target_group_name: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Tạo bản xem trước tin nhắn đầu ra sẽ gửi nhóm khách hàng (giống định dạng trang Kết quả gửi)."""
+    if not any([eff_cont, eff_truck, eff_driver, eff_cust_hint, eff_wh_hint]):
+        return None
+
+    preview_line = ExtractedContainerLine(
+        line_no=1,
+        plan_date=linked_plan.plan_date.isoformat() if linked_plan and linked_plan.plan_date else details_dict.get("plan_date"),
+        container_no=eff_cont,
+        container_size=eff_size,
+        seal_no=eff_seal,
+        order_type=eff_order or "dong",
+        customer_hint=eff_cust_hint,
+        warehouse_hint=eff_wh_hint,
+        truck_plate=eff_truck,
+        trailer_plate=eff_trailer,
+        driver_name=eff_driver,
+        driver_phone=eff_phone,
+        eta_time=eff_eta,
+    )
+    cust_disp = eff_cust_hint or (linked_plan.customer_name if linked_plan else None) or "Quý khách hàng"
+    wh_disp = eff_wh_hint or (linked_plan.warehouse_name or linked_plan.delivery_address if linked_plan else None) or "Theo kế hoạch"
+    plan_dt = linked_plan.plan_date if linked_plan else None
+
+    req_action = str(details_dict.get("requested_action") or "").upper()
+    is_cancel = case_obj.case_type == "CANCEL_REQUEST" or (
+        case_obj.case_type in ("CARRIER_CANCEL_OR_ISSUE", "CUSTOMER_CHANGE_REQUEST") and req_action == "CANCEL"
+    )
+    raw_changes = details_dict.get("changes") if isinstance(details_dict.get("changes"), list) else []
+
+    if is_cancel:
+        content = OutboundTemplateBuilder.build_cancel_notification(
+            line=preview_line,
+            reason=case_obj.reason or "Theo yêu cầu điều vận",
+            customer_name=cust_disp,
+            warehouse_name=wh_disp,
+            customer_id=eff_cust_tms_id,
+            plan_date=plan_dt,
+        )
+        kind = "cancel"
+    elif raw_changes or case_obj.case_type in ("REVIEW_CHANGE_AFTER_SENT", "UPDATE_REQUIRES_APPROVAL"):
+        content = OutboundTemplateBuilder.build_update_notification(
+            line=preview_line,
+            changes_list=[str(x) for x in raw_changes] or ["- Cập nhật thông tin xe/tài xế"],
+            customer_name=cust_disp,
+            warehouse_name=wh_disp,
+            customer_id=eff_cust_tms_id,
+            plan_date=plan_dt,
+        )
+        kind = "update"
+    else:
+        content = OutboundTemplateBuilder.build_customer_notification(
+            line=preview_line,
+            customer_name=cust_disp,
+            warehouse_name=wh_disp,
+            customer_id=eff_cust_tms_id,
+            plan_date=plan_dt,
+        )
+        kind = "initial"
+
+    return {
+        "id": f"preview-{case_obj.id}",
+        "status": "PREVIEW",
+        "message_kind": kind,
+        "target_group_name": target_group_name or "Nhóm Zalo khách hàng",
+        "content": content,
+        "last_error": None,
+    }
+
+
 @router.get("")
 def list_review_cases(
     status: Optional[str] = Query(default=None, description="Lọc theo trạng thái: 'PENDING', 'APPROVED', 'REJECTED'"),
     case_type: Optional[str] = Query(default=None, description="Lọc theo loại ca rà soát"),
+    review_id: Optional[int] = Query(default=None, description="Lấy trực tiếp một ca theo ID"),
+    outbound_id: Optional[int] = Query(default=None, description="Tìm ca duyệt theo ID outbound"),
+    short_token: Optional[str] = Query(default=None, description="Mã liên kết rút gọn ẩn thông tin hệ thống"),
+    ready_only: bool = Query(default=True, description="Chỉ lấy các ca đã đầy đủ 5 trường bắt buộc từ nhà xe"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -175,36 +409,299 @@ def list_review_cases(
     """Lấy danh sách các trường hợp cần rà soát kèm ngữ cảnh tin nhắn và container."""
     stmt = select(ReviewCase).options(selectinload(ReviewCase.message))
 
-    if status:
+    invalid_short_token = False
+    if short_token is not None:
+        decoded = decode_short_token(short_token, settings.short_link_secret)
+        if decoded is None:
+            invalid_short_token = True
+        else:
+            tok_kind, tok_id = decoded
+            if tok_kind == "r":
+                review_id = tok_id
+            else:
+                outbound_id = tok_id
+
+    if invalid_short_token:
+        stmt = stmt.where(ReviewCase.id == -1)
+    elif review_id is not None:
+        stmt = stmt.where(ReviewCase.id == review_id)
+    elif outbound_id is not None:
+        om_job_ids = list(
+            db.scalars(
+                select(OutboundMessageItem.container_job_id).where(
+                    OutboundMessageItem.outbound_message_id == outbound_id
+                )
+            ).all()
+        )
+        if om_job_ids:
+            stmt = stmt.where(ReviewCase.container_job_id.in_(om_job_ids))
+        else:
+            stmt = stmt.where(ReviewCase.id == -1)
+
+    is_direct_lookup = invalid_short_token or review_id is not None or outbound_id is not None
+    if status and not is_direct_lookup:
         norm_status = ReviewStatus(status).value
         stmt = stmt.where(ReviewCase.status.in_([norm_status, status.strip().lower(), status.strip().upper()]))
     if case_type:
         ct = case_type.strip()
         stmt = stmt.where(ReviewCase.case_type.in_([ct, ct.lower(), ct.upper()]))
+    elif ready_only and not is_direct_lookup:
+        stmt = stmt.where(~ReviewCase.case_type.in_(list(_INCOMPLETE_REVIEW_CASE_TYPES)))
 
-    count_stmt = select(func.count()).select_from(stmt.subquery())
-    total = db.scalar(count_stmt) or 0
+    filter_in_python = bool(ready_only and not case_type and not is_direct_lookup)
+    if filter_in_python:
+        cases = list(db.scalars(stmt.order_by(ReviewCase.id.desc()).limit(max(500, offset + limit))).all())
+        total = 0
+    else:
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = db.scalar(count_stmt) or 0
+        cases = list(db.scalars(stmt.order_by(ReviewCase.id.desc()).offset(offset).limit(limit)).all())
 
-    stmt = stmt.order_by(ReviewCase.id.desc()).offset(offset).limit(limit)
-    cases = list(db.scalars(stmt).all())
+    # Nạp hàng loạt TransportPlan ứng viên để bổ sung `plan_date` và `required_time` (cả cho ca cũ đã lưu trước đó)
+    cand_plan_ids: set[int] = set()
+    parent_job_ids: set[int] = set()
+    direct_job_map: dict[int, ContainerJob] = {}
+    for c in cases:
+        if c.container_job_id:
+            j = db.get(ContainerJob, c.container_job_id)
+            if j:
+                direct_job_map[c.container_job_id] = j
+                if j.parent_job_id:
+                    parent_job_ids.add(j.parent_job_id)
+                j_pid = (j.raw_fields or {}).get("transport_plan_id") if isinstance(j.raw_fields, dict) else None
+                if j_pid:
+                    try:
+                        cand_plan_ids.add(int(j_pid))
+                    except (ValueError, TypeError):
+                        pass
+        details_dict = c.details if isinstance(c.details, dict) else {}
+        for pk in ("transport_plan_id", "plan_id", "selected_plan_id"):
+            if details_dict.get(pk):
+                try:
+                    cand_plan_ids.add(int(details_dict[pk]))
+                except (ValueError, TypeError):
+                    pass
+        for item in (
+            details_dict.get("candidate_plans")
+            or (details_dict.get("resolution") or {}).get("candidates")
+            or []
+        ):
+            if isinstance(item, dict) and item.get("plan_id"):
+                try:
+                    cand_plan_ids.add(int(item["plan_id"]))
+                except (ValueError, TypeError):
+                    pass
+        for pid in details_dict.get("candidate_plan_ids") or []:
+            try:
+                cand_plan_ids.add(int(pid))
+            except (ValueError, TypeError):
+                pass
+
+    parent_job_map: dict[int, ContainerJob] = (
+        {
+            pj.id: pj
+            for pj in db.scalars(select(ContainerJob).where(ContainerJob.id.in_(parent_job_ids))).all()
+        }
+        if parent_job_ids
+        else {}
+    )
+    cand_plan_lookup: dict[int, TransportPlan] = (
+        {
+            p.id: p
+            for p in db.scalars(
+                select(TransportPlan).where(TransportPlan.id.in_(cand_plan_ids))
+            ).all()
+        }
+        if cand_plan_ids
+        else {}
+    )
+    cust_ids = {
+        j.customer_id
+        for j in [*direct_job_map.values(), *parent_job_map.values()]
+        if j.customer_id
+    } | {p.customer_id for p in cand_plan_lookup.values() if p.customer_id}
+    wh_ids = {
+        j.warehouse_id
+        for j in [*direct_job_map.values(), *parent_job_map.values()]
+        if j.warehouse_id
+    } | {p.warehouse_id for p in cand_plan_lookup.values() if p.warehouse_id}
+    customers_map: dict[int, Customer] = (
+        {
+            cu.id: cu
+            for cu in db.scalars(select(Customer).where(Customer.id.in_(cust_ids))).all()
+        }
+        if cust_ids
+        else {}
+    )
+    customer_names: dict[int, str] = {cid: cu.name for cid, cu in customers_map.items() if cu.name}
+    plan_group_zids = {p.group_id for p in cand_plan_lookup.values() if p.group_id}
+    target_grp_names_by_zid: dict[str, str] = (
+        {
+            g.zalo_group_id: (g.name or g.zalo_group_id)
+            for g in db.scalars(select(ZaloGroup).where(ZaloGroup.zalo_group_id.in_(plan_group_zids))).all()
+        }
+        if plan_group_zids
+        else {}
+    )
+    warehouse_names: dict[int, str] = (
+        {
+            wh.id: wh.name
+            for wh in db.scalars(select(Warehouse).where(Warehouse.id.in_(wh_ids))).all()
+            if wh.name
+        }
+        if wh_ids
+        else {}
+    )
+    outbound_previews = _load_outbound_previews_for_cases(db, cases)
 
     results = []
     for c in cases:
         msg = c.message
-        job = db.get(ContainerJob, c.container_job_id) if c.container_job_id else None
+        job = direct_job_map.get(c.container_job_id) if c.container_job_id else None
+        parent_job = parent_job_map.get(job.parent_job_id) if (job and job.parent_job_id) else None
         details_dict = c.details if isinstance(c.details, dict) else {}
+        linked_plan: Optional[TransportPlan] = None
+        for pk in (
+            details_dict.get("selected_plan_id"),
+            details_dict.get("transport_plan_id"),
+            details_dict.get("plan_id"),
+            (job.raw_fields or {}).get("transport_plan_id") if job and isinstance(job.raw_fields, dict) else None,
+        ):
+            if pk:
+                try:
+                    linked_plan = cand_plan_lookup.get(int(pk))
+                    if linked_plan:
+                        break
+                except (ValueError, TypeError):
+                    pass
+
         truck_rec = job.truck_record if job else None
+        parent_truck = parent_job.truck_record if parent_job else None
         if truck_rec is None and msg and msg.truck_records:
             truck_rec = msg.truck_records[0]
-        raw_candidates = (
+
+        prop_changes = details_dict.get("proposed_changes") if isinstance(details_dict.get("proposed_changes"), dict) else {}
+        eff_cust_id = (
+            (job.customer_id if job else None)
+            or (parent_job.customer_id if parent_job else None)
+            or (linked_plan.customer_id if linked_plan else None)
+        )
+        eff_wh_id = (
+            (job.warehouse_id if job else None)
+            or (parent_job.warehouse_id if parent_job else None)
+            or (linked_plan.warehouse_id if linked_plan else None)
+        )
+        eff_cont = (
+            prop_changes.get("container_no")
+            or (job.container_no if job else None)
+            or (parent_job.container_no if parent_job else None)
+            or (linked_plan.container_no if linked_plan else None)
+            or details_dict.get("container_no")
+        )
+        eff_size = (
+            (job.container_size if job else None)
+            or (parent_job.container_size if parent_job else None)
+            or (linked_plan.container_size if linked_plan else None)
+            or details_dict.get("container_size")
+        )
+        eff_seal = (
+            prop_changes.get("seal_no")
+            or (job.seal_no if job else None)
+            or (parent_job.seal_no if parent_job else None)
+            or (linked_plan.seal_no if linked_plan else None)
+            or details_dict.get("seal_no")
+        )
+        eff_order = (
+            (job.order_type if job else None)
+            or (parent_job.order_type if parent_job else None)
+            or (linked_plan.order_type if linked_plan else None)
+            or details_dict.get("order_type")
+        )
+        eff_cust_hint = (
+            (job.customer_hint if job else None)
+            or (customer_names.get(eff_cust_id) if eff_cust_id else None)
+            or (linked_plan.customer_name if linked_plan else None)
+            or (parent_job.customer_hint if parent_job else None)
+            or details_dict.get("customer_hint")
+        )
+        eff_wh_hint = (
+            (job.warehouse_hint if job else None)
+            or (warehouse_names.get(eff_wh_id) if eff_wh_id else None)
+            or ((linked_plan.warehouse_name or linked_plan.delivery_address) if linked_plan else None)
+            or (parent_job.warehouse_hint if parent_job else None)
+            or details_dict.get("warehouse_hint")
+        )
+        eff_truck = (
+            prop_changes.get("planned_truck_plate")
+            or (truck_rec.truck_plate if truck_rec else None)
+            or (parent_truck.truck_plate if parent_truck else None)
+            or (linked_plan.planned_truck_plate if linked_plan else None)
+            or details_dict.get("truck_plate")
+        )
+        eff_trailer = (
+            prop_changes.get("planned_trailer_plate")
+            or (truck_rec.trailer_plate if truck_rec else None)
+            or (parent_truck.trailer_plate if parent_truck else None)
+            or (linked_plan.planned_trailer_plate if linked_plan else None)
+            or details_dict.get("trailer_plate")
+        )
+        eff_driver = (
+            prop_changes.get("driver_name")
+            or (truck_rec.driver_name if truck_rec else None)
+            or (parent_truck.driver_name if parent_truck else None)
+            or (linked_plan.driver_name if linked_plan else None)
+            or details_dict.get("driver_name")
+        )
+        eff_phone = (
+            prop_changes.get("driver_phone")
+            or (truck_rec.driver_phone if truck_rec else None)
+            or (parent_truck.driver_phone if parent_truck else None)
+            or (linked_plan.driver_phone if linked_plan else None)
+            or details_dict.get("driver_phone")
+        )
+        eff_eta = (
+            (resolve_job_expected_time(db, job) if job else None)
+            or (resolve_job_expected_time(db, parent_job) if parent_job else None)
+            or (extract_plan_expected_time(linked_plan) if linked_plan else None)
+            or details_dict.get("eta")
+        )
+
+        merged_msgs = details_dict.get("merged_messages") if isinstance(details_dict.get("merged_messages"), list) else []
+        display_raw_text = msg.message_text if msg else None
+        if merged_msgs:
+            clean_parts = [str(x).strip() for x in merged_msgs if str(x).strip()]
+            if display_raw_text and display_raw_text.strip() not in clean_parts:
+                clean_parts.append(display_raw_text.strip())
+            if clean_parts:
+                display_raw_text = "\n---\n".join(clean_parts)
+        elif details_dict.get("proposal_text"):
+            prop_txt = str(details_dict["proposal_text"]).strip()
+            if prop_txt and prop_txt != (display_raw_text or "").strip():
+                display_raw_text = f"{prop_txt}\n[Xác nhận] {(display_raw_text or '').strip()}".strip()
+        raw_candidates_src = (
             details_dict.get("candidate_plans")
             or (details_dict.get("resolution") or {}).get("candidates")
             or []
         )
+        raw_candidates: list[dict[str, Any]] = []
+        for cand_item in raw_candidates_src:
+            if not isinstance(cand_item, dict):
+                continue
+            cand_copy = dict(cand_item)
+            try:
+                p_obj = cand_plan_lookup.get(int(cand_copy["plan_id"])) if cand_copy.get("plan_id") else None
+            except (ValueError, TypeError):
+                p_obj = None
+            if p_obj:
+                if not cand_copy.get("plan_date") and p_obj.plan_date:
+                    cand_copy["plan_date"] = p_obj.plan_date.isoformat()
+                if not cand_copy.get("required_time"):
+                    cand_copy["required_time"] = extract_plan_expected_time(p_obj)
+            raw_candidates.append(cand_copy)
         if not raw_candidates and details_dict.get("candidate_plan_ids"):
             for pid in details_dict.get("candidate_plan_ids", [])[:10]:
                 try:
-                    p_obj = db.get(TransportPlan, int(pid))
+                    p_obj = cand_plan_lookup.get(int(pid))
                     if p_obj:
                         raw_candidates.append(
                             {
@@ -214,6 +711,8 @@ def list_review_cases(
                                 "customer_name": p_obj.customer_name,
                                 "warehouse_name": p_obj.warehouse_name or p_obj.delivery_address,
                                 "container_no": p_obj.container_no,
+                                "plan_date": p_obj.plan_date.isoformat() if p_obj.plan_date else None,
+                                "required_time": extract_plan_expected_time(p_obj),
                                 "version": p_obj.version,
                                 "score": 70,
                                 "evidences": ["candidate_plan_id"],
@@ -222,19 +721,57 @@ def list_review_cases(
                         )
                 except (ValueError, TypeError):
                     pass
+        if filter_in_python and c.case_type not in _ACTION_EXEMPT_CASE_TYPES:
+            if not _is_review_ready_5_fields(
+                eff_truck=eff_truck,
+                eff_trailer=eff_trailer,
+                eff_cont=eff_cont,
+                eff_driver=eff_driver,
+                eff_phone=eff_phone,
+            ):
+                continue
+
+        cust_obj_row = customers_map.get(eff_cust_id) if eff_cust_id else None
+        preview_obj = outbound_previews.get(c.id)
+        if preview_obj is None:
+            plan_tgt_name = (
+                target_grp_names_by_zid.get(linked_plan.group_id)
+                if linked_plan and linked_plan.group_id
+                else None
+            )
+            preview_obj = _build_review_customer_output_preview(
+                case_obj=c,
+                details_dict=details_dict,
+                linked_plan=linked_plan,
+                eff_cont=eff_cont,
+                eff_size=eff_size,
+                eff_seal=eff_seal,
+                eff_order=eff_order,
+                eff_cust_hint=eff_cust_hint,
+                eff_wh_hint=eff_wh_hint,
+                eff_truck=eff_truck,
+                eff_trailer=eff_trailer,
+                eff_driver=eff_driver,
+                eff_phone=eff_phone,
+                eff_eta=eff_eta,
+                eff_cust_tms_id=str(cust_obj_row.tms_customer_id) if cust_obj_row and cust_obj_row.tms_customer_id else None,
+                target_group_name=plan_tgt_name,
+            )
+
         results.append(
             {
                 "id": str(c.id),
                 "message_id": str(c.message_id),
                 "container_job_id": str(c.container_job_id) if c.container_job_id is not None else None,
                 "case_type": c.case_type,
-                "reason": c.reason,
+                "reason": humanize_reason_text(c.reason) or c.reason,
                 "status": c.status,
                 "assigned_to": c.assigned_to,
                 "priority": details_dict.get("priority", "NORMAL"),
                 "candidate_plans": raw_candidates,
                 "details": details_dict,
                 "resolution": c.resolution,
+                "outbound_preview": preview_obj,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
                 "resolved_at": c.resolved_at.isoformat() if c.resolved_at else None,
                 "resolved_by": c.resolved_by,
@@ -242,31 +779,36 @@ def list_review_cases(
                     "zalo_message_id": msg.zalo_message_id if msg else None,
                     "sender_name": msg.sender_name or (msg.sender_id if msg else None),
                     "group_id": msg.group_id if msg else None,
-                    "raw_text": msg.message_text if msg else None,
+                    "raw_text": display_raw_text,
                     "sent_at": (msg.zalo_sent_at or msg.received_at).isoformat() if msg else None,
                 }
                 if msg
                 else None,
                 "container_details": {
-                    "container_no": job.container_no if job else None,
-                    "container_size": job.container_size if job else None,
-                    "seal_no": job.seal_no if job else None,
-                    "order_type": job.order_type if job else None,
-                    "customer_id": job.customer_id if job else None,
-                    "warehouse_id": job.warehouse_id if job else None,
-                    "customer_hint": job.customer_hint if job else None,
-                    "warehouse_hint": job.warehouse_hint if job else None,
-                    "truck_plate": (truck_rec.truck_plate if truck_rec else None) or details_dict.get("truck_plate"),
-                    "trailer_plate": (truck_rec.trailer_plate if truck_rec else None) or details_dict.get("trailer_plate"),
-                    "driver_name": (truck_rec.driver_name if truck_rec else None) or details_dict.get("driver_name"),
-                    "driver_phone": (truck_rec.driver_phone if truck_rec else None) or details_dict.get("driver_phone"),
+                    "container_no": eff_cont,
+                    "container_size": eff_size,
+                    "seal_no": eff_seal,
+                    "order_type": eff_order,
+                    "customer_id": eff_cust_id,
+                    "warehouse_id": eff_wh_id,
+                    "customer_hint": eff_cust_hint,
+                    "warehouse_hint": eff_wh_hint,
+                    "truck_plate": eff_truck,
+                    "trailer_plate": eff_trailer,
+                    "driver_name": eff_driver,
+                    "driver_phone": eff_phone,
+                    "eta": eff_eta,
                     "validation_status": job.validation_status if job else None,
                     "warnings": (job.raw_fields or {}).get("warnings", []) if job else [],
                 }
-                if job
+                if (job or linked_plan or any(v is not None for v in (eff_cont, eff_truck, eff_driver, eff_phone, eff_cust_hint, eff_wh_hint)))
                 else None,
             }
         )
+
+    if filter_in_python:
+        total = len(results)
+        results = results[offset : offset + limit]
 
     return {
         "ok": True,
@@ -660,7 +1202,12 @@ def _approve_cancel_request_case(
             .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
             .where(
                 OutboundMessageItem.container_job_id == job.id,
-                OutboundMessage.status.in_([OutboundStatus.PENDING_APPROVAL.value, "cho_duyet"]),
+                OutboundMessage.status.in_([
+                    OutboundStatus.PENDING_APPROVAL.value,
+                    "cho_duyet",
+                    OutboundStatus.FAILED.value,
+                    "that_bai",
+                ]),
             )
         ).all():
             stale.status = OutboundStatus.CANCELLED.value
@@ -900,9 +1447,25 @@ def _approve_cancel_request_case(
             cont_lbl = ", ".join(cancelled_labels) or "chuyến xe"
             ZaloDispatcher.send_to_group(
                 group_id=orig_msg.group_id,
-                message=f"[VSICO] ĐHVT đã xác nhận hủy {cont_lbl} và thông báo tới khách hàng. Lý do: {cancel_reason}",
+                message=(
+                    "[VSICO] - ✅ Đã xác nhận hủy chuyến\n\n"
+                    f"📦 Chuyến: {cont_lbl}\n"
+                    f"• Người xử lý: {actor}\n"
+                    f"• Lý do: {cancel_reason}"
+                ),
                 quote_msg_id=orig_msg.zalo_message_id,
             )
+
+    DhvtNotificationService.broadcast_dhvt_review_decision(
+        db=db,
+        case_obj=case_obj,
+        action_verb="xác nhận hủy chuyến",
+        actor_display=actor,
+        reason=cancel_reason,
+        is_test_msg=not is_real_msg,
+        send_zalo=not bool(payload and payload.skip_dhvt_zalo_broadcast),
+    )
+    db.commit()
 
     return {
         "ok": True,
@@ -1078,7 +1641,80 @@ def approve_review_case(
             db.get(TransportPlan, int(secondary_pid)) if secondary_pid else None
         )
 
+        tr = job.truck_record
+        eff_truck_plate = (tr.truck_plate if tr and tr.truck_plate else None) or (
+            selected_plan.planned_truck_plate if selected_plan else None
+        )
+        eff_trailer_plate = (tr.trailer_plate if tr and tr.trailer_plate else None) or (
+            selected_plan.planned_trailer_plate if selected_plan else None
+        )
+        eff_driver_name = (tr.driver_name if tr and tr.driver_name else None) or (
+            selected_plan.driver_name if selected_plan else None
+        )
+        eff_driver_phone = (tr.driver_phone if tr and tr.driver_phone else None) or (
+            selected_plan.driver_phone if selected_plan else None
+        )
+        if tr is not None:
+            if not tr.truck_plate and eff_truck_plate:
+                tr.truck_plate = clean_plate(eff_truck_plate) or eff_truck_plate
+            if not tr.trailer_plate and eff_trailer_plate:
+                tr.trailer_plate = clean_plate(eff_trailer_plate) or eff_trailer_plate
+            if not tr.driver_name and eff_driver_name:
+                tr.driver_name = eff_driver_name
+            if not tr.driver_phone and eff_driver_phone:
+                tr.driver_phone = eff_driver_phone
+
+        # Chặn duyệt gửi khách và chặn đẩy TMS nếu thông tin xe/moóc/tài xế/SĐT vẫn đang thiếu hoặc sai định dạng
+        approval_defects: list[str] = []
+        norm_eff_truck = clean_plate(eff_truck_plate) if eff_truck_plate else None
+        if not norm_eff_truck:
+            approval_defects.append("Biển số xe đang trống")
+        elif not re.match(r"^\d{2}[A-Z]{1,2}-\d{3}\.\d{2}$", norm_eff_truck):
+            known_veh = db.scalar(
+                select(Vehicle.id).where(
+                    Vehicle.is_active.is_(True),
+                    Vehicle.plate_no.in_([eff_truck_plate, norm_eff_truck, compact_plate(norm_eff_truck) or ""]),
+                )
+            )
+            if not known_veh:
+                approval_defects.append(f"Biển số xe '{eff_truck_plate}' sai định dạng (cần đủ 5 chữ số)")
+
+        if eff_trailer_plate:
+            norm_eff_trailer = clean_plate(eff_trailer_plate) or eff_trailer_plate
+            if not re.match(r"^\d{2}[A-Z]?R[M]?-\d{3}\.\d{2}$", norm_eff_trailer):
+                known_tr = db.scalar(
+                    select(Trailer.id).where(
+                        Trailer.is_active.is_(True),
+                        Trailer.normalized_plate == (compact_plate(norm_eff_trailer) or ""),
+                    )
+                )
+                if not known_tr:
+                    approval_defects.append(f"Biển số rơ-moóc '{eff_trailer_plate}' sai định dạng (cần đủ 5 chữ số)")
+
+        if not eff_driver_name or len(str(eff_driver_name).strip()) < 2:
+            approval_defects.append("Tên tài xế đang trống")
+
+        norm_eff_phone = clean_phone(eff_driver_phone) if eff_driver_phone else None
+        if not norm_eff_phone:
+            approval_defects.append("SĐT tài xế đang trống")
+        elif not is_valid_phone_list(norm_eff_phone):
+            approval_defects.append(f"SĐT tài xế '{eff_driver_phone}' không hợp lệ (cần đúng 10 chữ số bắt đầu bằng 0)")
+
+        if approval_defects:
+            db.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail=f"Không thể duyệt gửi khách khi dữ liệu còn thiếu/sai: {'; '.join(approval_defects)}. Vui lòng sửa đúng thông tin trước khi duyệt.",
+            )
+
+        sync_outcomes: list[Any] = []
         if selected_plan is not None:
+            if not job.container_no and selected_plan.container_no:
+                job.container_no = selected_plan.container_no
+            if not job.container_size and selected_plan.container_size:
+                job.container_size = selected_plan.container_size
+            if not job.seal_no and selected_plan.seal_no:
+                job.seal_no = selected_plan.seal_no
             if not job.customer_id and selected_plan.customer_id:
                 job.customer_id = selected_plan.customer_id
             if not job.customer_hint and selected_plan.customer_name:
@@ -1108,6 +1744,7 @@ def approve_review_case(
                     actor_id=actor,
                     allow_plan_override=True,
                 )
+                sync_outcomes.extend([ro_out, lo_out])
                 synced_plan_ids.extend([ro_out.plan_id, lo_out.plan_id])
                 if ro_out.mode in ("FILLED", "UPDATED"):
                     tms_sync_statuses[str(ro_p.id)] = sync_plan_to_tms(
@@ -1143,6 +1780,7 @@ def approve_review_case(
                     allow_plan_override=True,
                     actor_id=actor,
                 )
+                sync_outcomes.append(sync_out)
                 synced_plan_ids.append(sync_out.plan_id)
                 pending_names = (
                     (job.raw_fields or {}).get("tms_pending_fields")
@@ -1214,8 +1852,29 @@ def approve_review_case(
 
         cust_obj = db.get(Customer, job.customer_id) if job.customer_id else None
         wh_obj = db.get(Warehouse, job.warehouse_id) if job.warehouse_id else None
-        tr = job.truck_record
-        raw_f = job.raw_fields if isinstance(job.raw_fields, dict) else {}
+        raw_f = dict(job.raw_fields) if isinstance(job.raw_fields, dict) else {}
+        is_plan_derived_eta = (
+            isinstance(raw_f.get("field_evidences"), dict)
+            and raw_f["field_evidences"].get("eta_time") == "transport_plan"
+        )
+        eff_eta = (
+            (payload.eta.strip() if payload and payload.eta and payload.eta.strip() else None)
+            or (None if is_plan_derived_eta else raw_f.get("eta"))
+            or extract_plan_expected_time(selected_plan)
+            or extract_plan_expected_time(secondary_plan)
+            or resolve_job_expected_time(db, job, selected_plan)
+        )
+        if eff_eta and raw_f.get("eta") != eff_eta:
+            raw_f["eta"] = eff_eta
+            raw_f["eta_text"] = raw_f.get("eta_text") or eff_eta
+            job.raw_fields = raw_f
+        if tr is not None and eff_eta:
+            tr_raw = dict(tr.raw_data) if isinstance(tr.raw_data, dict) else {}
+            if not tr_raw.get("eta"):
+                tr_raw["eta"] = eff_eta
+                tr_raw["eta_text"] = tr_raw.get("eta_text") or eff_eta
+                tr.raw_data = tr_raw
+
         rebuilt_line = ExtractedContainerLine(
             line_no=job.line_no or 1,
             plan_date=(
@@ -1223,25 +1882,94 @@ def approve_review_case(
                 if selected_plan and selected_plan.plan_date
                 else raw_f.get("plan_date")
             ),
-            container_no=job.container_no,
-            container_size=job.container_size,
-            seal_no=job.seal_no,
-            order_type=job.order_type or "tra",
-            warehouse_hint=wh_obj.name if wh_obj else job.warehouse_hint,
-            customer_hint=cust_obj.name if cust_obj else job.customer_hint,
-            truck_plate=tr.truck_plate if tr else None,
-            trailer_plate=(tr.trailer_plate if tr else None) or (selected_plan.planned_trailer_plate if selected_plan else None),
-            driver_name=tr.driver_name if tr else None,
-            driver_phone=tr.driver_phone if tr else None,
-            eta_time=raw_f.get("eta"),
+            container_no=job.container_no or (selected_plan.container_no if selected_plan else None),
+            container_size=job.container_size or (selected_plan.container_size if selected_plan else None),
+            seal_no=job.seal_no or (selected_plan.seal_no if selected_plan else None),
+            order_type=job.order_type or (selected_plan.order_type if selected_plan else None) or "tra",
+            warehouse_hint=wh_obj.name if wh_obj else (job.warehouse_hint or (selected_plan.warehouse_name or selected_plan.delivery_address if selected_plan else None)),
+            customer_hint=cust_obj.name if cust_obj else (job.customer_hint or (selected_plan.customer_name if selected_plan else None)),
+            truck_plate=norm_eff_truck,
+            trailer_plate=clean_plate(eff_trailer_plate) if eff_trailer_plate else None,
+            driver_name=eff_driver_name,
+            driver_phone=norm_eff_phone,
+            eta_time=eff_eta,
         )
-        rebuilt_content = OutboundTemplateBuilder.build_customer_notification(
-            line=rebuilt_line,
-            customer_name=cust_obj.name if cust_obj else (job.customer_hint or "Quý khách hàng"),
-            warehouse_name=wh_obj.name if wh_obj else (job.warehouse_hint or "Kho khách hàng"),
-            customer_id=cust_obj.tms_customer_id if cust_obj else None,
-            plan_date=selected_plan.plan_date if selected_plan else None,
+        change_labels = {
+            "planned_truck_plate": "Biển số xe",
+            "truck_plate": "Biển số xe",
+            "planned_trailer_plate": "Biển số rơ-moóc",
+            "trailer_plate": "Biển số rơ-moóc",
+            "driver_name": "Lái xe",
+            "driver_phone": "SĐT tài xế",
+            "container_no": "Số container",
+            "seal_no": "Số chì",
+            "eta": "Giờ dự kiến",
+            "required_time": "Giờ dự kiến",
+            "delivery_address": "Điểm giao/nhận",
+        }
+        changes_list: list[str] = []
+        seen_change_labels: set[str] = set()
+        for so in sync_outcomes:
+            for fk, new_v in (getattr(so, "changed_fields", None) or {}).items():
+                lbl = change_labels.get(fk)
+                if not lbl or lbl in seen_change_labels:
+                    continue
+                old_v = (getattr(so, "before_values", None) or {}).get(fk)
+                old_str = str(old_v).strip() if old_v not in (None, "") else "Chưa có"
+                new_str = str(new_v).strip() if new_v not in (None, "") else "Chưa có"
+                if old_str != new_str:
+                    changes_list.append(f"- {lbl}: {old_str} -> {new_str}")
+                    seen_change_labels.add(lbl)
+        if not changes_list and isinstance(proposal.get("proposed_changes"), dict):
+            for fk, new_v in proposal["proposed_changes"].items():
+                lbl = change_labels.get(fk)
+                if not lbl or lbl in seen_change_labels:
+                    continue
+                new_str = str(new_v).strip() if new_v not in (None, "") else "Chưa có"
+                changes_list.append(f"- {lbl}: -> {new_str}")
+                seen_change_labels.add(lbl)
+
+        prior_sent_exists = False
+        if selected_plan is not None or job.container_no:
+            sent_out_q = (
+                select(OutboundMessage.id)
+                .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
+                .join(ContainerJob, OutboundMessageItem.container_job_id == ContainerJob.id)
+                .where(
+                    OutboundMessage.status == OutboundStatus.SENT.value,
+                    OutboundMessage.message_kind != "answer",
+                    ContainerJob.id != job.id,
+                    ContainerJob.container_no == (job.container_no or (selected_plan.container_no if selected_plan else "")),
+                )
+                .limit(1)
+            )
+            prior_sent_exists = db.scalar(sent_out_q) is not None
+
+        is_update_outbound = bool(
+            case_obj.case_type == "REVIEW_CHANGE_AFTER_SENT"
+            or (changes_list and prior_sent_exists)
         )
+        cust_name_disp = cust_obj.name if cust_obj else (job.customer_hint or "Quý khách hàng")
+        wh_name_disp = wh_obj.name if wh_obj else (job.warehouse_hint or "Kho khách hàng")
+        cust_tms_id = cust_obj.tms_customer_id if cust_obj else None
+        plan_dt = selected_plan.plan_date if selected_plan else None
+        if is_update_outbound:
+            rebuilt_content = OutboundTemplateBuilder.build_update_notification(
+                line=rebuilt_line,
+                changes_list=changes_list or ["- Cập nhật thông tin điều vận"],
+                customer_name=cust_name_disp,
+                warehouse_name=wh_name_disp,
+                customer_id=cust_tms_id,
+                plan_date=plan_dt,
+            )
+        else:
+            rebuilt_content = OutboundTemplateBuilder.build_customer_notification(
+                line=rebuilt_line,
+                customer_name=cust_name_disp,
+                warehouse_name=wh_name_disp,
+                customer_id=cust_tms_id,
+                plan_date=plan_dt,
+            )
 
         if not out_messages:
             target_id, _ = CarrierFlowService.find_target_zalo_group_safe(
@@ -1253,39 +1981,44 @@ def approve_review_case(
                 plan_group_id_str=selected_plan.group_id if selected_plan else None,
                 customer_hint=job.customer_hint,
             )
-            if target_id is None:
+            if target_id is None and not synced_plan_ids:
                 db.rollback()
                 raise HTTPException(
                     status_code=409,
-                    detail="Chưa có định tuyến khách hàng hợp lệ; cập nhật danh mục trước khi duyệt.",
+                    detail="Chưa có định tuyến khách hàng hoặc kế hoạch TMS hợp lệ; cập nhật danh mục trước khi duyệt.",
                 )
-            new_om = OutboundMessage(
-                id=snowflake.generate(),
-                target_group_id=target_id,
-                order_type=job.order_type or "tra",
-                message_kind="thong_bao_xe",
-                content=(
-                    payload.outbound_content.strip()
-                    if (payload and payload.outbound_content and payload.outbound_content.strip())
-                    else rebuilt_content
-                ),
-                idempotency_key=f"outbound:approved:{job.id}:{review_id}",
-                status=OutboundStatus.PENDING_APPROVAL.value,
-                attempt_count=0,
-            )
-            db.add(new_om)
-            db.flush()
-            db.add(OutboundMessageItem(outbound_message_id=new_om.id, container_job_id=job.id))
-            db.flush()
-            out_messages = [new_om]
+            if target_id is not None:
+                new_om = OutboundMessage(
+                    id=snowflake.generate(),
+                    target_group_id=target_id,
+                    order_type=job.order_type or "tra",
+                    message_kind="update" if is_update_outbound else "thong_bao_xe",
+                    content=(
+                        payload.outbound_content.strip()
+                        if (payload and payload.outbound_content and payload.outbound_content.strip())
+                        else rebuilt_content
+                    ),
+                    idempotency_key=f"outbound:approved:{job.id}:{review_id}",
+                    status=OutboundStatus.PENDING_APPROVAL.value,
+                    attempt_count=0,
+                )
+                db.add(new_om)
+                db.flush()
+                db.add(OutboundMessageItem(outbound_message_id=new_om.id, container_job_id=job.id))
+                db.flush()
+                out_messages = [new_om]
 
         for out_msg in out_messages:
             if out_msg.status in ("SENT", "SENDING"):
                 continue
             if payload and payload.outbound_content and payload.outbound_content.strip():
                 out_msg.content = payload.outbound_content.strip()
-            elif fields_changed:
+            elif (fields_changed or selected_plan is not None or is_update_outbound) and (
+                out_msg.message_kind != "update" or is_update_outbound
+            ):
                 out_msg.content = rebuilt_content
+                if is_update_outbound:
+                    out_msg.message_kind = "update"
             out_msg.status = OutboundStatus.PENDING_SEND.value
             out_msg.approved_by = actor
             out_msg.approved_at = now
@@ -1359,12 +2092,47 @@ def approve_review_case(
         and source_group.group_role.upper() in (GroupRole.CARRIER.value, GroupRole.SOURCE.value)
     ):
         conts = [j.container_no for j in jobs_to_update if j.container_no]
-        if conts:
-            ZaloDispatcher.send_to_group(
-                group_id=orig_msg.group_id,
-                message=f"[VSICO] ĐHVT đã duyệt thông tin điều xe container {', '.join(conts)}.",
-                quote_msg_id=orig_msg.zalo_message_id,
-            )
+        plates = [j.truck_record.truck_plate for j in jobs_to_update if j.truck_record and j.truck_record.truck_plate]
+        order_codes = []
+        for pid in synced_plan_ids:
+            p_obj = db.get(TransportPlan, pid)
+            if p_obj and p_obj.order_code and p_obj.order_code not in order_codes:
+                order_codes.append(p_obj.order_code)
+        order_txt = f"chuyến {', '.join(order_codes)}" if order_codes else "chuyến xe"
+        cont_txt = f" - Cont {', '.join(conts)}" if conts else ""
+        plate_txt = f" - Xe {', '.join(plates)}" if plates else ""
+        ZaloDispatcher.send_to_group(
+            group_id=orig_msg.group_id,
+            message=(
+                "[VSICO] - ✅ Đã xác nhận thông tin điều xe\n\n"
+                f"• Lệnh: {order_txt}{cont_txt}{plate_txt}\n\n"
+                "Hệ thống đã cập nhật kế hoạch vận chuyển."
+            ),
+            quote_msg_id=orig_msg.zalo_message_id,
+        )
+
+    from src.handlers.dhvt_service import _resolve_reviewer_display_name
+
+    actor_display = _resolve_reviewer_display_name(
+        payload.operator_name if payload and getattr(payload, "operator_name", None) else None,
+        current_user.full_name if current_user and current_user.full_name else actor,
+    )
+    has_manual_edits = bool(
+        payload
+        and any(
+            getattr(payload, f, None)
+            for f in ("truck_plate", "trailer_plate", "driver_name", "driver_phone", "container_no", "seal_no")
+        )
+    )
+    DhvtNotificationService.broadcast_dhvt_review_decision(
+        db=db,
+        case_obj=case_obj,
+        action_verb="sửa và duyệt" if has_manual_edits else "duyệt",
+        actor_display=actor_display,
+        is_test_msg=not is_real_msg,
+        send_zalo=not bool(payload and payload.skip_dhvt_zalo_broadcast),
+    )
+    db.commit()
 
     if send_warnings:
         return {
@@ -1436,7 +2204,12 @@ def reject_review_case(
             .join(OutboundMessageItem, OutboundMessageItem.outbound_message_id == OutboundMessage.id)
             .where(
                 OutboundMessageItem.container_job_id == job.id,
-                OutboundMessage.status.in_([OutboundStatus.PENDING_APPROVAL.value, "cho_duyet"]),
+                OutboundMessage.status.in_([
+                    OutboundStatus.PENDING_APPROVAL.value,
+                    "cho_duyet",
+                    OutboundStatus.FAILED.value,
+                    "that_bai",
+                ]),
             )
         )
         for out_msg in db.scalars(out_stmt).all():
@@ -1548,9 +2321,31 @@ def reject_review_case(
                 conts = ", ".join(j.container_no for j in jobs_to_cancel if j.container_no) or "lượt xe"
                 ZaloDispatcher.send_to_group(
                     group_id=orig_msg.group_id,
-                    message=f"[VSICO] ĐHVT từ chối thông tin điều xe ({conts}). Lý do: {reject_reason}. Vui lòng kiểm tra và gửi lại.",
+                    message=(
+                        "[VSICO] - ⚠️ Cần kiểm tra lại thông tin điều xe\n\n"
+                        f"📦 Chuyến: {conts}\n"
+                        f"• Lý do từ chối: {reject_reason}\n\n"
+                        "Anh/chị vui lòng rà soát và gửi lại giúp hệ thống nhé."
+                    ),
                     quote_msg_id=orig_msg.zalo_message_id,
                 )
+
+    from src.handlers.dhvt_service import _resolve_reviewer_display_name
+
+    actor_display = _resolve_reviewer_display_name(
+        payload.operator_name if payload and getattr(payload, "operator_name", None) else None,
+        current_user.full_name if current_user and current_user.full_name else actor,
+    )
+    DhvtNotificationService.broadcast_dhvt_review_decision(
+        db=db,
+        case_obj=case_obj,
+        action_verb="từ chối",
+        actor_display=actor_display,
+        reason=reject_reason,
+        is_test_msg=not (orig_msg and _is_real_source_message(orig_msg)),
+        send_zalo=not bool(payload and payload.skip_dhvt_zalo_broadcast),
+    )
+    db.commit()
 
     return {
         "ok": True,

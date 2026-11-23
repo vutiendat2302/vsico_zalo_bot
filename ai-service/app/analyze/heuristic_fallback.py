@@ -5,14 +5,34 @@ import re
 from app.schemas.extract import ExtractedEntity
 
 _CONT_RE = re.compile(r"\b([A-Z]{4})[\s\-]?(\d{7})\b", re.IGNORECASE)
-_PLATE_RE = re.compile(r"\b(\d{2}[A-Z]{1,2}[\s\-]?\d{3,5}(?:\.\d{2})?)\b", re.IGNORECASE)
-_TRAILER_RE = re.compile(r"\b(\d{2}R[\s\-]?\d{3,5}(?:\.\d{2})?)\b", re.IGNORECASE)
+_PLATE_RE = re.compile(
+    r"\b(\d{2}[A-Z]{1,2}(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6}))\b",
+    re.IGNORECASE,
+)
+_TRAILER_RE = re.compile(
+    r"\b(\d{2}[A-Z]?R[M]?(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6}))\b",
+    re.IGNORECASE,
+)
 _PHONE_RE = re.compile(r"(?:\+?84|0)(?:\d{2,3}xxxx\d{2}(?:_\d+)?|[\d\s.\-]{8,11}\d)", re.IGNORECASE)
 _SEAL_RE = re.compile(r"(?:seal|chì|chi|số\s*seal|số\s*chì)\s*[:=\-]?\s*([A-Z0-9\-]{4,20})", re.IGNORECASE)
 _ETA_RE = re.compile(r"\b(\d{1,2})[:hH](\d{2})?\b")
 _SIZE_RE = re.compile(r"\b(20|40|45)\s*(?:ft|feet|hc|dc|rf|'|\")?\b", re.IGNORECASE)
 _DRIVER_RE = re.compile(r"(?:tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|lx|tx|driver)\s*[:=\-]?\s*([^\n\-,;0-9]{2,40})", re.IGNORECASE)
 _WAREHOUSE_RE = re.compile(r"(?:kho|điểm\s*(?:đóng|trả)|địa\s*chỉ|di\s*kho)\s*[:=\-]?\s*([^\n,;]{2,80})", re.IGNORECASE)
+_STANDALONE_STOP_RE = re.compile(
+    r"^(?:xe|bks|biển|bien|cont|số|so|chì|chi|seal|kho|nhà\s*máy|kcn|điểm|diem|đóng|dong|trả|tra|sđt|sdt|cccd|cmnd|ngày|ngay|giờ|gio|hẹn|hen)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_non_trailer_plate(text: str) -> bool:
+    """Kiểm tra dòng văn bản có chứa biển số xe đầu kéo (không tính biển số rơ-moóc R/RM)."""
+    for pm in _PLATE_RE.finditer(text):
+        cand = pm.group(1).strip()
+        if _TRAILER_RE.fullmatch(cand):
+            continue
+        return True
+    return False
 
 _CANCEL_KWS = ("hủy chuyến", "huy chuyen", "hủy cont", "huy cont", "bỏ xe", "bo xe", "không đóng nữa", "khong tra nua")
 _UPDATE_KWS = ("đổi xe", "doi xe", "đổi tài", "doi tai", "thay xe", "thay tài", "sửa lại", "sua lai", "cập nhật", "cap nhat", "chuyển sang xe", "chuyen sang")
@@ -45,11 +65,13 @@ def _split_blocks(text: str) -> list[str]:
     if len(lines) <= 1:
         return [text.strip()] if text.strip() else []
 
-    # Nếu mỗi dòng có riêng số cont hoặc biển số -> tách từng dòng/nhóm dòng đánh số
+    # Nếu mỗi dòng có riêng biển số đầu kéo (không tính rơ-moóc) -> tách từng dòng/nhóm dòng đánh số
     blocks: list[str] = []
     current: list[str] = []
     for ln in lines:
-        starts_item = bool(re.match(r"^(?:\d+[\.\)]|[-*+•])\s+", ln)) or bool(_PLATE_RE.search(ln) and current and any(_PLATE_RE.search(c) for c in current))
+        starts_item = bool(re.match(r"^(?:\d+[\.\)]|[-*+•])\s+", ln)) or bool(
+            _has_non_trailer_plate(ln) and current and any(_has_non_trailer_plate(c) for c in current)
+        )
         if starts_item and current:
             blocks.append("\n".join(current))
             current = [ln]
@@ -75,19 +97,33 @@ def heuristic_extract(
 
         plate_no = None
         for pm in _PLATE_RE.finditer(blk):
-            cand = re.sub(r"\s+", "", pm.group(1).upper())
-            if trailer_no and cand == trailer_no:
+            raw_cand = pm.group(1).strip()
+            if _TRAILER_RE.fullmatch(raw_cand):
                 continue
-            if "R" in cand[:4]:
+            cand = re.sub(r"\s+", "", raw_cand.upper())
+            if trailer_no and cand == trailer_no:
                 continue
             plate_no = cand
             break
 
-        phone_m = _PHONE_RE.search(blk)
-        driver_phone = re.sub(r"[\s.\-]", "", phone_m.group(0)) if phone_m else None
+        phones_found: list[str] = []
+        sanitized_for_phone = re.sub(
+            r"\b(?:cccd|cmnd|seal|chì|chi|số\s*seal|số\s*chì)\s*[:=\-]?\s*[A-Z0-9\-]+",
+            " ",
+            blk,
+            flags=re.IGNORECASE,
+        )
+        for pm_ph in _PHONE_RE.finditer(sanitized_for_phone):
+            ph_val = re.sub(r"[\s.\-]", "", pm_ph.group(0))
+            if ph_val and ph_val not in phones_found:
+                phones_found.append(ph_val)
+        driver_phone = " | ".join(phones_found) if phones_found else None
 
         seal_m = _SEAL_RE.search(blk)
-        seal_no = seal_m.group(1).upper() if seal_m else None
+        seal_cand = seal_m.group(1).upper() if seal_m else None
+        if seal_cand and seal_cand in {"CHUA", "KHONG", "TRONG", "NONE", "NULL", "BAO", "SAU"}:
+            seal_cand = None
+        seal_no = seal_cand
 
         eta_m = _ETA_RE.search(blk)
         eta = None
@@ -102,6 +138,15 @@ def heuristic_extract(
 
         drv_m = _DRIVER_RE.search(blk)
         driver_name = drv_m.group(1).strip() if drv_m else None
+        if not driver_name:
+            for ln in blk.splitlines():
+                ln_clean = ln.strip()
+                if not ln_clean or any(ch.isdigit() for ch in ln_clean) or _STANDALONE_STOP_RE.search(ln_clean):
+                    continue
+                words = [w for w in ln_clean.split() if w.isalpha()]
+                if 2 <= len(words) <= 5 and len(words) == len(ln_clean.split()) and any(w[0].isupper() for w in words):
+                    driver_name = " ".join(words)
+                    break
 
         wh_m = _WAREHOUSE_RE.search(blk)
         wh_name = wh_m.group(1).strip() if wh_m else None

@@ -69,6 +69,19 @@ def resolve_scope(db: Session, group: ZaloGroup, message: ZaloMessage) -> ScopeC
                     "Tài khoản Zalo chưa được gắn duy nhất với nhân viên ĐHVT của nhóm."
                 )
             user_id = users[0].id
+        elif not group.is_test:
+            has_registered_staff = db.scalar(
+                select(User.id)
+                .where(
+                    User.zalo_info_id == group.id,
+                    User.is_active.is_(True),
+                )
+                .limit(1)
+            )
+            if has_registered_staff is not None:
+                raise PermissionError(
+                    "Tài khoản Zalo của bạn chưa được gắn với nhân viên ĐHVT đang hoạt động trong hệ thống."
+                )
     else:
         routes = tuple(
             RouteScope(

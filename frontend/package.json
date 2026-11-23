@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
+    "postbuild": "rm -rf .next/standalone/.next/static .next/standalone/public && cp -r .next/static .next/standalone/.next/static && (test -d public && cp -r public .next/standalone/public || true)",
     "start": "next start -p 3001",
     "lint": "next lint"
   },

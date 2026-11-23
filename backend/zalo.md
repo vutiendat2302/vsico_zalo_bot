@@ -131,7 +131,7 @@ flowchart TD
 
     R0 -- "Kiểu 2: mảnh thông tin rời" --> R2["Gộp vào bản nháp<br/>của group_id + sender_id"]
     R2 --> R2c{"Trạng thái bản nháp"}
-    R2c -- "Chưa đủ, còn hạn" --> W(["Chờ mảnh tiếp<br/>Hẹn giờ debounce 1-3 phút để đánh thức"])
+    R2c -- "Chưa đủ, còn hạn" --> W(["Chờ mảnh tiếp<br/>Cửa sổ đợi nhóm Nhà xe im lặng 20s / trần 60s để gom tin"])
     R2c -- "Mơ hồ, nhiều xe cont lẫn lộn" --> LLM["Gọi LLM: tin hiện tại, tin gần nhất của sender,<br/>bản nháp, chuyến mở, kế hoạch"] --> MERGE
     R2c -- "Đủ trường hoặc hết hạn" --> MERGE
 
@@ -204,7 +204,7 @@ flowchart TD
     OB --> SM{"send_mode của nơi nhận"}
     SM -- "auto" --> SEND
     SM -- "pending" --> DR["Đưa vào hàng đợi chờ duyệt trên Web ĐHVT (cho_duyet)<br/>Đồng thời gửi thông báo theo form mẫu vào nhóm Zalo ĐHVT"]
-    DR --> AP{"ĐHVT xử lý trên Web<br/>(Zalo chỉ thông báo, không nhận lệnh duyệt)"}
+    DR --> AP{"ĐHVT duyệt trên Web hoặc trực tiếp trên Zalo ĐHVT<br/>(Chế độ MANUAL chặn đẩy TMS trước khi ĐHVT duyệt)"}
     AP -- "Duyệt" --> SEND
     AP -- "Sửa nội dung" --> SEND
     AP -- "Từ chối" --> CX["Trạng thái huy, ghi log"] --> Z
@@ -252,7 +252,7 @@ flowchart TD
 
 #### 1.3a Thông báo nhóm Zalo ĐHVT và ĐHVT xử lý trên Web
 
-Khi có bất kỳ ca cần duyệt, tin chờ duyệt hoặc cảnh báo nào gửi đến hệ thống Web ĐHVT, Bot **đồng thời gửi thông tin vào nhóm Zalo của ĐHVT theo các form mẫu chuẩn** (kèm liên kết sang Web). Nhóm Zalo ĐHVT chỉ dùng để thông báo, **không phụ trách duyệt thông tin và Bot không nhận lệnh duyệt/sửa/hủy từ nhóm này**.
+Khi có bất kỳ ca cần duyệt, tin chờ duyệt hoặc cảnh báo nào gửi đến hệ thống Web ĐHVT, Bot **đồng thời gửi thông tin vào nhóm Zalo của ĐHVT theo chuẩn `[VSICO] - ...`** (kèm liên kết rút gọn 15 ký tự `https://bot.vtdat.com/<code>`, tự động gom nhiều ca hoặc nhiều yêu cầu quá hạn phát sinh cùng lúc thành 1 thông báo tổng hợp cho mỗi nhóm). Nhân viên ĐHVT có thể thao tác trên Web quản lý (`/reviews`, `/results`) hoặc duyệt/sửa/từ chối trực tiếp trên nhóm Zalo ĐHVT nếu tài khoản đã gắn `users.zalo_user_id` hợp lệ (`role = 'admin' | 'dhvt'`, chỉ phát đúng 1 tin nhắn `[VSICO] - ...` ghi rõ tên người duyệt); mọi tài khoản chưa cấp quyền ĐHVT bị chặn qua `BLOCK_WRITE`. Nhóm ĐHVT, nhóm Khách hàng và chat 1-1 phản hồi ngay lập tức, trong khi nhóm Nhà xe áp dụng cửa sổ đợi im lặng 20 giây / trần tối đa 60 giây.
 
 ```mermaid
 flowchart TD
@@ -287,7 +287,7 @@ flowchart TD
     Q --> ZN_FORM["Chọn form mẫu thông báo tương ứng:<br/>1. Mẫu ca cần duyệt (review_case)<br/>2. Mẫu tin chờ duyệt (pending_outbound)<br/>3. Mẫu cảnh báo hệ thống (system_alert)"]
     OBQ --> ZN_FORM
     AL --> ZN_FORM
-    ZN_FORM --> ZN["Gửi thông báo vào nhóm Zalo ĐHVT kèm liên kết sang Web<br/>(Chỉ thông báo một chiều, không duyệt trên Zalo, Bot không nhận lệnh)"]
+    ZN_FORM --> ZN["Gửi thông báo [VSICO] - ... vào nhóm Zalo ĐHVT kèm link rút gọn 15 ký tự<br/>(Hỗ trợ duyệt/sửa/hủy trực tiếp cho tài khoản ĐHVT hợp lệ hoặc xử lý trên Web)"]
 
     Q --> O["ĐHVT mở ca trên Web<br/>Ghi assigned_to, người khác thấy đang có người xử lý"]
     O --> D{"Quyết định trên Web"}
@@ -539,11 +539,11 @@ sequenceDiagram
         W->>T: Hủy hẹn giờ của bản nháp
         Note over W: Tiếp tục sơ đồ 2.1b từ bước kiểm tra ISO
     else Chưa đủ
-        W->>T: Đặt hoặc gia hạn hẹn giờ 1 đến 3 phút
+        W->>T: Đợi im lặng 20s từ tin cuối (trần tối đa 60s trong FIFO Nhà xe)
         Note over W: Giải phóng worker ngay
     end
 
-    T->>W: Hết hạn debounce, đánh thức xử lý bản nháp
+    T->>W: Đủ 20s im lặng hoặc chạm trần 60s, đánh thức xử lý bản nháp
     W->>DB: Đọc bản nháp
     alt Mơ hồ (nhiều xe, nhiều cont lẫn lộn)
         W->>DB: Lấy tin gần nhất của sender, chuyến mở, kế hoạch hôm nay của nhà xe
@@ -1032,10 +1032,15 @@ sequenceDiagram
                 AI-->>W: Câu trả lời tổng hợp cho ĐHVT
                 W->>OA: Reply vào tin của ĐHVT
                 OA->>DHZ: Hiển thị câu trả lời
-            else Gửi lệnh duyệt, sửa hoặc hủy trên Zalo (ví dụ: quote gõ ok, duyệt, hủy chuyến)
-                Note over W,OA: Zalo chỉ để thông báo, không phụ trách duyệt/sửa thông tin
-                W->>OA: Reply nhắc: Hệ thống không nhận lệnh duyệt/sửa qua Zalo, vui lòng xử lý trên Web (kèm link trực tiếp)
-                OA->>DHZ: Hiển thị lời nhắc và liên kết Web
+            else Gửi lệnh duyệt, sửa hoặc hủy trên Zalo (ví dụ: quote gõ ok, duyệt, sửa..., hủy...)
+                Note over W,OA: Kiểm tra users.zalo_user_id (role = dhvt/admin, is_active = True)
+                alt Đúng nhân viên ĐHVT / Admin và có ca chờ hợp lệ
+                    W->>DB: Duyệt / sửa / từ chối ca và đồng bộ TMS
+                    W->>OA: Gửi đúng 1 tin nhắn [VSICO] - ... ghi rõ tên người duyệt vào nhóm ĐHVT & phản hồi nhóm Nhà xe
+                else Tài khoản không có quyền ĐHVT hoặc sai cú pháp
+                    W->>OA: Chặn bằng BLOCK_WRITE / hướng dẫn xử lý trên Web (kèm link rút gọn)
+                end
+                OA->>DHZ: Hiển thị kết quả xử lý
             else Không rõ hoặc chit-chat
                 alt ĐHVT tag bot trực tiếp
                     W->>OA: Gợi ý ngắn các loại tra cứu nội bộ mà Bot hỗ trợ
@@ -1089,8 +1094,8 @@ flowchart TD
 | :--------------------------------------- | :----------------------------------------------- | :--------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Nhà xe**                        | Nhóm Zalo `role = car`                        | `zalo_info.carrier_id` liên kết `carriers.id`                                      | Báo xe mới, bổ sung thông tin, sửa xe, đề nghị hủy chuyến; tra cứu tiến độ chuyến xe của chính nhà xe mình                                                                 | Chỉ truy cập dữ liệu chuyến thuộc `carrier_id` của nhóm. Hủy chuyến hoặc đổi xe sau khi đã gửi khách luôn chuyển thành ca chờ ĐHVT xác nhận trên Web                                  |
 | **Khách hàng**                   | Nhóm Zalo hoặc chat riêng `role = customer` | `zalo_info` kết hợp ma trận `route_maps`                                          | Chỉ đọc: tra cứu thông tin chuyến xe, số container, số chì, giờ dự kiến đến kho của lô hàng mình                                                                            | Chỉ hiển thị dữ liệu thuộc khách hàng và kho được cấu hình trong `route_maps`. Đề nghị đổi/hủy của khách chỉ ghi nhận thành ca chờ cho ĐHVT, Bot không tự ý sửa đổi dữ liệu |
-| **Điều hành vận tải (ĐHVT)** | Web quản lý (Dashboard)                        | Bảng `users` (`role = dhvt`), phiên xác thực qua `httpOnly` cookie             | Xem danh sách tin nhắn, bóc tách thực thể, quản lý kế hoạch vận chuyển, duyệt/sửa/từ chối ca chờ duyệt, phát hành thông báo gửi khách, kích hoạt gửi lại khi lỗi | Thao tác duyệt và chỉnh sửa dữ liệu bắt buộc thực hiện trên Web quản lý; không nhận lệnh duyệt qua tin nhắn Zalo                                                                              |
-| **Điều hành vận tải (ĐHVT)** | Nhóm Zalo ĐHVT nội bộ, chat riêng           | `zalo_info.role = dhvt` hoặc `users.zalo_user_id` khớp `zalo_messages.sender_id` | Nhận thông báo nghiệp vụ một chiều từ Bot; hỏi tra cứu dữ liệu nội bộ (chỉ đọc) qua ngôn ngữ tự nhiên                                                                    | Bot không nhận lệnh duyệt, sửa, hủy qua chat Zalo; khi phát hiện lệnh duyệt trên Zalo, Bot gửi phản hồi nhắc nhở kèm liên kết dẫn tới ca xử lý trên Web                                  |
+| **Điều hành vận tải (ĐHVT)** | Web quản lý (Dashboard)                        | Bảng `users` (`role = dhvt`), phiên xác thực qua `httpOnly` cookie             | Xem danh sách tin nhắn, bóc tách thực thể, quản lý kế hoạch vận chuyển, duyệt/sửa/từ chối ca chờ duyệt, phát hành thông báo gửi khách, kích hoạt gửi lại khi lỗi | Chế độ `MANUAL` cưỡng chế duyệt cả lệnh kết hợp `RO + LO` và lệnh trả đủ 4-5 trường trước khi ghi `transport_plans` / đẩy TMS |
+| **Điều hành vận tải (ĐHVT)** | Nhóm Zalo ĐHVT nội bộ, chat riêng           | `zalo_info.role = dhvt` hoặc `users.zalo_user_id` khớp `zalo_messages.sender_id` | Nhận thông báo nghiệp vụ `[VSICO] - ...`, tra cứu thống kê ngày vs chi tiết tỉnh kèm ảnh PNG, và duyệt/sửa/hủy ca trực tiếp khi `users.zalo_user_id` hợp lệ (phát 1 tin duy nhất kèm tên người duyệt) | Tài khoản không gắn `users.zalo_user_id` hoặc không đủ vai trò `dhvt`/`admin` bị chặn qua `BLOCK_WRITE`; phản hồi ngay không áp dụng độ trễ 20s |
 | **Quản trị viên (Admin)**       | Web quản lý (Dashboard)                        | Bảng `users` (`role = admin`), phiên xác thực qua `httpOnly` cookie            | Toàn quyền của ĐHVT, quản lý danh mục tài khoản người dùng, cấu hình chế độ gửi của nhóm Zalo (`send_mode`), tiếp nhận cảnh báo leo thang khi ca quá hạn lần hai | Riêng màn hình quản lý người dùng (`/admin/users`) và phân quyền hệ thống chỉ dành cho vai trò Admin                                                                                           |
 
 ## 2. Nguyên tắc bảo mật hệ thống
@@ -1139,13 +1144,15 @@ flowchart TD
 - Mọi lượt gọi tích hợp tới TMS được ghi vết chi tiết tại `tms_sync_logs`, bao gồm dữ liệu gửi, phản hồi và số lần thử lại (Retry).
 - Tin nhắn gửi ra nền tảng Zalo được kiểm soát qua bộ điều tiết tần suất **Token Bucket** (`ZaloOutboundThrottler`) với giới hạn 10 request/giây và bộ đệm tức thời 20 tokens, kết hợp thuật toán lùi thời gian theo hàm mũ (Exponential Backoff) khi nhận mã lỗi `HTTP 429` để bảo vệ tài khoản không bị Zalo khóa do nghi vấn spam. Nếu gửi thất bại 3 lần liên tiếp, hệ thống tự động chuyển trạng thái tin sang lỗi và sinh cảnh báo cho ĐHVT xử lý thủ công.
 
-## 3. Các quy chuẩn đã chốt và triển khai trong phiên bản v1.0.0
+## 3. Các quy chuẩn đã chốt và triển khai trong phiên bản v1.5.0
 
-| Nội dung                                                                           | Trạng thái | Quy chuẩn triển khai thực tế trong hệ thống (v1.0.0) |
+| Nội dung                                                                           | Trạng thái | Quy chuẩn triển khai thực tế trong hệ thống (v1.5.0) |
 | :---------------------------------------------------------------------------------- | :----------- | :--------------------------------------------------- |
-| Tầng bóc tách NLP nội bộ (`backend/src/parsing/local_nlp_extractor.py`)            | Đã chốt    | Kết hợp **PhoBERT** (tách từ ghép tiếng Việt & nhận diện thực thể BIO NER `PER`/`LOC`/`ORG`), **Từ điển danh mục** (`vehicles`, `drivers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`), **RapidFuzz** và giải quyết đồng tham chiếu (`"xe trên"`, `"tài xế đó"`). |
-| Động cơ đối chiếu kế hoạch 6 nhánh (`backend/src/handlers/plan_resolution_engine.py`) | Đã chốt | Phân loại `TH1` (Khớp tự động), `TH2` (Nhiều ứng viên `candidate_plans`), `TH3` (Chưa khớp / Tự học `WarehouseAlias`), `TH4` (Thiếu thông tin), `TH5` (Mâu thuẫn nhà xe/đội xe), `TH6` (Cảnh báo vỏ container) và đồng bộ nguyên tử `RO -> LO`. |
-| Công cụ tra cứu thống kê cho ĐHVT (`backend/src/assistant/tools_dhvt.py`)          | Đã chốt    | Hỗ trợ tra cứu tổng số lệnh, **số lệnh đóng (`LO`), số lệnh trả (`RO`)**, số lệnh đã có xe/chưa có xe trên toàn hệ thống hoặc **theo từng vùng miền (`Miền Bắc`, `Miền Trung`, `Miền Nam`) và từng tỉnh/thành phố**; chặn tuyệt đối lệnh ghi qua `BLOCK_WRITE`. |
+| Tầng bóc tách NLP nội bộ (`backend/src/parsing/local_nlp_extractor.py`)            | Đã chốt    | Kết hợp **Precision Regex** (`patterns.py`, đa SĐT `09..1 \| 09..2`), **trọng số thật `vinai/phobert-base-v2`** (`phobert_transformers_local` với ngưỡng `UNKNOWN`), **Từ điển danh mục** (`vehicles`, `trailers`, `drivers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`), **RapidFuzz** và giải quyết đồng tham chiếu (`"xe trên"`, `"tài xế đó"`). |
+| Động cơ đối chiếu kế hoạch 6 nhánh (`backend/src/handlers/plan_resolution_engine.py`) | Đã chốt | Phân loại `TH1`–`TH6`, đồng bộ nguyên tử `RO -> LO`, luồng lệnh kết hợp `RO + LO` và **cưỡng chế Chờ duyệt (`MANUAL`)** (không ghi trước `transport_plans` hay đẩy TMS cho cả `RO + LO` lẫn lệnh trả đủ 4–5 trường khi nhóm Nhà xe/Khách ở `MANUAL`). |
+| Cửa sổ đợi FIFO & gom mảnh tin (`backend/src/infrastructure/fifo_queue.py`)         | Đã chốt    | Áp dụng **riêng cho nhóm Nhà xe (`SOURCE` / `CARRIER`)**: đợi im lặng **20 giây từ tin cuối (`GROUP_PROCESS_DELAY_SECONDS=20`)** kèm **trần tối đa 60 giây (`GROUP_PROCESS_MAX_WAIT_SECONDS=60`)**; nhóm **ĐHVT, Khách hàng và chat 1-1 xử lý ngay lập tức**. |
+| Công cụ ĐHVT, ảnh PNG & thông báo chuẩn `[VSICO] - ...` (`tools_dhvt.py`, `dhvt_service.py`) | Đã chốt | Tách riêng **`dhvt_get_province_plans`** khỏi thống kê ngày, bổ sung tỷ lệ `%` đóng/mở, xuất ảnh PNG chứa bảng thống kê lẫn bảng chi tiết lệnh; gom nhiều ca/quá hạn cùng lúc thành **1 tin nhắn tổng hợp `[VSICO] - ...`** và chỉ phát **1 tin duy nhất** kèm tên người duyệt khi ĐHVT xử lý trên Zalo. |
+| Cô lập kiểm thử & Watchdog Zalo OA (`zalo_watchdog.py`, `zalo_dispatcher.py`)      | Đã chốt    | Bật `ZALO_PROXY_ONLY=True` cho toàn bộ 169 bài kiểm thử Pytest (0 gửi Zalo OA thật), mặc định `ZALO_OVERDUE_ESCALATION_ENABLED=False` và giám sát sức khỏe Zalo OA qua SSE `/api/events/stream`. |
 | Danh sách chính xác các trường được phép hiển thị cho khách hàng                   | Đã chốt    | Chỉ hiển thị biển số đầu kéo/rơ-moóc, tên tài xế, SĐT tài xế, số container, số chì (seal), kho giao/nhận và trạng thái điều xe trong phạm vi `route_maps`. |
 | Thời gian lưu `raw_payload` và file ảnh trước khi xóa mềm                          | Đã chốt    | Lưu trữ tập trung trên MinIO qua bảng `files` (`bucket`, `object_key`, `sha256`), cấp quyền xem qua Presigned URL ngắn hạn. |
 | Xác thực chữ ký webhook và đồng bộ nhóm từ `oa-bridge` / `zca-js`                  | Đã chốt    | Xác thực qua `X-Webhook-Secret` và tự động đồng bộ nhóm thực tế (`SOURCE`, `TARGET`, `DHVT`, `DIRECT_CHAT`) từ `GET /api/bot/groups` vào bảng `zalo_groups`. |

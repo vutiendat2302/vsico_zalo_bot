@@ -1,5 +1,6 @@
 """Điểm vào trợ lý dùng chung, nối registry với outbox và audit hiện có."""
 
+from datetime import datetime, timedelta
 import re
 
 from sqlalchemy import select
@@ -11,16 +12,109 @@ from src.infrastructure.models import (
     ActivityLog,
     ExtractionRun,
     MessageDraft,
+    TransportPlan,
     ZaloGroup,
     ZaloMessage,
 )
 from src.infrastructure.snowflake import snowflake
 
-from .intent_router import local_date, route_local
+from .intent_router import local_date, normalize, route_local
 from .queries import enrich_catalog
-from .schemas import AssistantReply, ToolCall
-from .scope_resolver import resolve_scope
+from .schemas import AssistantReply, ScopeContext, ToolCall
+from .scope_resolver import is_default_carrier_group, resolve_scope
 from .tool_registry import WRITE_TOOLS, allowed_tools, execute
+
+
+def _apply_short_term_memory(
+    db: Session, scope: ScopeContext, call: ToolCall, raw_text: str
+) -> None:
+    """Giải tham chiếu hội thoại ngắn hạn (5-10 phút) như 'lệnh đầu', 'cái thứ 2', 'cái cuối'."""
+    norm = normalize(raw_text)
+    ordinal_idx: int | None = None
+    if re.search(r"\b(lenh dau|cai dau|so 1|thu 1|thu nhat|dau tien)\b", norm):
+        ordinal_idx = 0
+    elif re.search(r"\b(thu 2|thu hai|so 2|cai thu 2)\b", norm):
+        ordinal_idx = 1
+    elif re.search(r"\b(thu 3|thu ba|so 3|cai thu 3)\b", norm):
+        ordinal_idx = 2
+    elif re.search(r"\b(cai cuoi|lenh cuoi|cuoi cung)\b", norm):
+        ordinal_idx = -1
+    if ordinal_idx is None:
+        return
+    if call.entities.order_code or call.entities.container_no or call.entities.case_id:
+        return
+
+    ctx_draft = db.scalar(
+        select(MessageDraft)
+        .where(
+            MessageDraft.group_id == scope.zalo_group_id,
+            MessageDraft.sender_id == scope.sender_id,
+            MessageDraft.entities["kind"].as_string() == "assistant_conv_context",
+            MessageDraft.expires_at > datetime.now().replace(tzinfo=None),
+        )
+        .order_by(MessageDraft.id.desc())
+    )
+    if not ctx_draft:
+        return
+    plan_ids = list((ctx_draft.entities or {}).get("plan_ids") or [])
+    if not plan_ids:
+        return
+    try:
+        chosen_pid = plan_ids[ordinal_idx]
+    except IndexError:
+        return
+    if str(chosen_pid).isdigit():
+        plan = db.get(TransportPlan, int(chosen_pid))
+        if plan:
+            if plan.order_code:
+                call.entities.order_code = plan.order_code
+            elif plan.container_no:
+                call.entities.container_no = plan.container_no
+            if call.intent == "UNKNOWN":
+                call.intent = (
+                    "dhvt_get_order_or_cont_detail"
+                    if scope.role == "DHVT"
+                    else "carrier_get_order_detail"
+                )
+
+
+def _save_short_term_memory(
+    db: Session, scope: ScopeContext, message: ZaloMessage, reply: AssistantReply
+) -> None:
+    """Lưu danh sách `plan_ids` vừa tra cứu vào bộ nhớ hội thoại 10 phút cho `(group_id, sender_id)`."""
+    if not reply.plan_ids or not scope.group_id:
+        return
+    existing = db.scalar(
+        select(MessageDraft)
+        .where(
+            MessageDraft.group_id == scope.zalo_group_id,
+            MessageDraft.sender_id == scope.sender_id,
+            MessageDraft.entities["kind"].as_string() == "assistant_conv_context",
+        )
+        .order_by(MessageDraft.id.desc())
+    )
+    now = datetime.now()
+    if existing is not None:
+        existing.last_message_id = message.id
+        existing.entities = {"kind": "assistant_conv_context", "plan_ids": reply.plan_ids[:20]}
+        existing.expires_at = now + timedelta(minutes=10)
+        existing.status = "OPEN"
+    else:
+        db.add(
+            MessageDraft(
+                id=snowflake.generate(),
+                zalo_info_id=scope.group_id,
+                group_id=scope.zalo_group_id,
+                sender_id=scope.sender_id,
+                carrier_id=scope.carrier_id,
+                first_message_id=message.id,
+                last_message_id=message.id,
+                message_count=1,
+                status="OPEN",
+                entities={"kind": "assistant_conv_context", "plan_ids": reply.plan_ids[:20]},
+                expires_at=now + timedelta(minutes=10),
+            )
+        )
 
 
 def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> bool:
@@ -62,42 +156,20 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
             initial.intent = routed_intent
         scope = resolve_scope(db, group, message)
         call = initial
-        if call.intent == "carrier_supplement_trip" and message.quote_msg_id:
-            from src.infrastructure.models import BotReply, ContainerJob, ZaloMessage
+        _apply_short_term_memory(db, scope, call, message.message_text or "")
+        if call.intent == "carrier_supplement_trip" and not call.entities.order_code:
+            from src.handlers.carrier_flow_service import CarrierFlowService
+            from src.parsing.trip_parser import TripParser
 
-            from .tools_carrier import proposed_changes
-
-            reply_source = db.scalar(
-                select(BotReply)
-                .join(ZaloMessage, BotReply.message_id == ZaloMessage.id)
-                .where(
-                    BotReply.zalo_msg_id == message.quote_msg_id,
-                    BotReply.status == "PENDING",
-                    ZaloMessage.group_id == scope.zalo_group_id,
-                    ZaloMessage.sender_id == scope.sender_id,
-                )
+            parsed_supp = TripParser.parse_message(
+                message.message_text or "",
+                reference_time=message.zalo_sent_at or message.created_at,
             )
-            if reply_source:
-                jobs = list(
-                    db.scalars(
-                        select(ContainerJob).where(
-                            ContainerJob.message_id == reply_source.message_id
-                        )
-                    ).all()
-                )
-                fields = proposed_changes(db, scope, message.message_text)
-                if len(jobs) == 1 and fields:
-                    job = jobs[0]
-                    truck = job.truck_record
-                    current = {
-                        "container_no": job.container_no,
-                        "seal_no": job.seal_no,
-                        "planned_truck_plate": truck.truck_plate if truck else None,
-                        "driver_name": truck.driver_name if truck else None,
-                        "driver_phone": truck.driver_phone if truck else None,
-                    }
-                    if all(not current[k] or current[k] == v for k, v in fields.items()):
-                        return False
+            supp_job, _supp_reply = CarrierFlowService.find_pending_supplement_target(
+                db, message, parsed_supp
+            )
+            if supp_job is not None:
+                return False
         if call.intent == "IGNORE":
             message.processing_status = "PROCESSED"
             db.commit()
@@ -110,6 +182,32 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
             )
             if call.entities.model_dump() != before:
                 call.route_source = "local_nlp"
+            # Nếu ĐHVT hỏi kế hoạch / chi tiết một tỉnh cụ thể (đã nhận diện từ danh mục DB)
+            # mà không yêu cầu gom thống kê toàn hệ thống -> tách riêng sang `dhvt_get_province_plans`
+            if (
+                scope.role == "DHVT"
+                and call.entities.province_name
+                and not call.entities.group_by_region
+                and call.intent in ("dhvt_get_daily_overview", "UNKNOWN")
+            ):
+                norm_q = normalize(message.message_text or "")
+                is_system_agg = bool(
+                    re.search(r"\b(theo tinh|tung tinh|phan bo tinh|tat ca cac tinh|toan bo)\b", norm_q)
+                )
+                if not is_system_agg:
+                    call.intent = "dhvt_get_province_plans"
+            # Nếu định tuyến nhầm vào `dhvt_get_province_plans` nhưng hoàn toàn không khớp tỉnh nào và có cue thống kê -> quay lại overview
+            elif (
+                scope.role == "DHVT"
+                and call.intent == "dhvt_get_province_plans"
+                and not call.entities.province_name
+                and not ambiguous
+            ):
+                norm_q = normalize(message.message_text or "")
+                if re.search(r"\b(thong ke|tong quan|tong hop|ke hoach)\b", norm_q) and not re.search(
+                    r"\b(tinh|tp|thanh pho)\b", norm_q
+                ):
+                    call.intent = "dhvt_get_daily_overview"
         if call.intent == "UNKNOWN":
             proposed = AIServiceClient.assistant_intent(
                 message.message_text,
@@ -159,6 +257,33 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
                 text="Tin nhắn chưa rõ hoặc gồm cả hỏi và sửa. Vui lòng ghi một mã lệnh/ngày và tách thông tin muốn tra cứu khỏi thay đổi cần xác nhận."
             )
         elif (
+            scope.role == "CUSTOMER"
+            and not scope.routes
+            and db.scalar(
+                select(TransportPlan.id)
+                .where(TransportPlan.group_id == scope.zalo_group_id)
+                .limit(1)
+            )
+            is None
+        ):
+            reply = AssistantReply(
+                text="Nhóm khách hàng chưa được cấu hình RouteMap định tuyến. Vui lòng liên hệ ĐHVT để gán tuyến."
+            )
+        elif (
+            scope.role == "CARRIER"
+            and not scope.carrier_id
+            and not is_default_carrier_group(scope.zalo_group_id)
+            and db.scalar(
+                select(TransportPlan.id)
+                .where(TransportPlan.group_id == scope.zalo_group_id)
+                .limit(1)
+            )
+            is None
+        ):
+            reply = AssistantReply(
+                text="Nhóm Zalo này chưa được liên kết với Nhà xe trong hệ thống. Vui lòng liên hệ ĐHVT để gắn Nhà xe cho nhóm."
+            )
+        elif (
             re.search(r"\b[A-Za-z]{4}\d{5,6}\b", message.message_text)
             and not call.entities.container_no
         ):
@@ -181,6 +306,7 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
             )
         else:
             reply = execute(db, scope, call, message)
+            _save_short_term_memory(db, scope, message, reply)
     except (PermissionError, ValueError) as exc:
         reply = AssistantReply(text=str(exc))
     outbound = _send_or_queue_group_reply(
@@ -227,7 +353,9 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
         )
     message.processing_status = "NEEDS_REVIEW" if reply.needs_review else "PROCESSED"
     db.commit()
-    if settings.AUTO_DISPATCH_OUTBOUND and not group.is_test:
+    from src.handlers.carrier_flow_service import CarrierFlowService
+
+    if settings.AUTO_DISPATCH_OUTBOUND and not CarrierFlowService.is_test_message(message, group):
         from contextlib import nullcontext
 
         from src.infrastructure.models import ReviewCase

@@ -23,6 +23,17 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Chuẩn hóa placeholder cho input và textarea: nhỏ, mờ dịu, không bị ép viết hoa */
+input::placeholder,
+textarea::placeholder {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: #94a3b8;
+  font-weight: 400;
+  text-transform: none;
+  opacity: 1;
+}
+
 /* Thanh cuộn gọn gàng chuẩn giao diện điều hành */
 ::-webkit-scrollbar {
   width: 6px;

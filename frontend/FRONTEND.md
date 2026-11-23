@@ -1,4 +1,4 @@
-# Đặc tả Kỹ thuật Phân hệ Frontend Dashboard (`frontend` v1.0.0)
+# Đặc tả Kỹ thuật Phân hệ Frontend Dashboard (`frontend` v1.5.0)
 
 Phân hệ `frontend` là giao diện điều hành Web dành cho nhân viên Điều hành Vận tải (ĐHVT) và Quản trị viên (Admin), được xây dựng trên nền tảng **Next.js 16+ (App Router, Turbopack)**, **React 19**, **TypeScript 5**, **Tailwind CSS v4** và **Shadcn UI**.
 
@@ -19,19 +19,22 @@ Phân hệ `frontend` là giao diện điều hành Web dành cho nhân viên Đ
 frontend/src/
 ├── middleware.ts                     # Bảo vệ route theo JWT httpOnly cookie & phân quyền (admin / dhvt)
 ├── app/
-│   ├── page.tsx                      # Tổng quan vận hành trong ngày (KPI, Biểu đồ, Cảnh báo nóng)
-│   ├── login/page.tsx                # Đăng nhập hệ thống (Thiết lập httpOnly cookie)
+│   ├── page.tsx                      # Tổng quan vận hành trong ngày (KPI, Biểu đồ, Cảnh báo nóng & Watchdog SSE)
+│   ├── (auth)/
+│   │   └── login/page.tsx            # Đăng nhập hệ thống (Thiết lập httpOnly cookie & Refresh Token)
+│   ├── [code]/page.tsx               # Giải mã liên kết rút gọn 15 ký tự chuyển hướng tới /reviews?ref=<code>
 │   ├── plans/page.tsx                # Quản lý Kế hoạch vận chuyển, Import Excel/CSV, Đồng bộ TMS, Gán xe
 │   ├── messages/page.tsx             # Giám sát tin nhắn Zalo gốc, lịch sử bóc tách NLP/AI và thử lại
-│   ├── results/page.tsx              # Tra cứu kết quả thực thi container_jobs, truck_records & nhật ký gửi
+│   ├── results/page.tsx              # Tra cứu kết quả thực thi container_jobs, truck_records & duyệt gửi đi
 │   ├── reviews/page.tsx              # Xử lý Ca chờ duyệt (Master-Detail, chọn candidate_plans, học WarehouseAlias)
-│   ├── groups/page.tsx               # Quản lý Nhóm Zalo (Đồng bộ trực tiếp từ OA/ZCA Bridge, hỗ trợ DIRECT_CHAT)
-│   ├── sandbox/page.tsx              # Môi trường giả lập gửi tin nhắn Nhà xe / Khách hàng / ĐHVT
+│   ├── groups/page.tsx               # Quản lý Nhóm Zalo (Đồng bộ trực tiếp từ OA/ZCA Bridge, cấu hình AUTO/MANUAL, hỗ trợ DIRECT_CHAT)
+│   ├── sandbox/page.tsx              # Môi trường giả lập gửi tin nhắn Nhà xe / Khách hàng / ĐHVT & kiểm thử NLP 3 tầng
 │   ├── master/
 │   │   ├── carriers/page.tsx         # Danh mục Nhà xe đồng bộ từ TMS
 │   │   ├── customers/page.tsx        # Danh mục Khách hàng & Bí danh (CustomerAliases)
 │   │   ├── warehouses/page.tsx       # Danh mục Kho & Bí danh tự học (WarehouseAliases)
-│   │   ├── vehicles/page.tsx         # Danh mục Đầu kéo / Rơ-moóc (Vehicles)
+│   │   ├── vehicles/page.tsx         # Danh mục Đầu kéo (Vehicles)
+│   │   ├── trailers/page.tsx         # Danh mục Rơ-moóc (Trailers) đồng bộ từ TMS
 │   │   ├── drivers/page.tsx          # Danh mục Tài xế (Drivers)
 │   │   └── transport-plans/page.tsx  # Quản trị dữ liệu gốc Kế hoạch vận chuyển
 │   └── admin/
@@ -55,7 +58,7 @@ flowchart TD
     DASH --> PLANS["Quản lý Kế hoạch (/plans)<br/>Đồng bộ TMS / Import Excel / Cập nhật xe (expected_version)"]
     DASH --> REVIEWS["Duyệt Ca Chờ (/reviews)<br/>Chọn 1-click từ candidate_plans -> Tự học WarehouseAlias"]
     DASH --> GROUPS["Quản lý Nhóm Zalo (/groups)<br/>Tự động đồng bộ nhóm GMF & DIRECT_CHAT từ Bridge"]
-    DASH --> MASTER["Danh mục Chuẩn (/master/*)<br/>Nhà xe, Khách hàng, Kho, Xe, Tài xế"]
+    DASH --> MASTER["Danh mục Chuẩn (/master/*)<br/>Nhà xe, Khách hàng, Kho, Xe, Rơ-moóc, Tài xế"]
     MW -- "role == admin" --> USERS["Quản trị Tài khoản (/admin/users)"]
 ```
 
@@ -70,7 +73,7 @@ npm install
 # Kiểm tra ESLint
 npm run lint
 
-# Kiểm tra biên dịch Production Build (18/18 routes)
+# Kiểm tra biên dịch Production Build (App Router)
 npm run build
 
 # Khởi chạy máy chủ phát triển (Cổng 3001)

@@ -144,8 +144,8 @@ export default function TrailersPage() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="h-full min-h-0 flex flex-col gap-3">
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-slate-900">Rơ-moóc</h1>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -164,9 +164,9 @@ export default function TrailersPage() {
         </button>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-sm overflow-hidden">
+      <div className="flex-1 min-h-0 bg-white border border-slate-200 rounded-sm overflow-hidden flex flex-col">
         {/* Filter Bar */}
-        <div className="p-3 border-b border-slate-200 flex flex-wrap items-center gap-2.5">
+        <div className="shrink-0 p-3 border-b border-slate-200 flex flex-wrap items-center gap-2.5">
           <MasterSearchInput
             value={searchInput}
             onChange={setSearchInput}
@@ -234,9 +234,9 @@ export default function TrailersPage() {
         </div>
 
         {/* Table */}
-        <div className="overflow-x-auto">
+        <div className="flex-1 min-h-[220px] overflow-auto">
           <table className="w-full text-left border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-500">
                 <th className="px-4 py-2.5">Biển số rơ-moóc</th>
                 <th className="px-4 py-2.5">Loại rơ-moóc</th>

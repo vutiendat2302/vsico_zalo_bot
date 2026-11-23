@@ -5,11 +5,31 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from src.domain.patterns import (
+    CONT_REGEX as CONTAINER_RE,
+    PHONE_PATTERN as PHONE_RE,
+    PLATE_REGEX as PLATE_RE,
+    TRAILER_PLATE_REGEX,
+)
 from .schemas import Entities, Role, ToolCall
 
-PLATE_RE = re.compile(r"\b\d{2}[A-Z]{1,2}(?:[- ./]?\d{3}[- .]?\d{2}|[- ./]?\d{4,5})\b", re.IGNORECASE)
-CONTAINER_RE = re.compile(r"\b[A-Z]{4}\d{7}\b", re.IGNORECASE)
+TRAILER_PREFIX_RE = re.compile(r"^\d{2}[A-ZĐ]?R[M]?(?:[ \t\u00a0.\-/]|\d)", re.IGNORECASE)
 ZALO_MENTION_RE = re.compile(r"\[@\d+\]")
+
+_DEFERRED_OR_NON_QUESTION_PHRASES_RE = re.compile(
+    r"\b(?:"
+    r"(?:so\s+)?(?:cont|container|chi|seal|niêm\s*chi|niem\s*chi|mooc|ro\s*mooc|gio|xe|tai\s*xe|lai\s*xe|sdt)\s+"
+    r"(?:chua|khong)\s*(?:co|cap|lay|bam|kep|biet|ro)?|"
+    r"(?:chua|khong)\s+(?:co|cap|lay|bam|kep|biet|ro)\s+(?:so\s+)?(?:cont|container|chi|seal|niem\s*chi|mooc|ro\s*mooc|gio)|"
+    r"(?:cont|container|chi|seal|mooc|gio)\s+(?:bao\s+sau|bo\s+sung\s+sau)|"
+    r"(?:bo\s+sung|bao)\s+(?:cont|container|chi|seal|mooc|gio)\s+sau|"
+    r"no\s+(?:chi|seal|cont)|"
+    r"(?:bao\s+|gui\s+)?thong\s+tin\s+(?:xe|dieu\s+xe|cont|tai\s+xe)|"
+    r"(?:em\s+|anh\s+|minh\s+)?xin\s+(?:bao|gui|cap\s+nhat)\s+(?:xe|cont|thong\s+tin)|"
+    r"(?:tai\s*xe|lai\s*xe|lx|tx)\s*[:\-]?\s*[a-z]+(?:\s+[a-z]+){1,4}"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def strip_zalo_mentions(text: str) -> str:
@@ -79,6 +99,10 @@ def parse_entities(text: str, reference: datetime) -> Entities:
         found = re.search(pattern, n)
         if found:
             setattr(e, attr, found[1].upper())
+    if not e.booking_no:
+        compact_bk = re.search(r"\b(bk\d{4,20})\b", n)
+        if compact_bk:
+            e.booking_no = compact_bk[1].upper()
     if not e.plate_no:
         short = re.search(r"\bxe\s+(\d{3}[.]?\d{2}|\d{4})\b", n)
         if short:
@@ -127,60 +151,97 @@ def route_local(text: str, role: Role, reference: datetime) -> ToolCall:
         """Đóng gói quyết định local cùng tham số đã chuẩn hóa."""
         return ToolCall(intent=intent, confidence=1, entities=entities)
 
-    if n in ("ok", "dung", "dung roi", "xac nhan", "dong y") or re.fullmatch(r"xac nhan #?\d+", n):
+    if n in ("?", "menu", "lenh tat") or any(k in n for k in ("huong dan", "bot lam duoc", "help", "bao lenh dong can")):
+        return result("get_role_help")
+    if n in ("ok", "oki", "oke", "okie", "dung", "dung roi", "xac nhan", "dong y", "duyet") or re.fullmatch(
+        r"(?:xac nhan|duyet|ok|oki|dong y)\s*(?:#?\d+|(?:ro|lo)\d{3,8}|[a-z]{3}[ujz]\d{7})", n
+    ):
         return result(
-            "BLOCK_WRITE" if role == "DHVT" else "CONFIRM" if role == "CARRIER" else "IGNORE"
+            "dhvt_direct_review_action" if role == "DHVT" else "CONFIRM" if role == "CARRIER" else "IGNORE"
         )
     if any(
         k in n for k in ("gps", "km nao", "vi tri thuc", "da den kho chua", "vao cong chua", "pod")
     ):
         return result("UNSUPPORTED")
-    if any(k in n for k in ("huong dan", "bot lam duoc", "help", "bao lenh dong can")):
-        return result("get_role_help")
     if n in ("ok em", "cam on", "vang", "da nhan", "thanks", "tks") and role != "DHVT":
         return result("IGNORE")
-    n_for_question = re.sub(
-        r"\b(chua co cont|chua co so cont|chua co chi|chua co seal|chua cap cont|cont bao sau|chi bao sau)\b",
-        "",
-        n,
-    )
-    question = bool(
-        re.search(
-            r"\b(nao|may|bao nhieu|chua|khong|the nao|tai sao|vi sao|lich|tra cuu|thong ke|tong hop|xem|kiem tra|cho xin|thong tin|xin)\b",
-            n_for_question,
-        )
-        or "?" in text
-    )
     mutation = bool(
         re.search(
             r"\b(doi xe|doi dau keo|thay dau keo|thay tai|doi tai|sua lai|go nham|doi gio|doi kho|huy|bo sung|chuyen gio|doi sang|doi cont|doi chi|doi seal|sua sdt|doi so dien thoai|cap nhat|thay xe)\b",
             n,
         )
     )
+    n_for_question = _DEFERRED_OR_NON_QUESTION_PHRASES_RE.sub(" ", n)
+    has_phone = bool(PHONE_RE.search(text))
+    has_driver_label = bool(re.search(r"\b(?:tai\s*xe|lai\s*xe|lx|tx|sdt|dt)\b", n))
+    has_mooc_label = bool(
+        re.search(r"\b(?:mooc|ro\s*mooc|rm|\d{2}[a-z]?r[m]?[- ./]?\d{3,5})\b", n)
+    )
+    has_seal_label = bool(re.search(r"\b(?:so\s*chi|so\s*seal|niem\s*chi|chi|seal)\b", n))
+    has_f1_slash_structure = text.count("/") >= 2 and bool(entities.plate_no or entities.container_no)
+    has_explicit_question_cue = bool(
+        "?" in text
+        or ("neu " in n and mutation)
+        or re.search(
+            r"\b(?:dung\s+khong|phai\s+khong|co\s+\w+\s+khong|nhan\s+duoc\s+chua|ghi\s+nhan\s+chua|duyet\s+chua|xong\s+chua|ok\s+chua|co\s+lich\s+chua|may\s+gio|bao\s+gio|khi\s+nao|xe\s+nao|cont\s+nao|kho\s+nao|the\s+nao|tai\s+sao|vi\s+sao)\b",
+            n_for_question,
+        )
+    )
+    is_carrier_dispatch_payload = bool(
+        role == "CARRIER"
+        and not has_explicit_question_cue
+        and (
+            has_phone
+            or has_f1_slash_structure
+            or (
+                entities.plate_no
+                and entities.container_no
+                and (has_driver_label or has_mooc_label or has_seal_label)
+            )
+        )
+    )
+    question = bool(
+        not is_carrier_dispatch_payload
+        and (
+            re.search(
+                r"\b(nao|may|bao nhieu|chua|khong|the nao|tai sao|vi sao|lich|tra cuu|thong ke|tong hop|xem|kiem tra|cho xin|thong tin|xin)\b",
+                n_for_question,
+            )
+            or "?" in text
+        )
+    )
     if role == "DHVT":
         if ("neu " in n or "anh huong" in n) and (entities.order_code or entities.container_no):
             return result("dhvt_analyze_change_impact")
+        # Cho phép ĐHVT duyệt / sửa / hủy / từ chối trực tiếp trên nhóm Zalo ĐHVT
         if (
-            re.search(r"\b(duyet|xoa|cho gui|sua truc tiep|huy lenh|huy chuyen)\b", n)
+            re.match(
+                r"^(?:duyet|ok|oki|oke|dong y|xac nhan|sua|chinh sua|huy|tu choi|khong duyet|cho gui)\b",
+                n,
+            )
             and not question
         ):
-            return result("BLOCK_WRITE")
+            return result("dhvt_direct_review_action")
+        if re.match(r"^(?:nhac|gui nhac|bao nhac)\b", n):
+            return result("dhvt_remind_carrier")
+        if re.match(r"^kt\s+", n) and (entities.order_code or entities.container_no or entities.plate_no):
+            return result("dhvt_get_order_or_cont_detail")
         rules = [
             (("bot tu xu ly", "ty le", "hieu qua bot", "llm"), "dhvt_get_bot_performance"),
             (("da doi nhung gi", "lich su", "bot da lam", "nhat ky"), "dhvt_get_audit_timeline"),
             (("tai sao", "vi sao"), "dhvt_explain_review_case"),
-            (("trung chuyen", "trung xe", "trung lich"), "dhvt_detect_duplicate_vehicles"),
+            (("trung chuyen", "trung xe", "trung lich", "trung gio"), "dhvt_detect_duplicate_vehicles"),
             (
                 ("canh bao vo", "ha rong", "qua sl", "ben khac da xin", "soc"),
                 "dhvt_get_container_warnings",
             ),
-            (("dong bo", "gui khach", "gui tin", "that bai"), "dhvt_get_delivery_and_sync_errors"),
+            (("dong bo", "gui khach", "gui tin", "that bai", "loi tms"), "dhvt_get_delivery_and_sync_errors"),
             (
                 ("chua khop", "bao sai", "lech chi", "lech seal", "loi du lieu"),
                 "dhvt_get_validation_failures",
             ),
-            (("cho duyet", "ca cho", "xu ly gap", "can xu ly"), "dhvt_get_priority_digest"),
-            (("chua co xe", "thieu cont", "thieu xe"), "dhvt_get_unassigned_plans"),
+            (("cho duyet", "ca cho", "viec gap", "xu ly gap", "can xu ly"), "dhvt_get_priority_digest"),
+            (("chua co xe", "thieu cont", "thieu xe", "chua bao du", "can gio"), "dhvt_get_unassigned_plans"),
         ]
         for phrases, tool in rules:
             if any(p in n for p in phrases):
@@ -193,6 +254,25 @@ def route_local(text: str, role: Role, reference: datetime) -> ToolCall:
             return result("dhvt_get_vehicle_trips")
         if "khach " in n or "nha xe " in n or "forwarder " in n:
             return result("dhvt_get_entity_stats")
+        is_aggregate_by_province = bool(
+            entities.group_by_region
+            or re.search(r"\b(theo tinh|tung tinh|phan bo tinh|tat ca cac tinh|toan bo)\b", n)
+        )
+        has_specific_province_cue = bool(
+            not is_aggregate_by_province
+            and (
+                re.search(r"\b(?:tinh|tp|thanh pho)\s+[a-z]{2,}", n)
+                or (
+                    re.search(
+                        r"\b(chi tiet|danh sach|cac lenh|nhung lenh|cac chuyen|nhung chuyen|lenh o|lenh tai|chuyen o|chuyen tai|ke hoach tinh|ke hoach o)\b",
+                        n,
+                    )
+                    and not re.search(r"\b(thong ke|tong quan|tong hop|can doi)\b", n)
+                )
+            )
+        )
+        if has_specific_province_cue:
+            return result("dhvt_get_province_plans")
         if (
             entities.group_by_region
             or entities.region is not None
@@ -257,8 +337,12 @@ def route_local(text: str, role: Role, reference: datetime) -> ToolCall:
         if question and any(k in n for k in ("chuyen", "lich", "cont", "hom nay", "mai")):
             return result("customer_list_trips_by_date")
     else:
-        if re.search(r"\b(huy|tra lenh|su co|hong doc duong)\b", n):
+        if re.match(r"^(?:mau|lay mau|xin mau|form)\b", n) and (entities.order_code or entities.container_no):
+            return result("carrier_get_order_template")
+        if re.search(r"\b(huy|tra lenh|su co|hong doc duong|ket xe|tac duong|hong lop|hong xe|tre gio|cham gio|tre \d+)\b", n):
             return result("carrier_report_issue_or_cancel")
+        if n in ("chuyen thieu", "lenh thieu", "cac chuyen thieu", "chuyen chua bao"):
+            return result("carrier_list_incomplete_plans")
         if mutation:
             if "bo sung" in n:
                 return result("carrier_supplement_trip")

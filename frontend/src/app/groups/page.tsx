@@ -216,9 +216,9 @@ export default function GroupsManagementPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="h-full min-h-0 flex flex-col gap-3">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+      <div className="shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div>
           <h1 className="text-base font-bold text-slate-900 uppercase">Quản Lý Nhóm Zalo</h1>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -257,12 +257,12 @@ export default function GroupsManagementPage() {
       {/* Toolbar Filter */}
       <form
         onSubmit={handleSearch}
-        className="bg-white border border-slate-200 p-3 rounded-sm flex flex-col sm:flex-row items-center justify-between gap-3 text-xs"
+        className="shrink-0 bg-white border border-slate-200 p-3 rounded-sm flex flex-col sm:flex-row items-center justify-between gap-3 text-xs"
       >
         <div className="w-full sm:w-80">
           <input
             type="text"
-            placeholder="Tìm theo tên nhóm hoặc Zalo Group ID..."
+            placeholder="Tìm theo tên nhóm hoặc mã nhóm..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"
@@ -273,22 +273,26 @@ export default function GroupsManagementPage() {
           <select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
-            className="bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-800 focus:outline-none focus:border-slate-500 text-xs"
+            className={`bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 focus:outline-none focus:border-slate-500 text-xs ${
+              roleFilter ? "text-slate-800" : "text-slate-400"
+            }`}
           >
-            <option value="">Tất cả vai trò</option>
-            <option value="DESTINATION">Khách hàng</option>
-            <option value="SOURCE">Nhà xe</option>
-            <option value="DHVT">Nội bộ ĐHVT</option>
+            <option value="" className="text-slate-400">Chọn vai trò</option>
+            <option value="DESTINATION" className="text-slate-800">Khách hàng</option>
+            <option value="SOURCE" className="text-slate-800">Nhà xe</option>
+            <option value="DHVT" className="text-slate-800">Nội bộ ĐHVT</option>
           </select>
 
           <select
             value={sendModeFilter}
             onChange={(e) => setSendModeFilter(e.target.value)}
-            className="bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-800 focus:outline-none focus:border-slate-500 text-xs"
+            className={`bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 focus:outline-none focus:border-slate-500 text-xs ${
+              sendModeFilter ? "text-slate-800" : "text-slate-400"
+            }`}
           >
-            <option value="">Tất cả chế độ gửi</option>
-            <option value="AUTO">Tự động gửi</option>
-            <option value="MANUAL">Chờ duyệt</option>
+            <option value="" className="text-slate-400">Chọn chế độ gửi</option>
+            <option value="AUTO" className="text-slate-800">Tự động gửi</option>
+            <option value="MANUAL" className="text-slate-800">Chờ duyệt</option>
           </select>
 
           <button
@@ -301,16 +305,16 @@ export default function GroupsManagementPage() {
       </form>
 
       {/* Data Table */}
-      <div className="bg-white border border-slate-200 rounded-sm overflow-hidden">
-        <div className="p-2.5 border-b border-slate-200 text-xs text-slate-500 flex items-center justify-between">
+      <div className="flex-1 min-h-0 bg-white border border-slate-200 rounded-sm overflow-hidden flex flex-col">
+        <div className="shrink-0 p-2.5 border-b border-slate-200 text-xs text-slate-500 flex items-center justify-between">
           <span>
             Hiển thị <strong className="text-slate-900">{groups.length}</strong> nhóm
           </span>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="flex-1 min-h-[220px] overflow-auto">
           <table className="w-full text-left text-xs border-collapse">
-            <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200 whitespace-nowrap">
+            <thead className="bg-slate-50 sticky top-0 z-10 text-slate-700 font-semibold border-b border-slate-200 whitespace-nowrap">
               <tr>
                 <th className="py-2.5 px-3">Tên nhóm</th>
                 <th className="py-2.5 px-3">Vai trò</th>
@@ -644,7 +648,7 @@ export default function GroupsManagementPage() {
                 <input
                   type="text"
                   required
-                  placeholder="VD: 6469608867469758994"
+                  placeholder="Ví dụ: 6469608867469758994"
                   value={newZaloId}
                   onChange={(e) => setNewZaloId(e.target.value)}
                   className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 font-mono focus:outline-none focus:border-slate-500"
@@ -655,7 +659,7 @@ export default function GroupsManagementPage() {
                 <label className="block text-slate-600 mb-1 font-medium">Tên nhóm:</label>
                 <input
                   type="text"
-                  placeholder="VD: Khách 1"
+                  placeholder="Ví dụ: Khách 1"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   className="w-full bg-white border border-slate-300 rounded-sm px-3 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"

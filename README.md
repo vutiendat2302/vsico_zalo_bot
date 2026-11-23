@@ -1,4 +1,6 @@
-# VSICO Zalo Bot & TMS Integration (v1.0.0)
+# VSICO Zalo Bot & TMS Integration (v1.5.0)
+
+Phiên bản hiện tại được quản lý tập trung tại tệp [`VERSION`](./VERSION) và nhật ký phát hành tại [`CHANGELOG.md`](./CHANGELOG.md).
 
 Hệ thống tự động hóa tiếp nhận, bóc tách, đối chiếu kế hoạch vận tải container đa kênh, tích hợp hai chiều với phần mềm `be-tms` và trợ lý ảo vận tải phục vụ 3 vai trò (Khách hàng, Nhà xe, Điều hành vận tải - ĐHVT).
 
@@ -36,7 +38,7 @@ flowchart TD
     end
 
     subgraph Storage_External["Hạ tầng Lưu trữ & Hệ thống Ngoài"]
-        DB[("MySQL 8.4 (23 Bảng Snowflake ID 64-bit)")]
+        DB[("MySQL 8.4 (24 Bảng Snowflake ID 64-bit)")]
         MINIO[("MinIO S3 Storage (Presigned URL)")]
         TMS["Hệ thống be-tms (Đồng bộ Danh mục, Kế hoạch & Ghi ngược)"]
         FE["Frontend Dashboard (Next.js 16 / React 19)"]
@@ -71,13 +73,19 @@ flowchart TD
 
 1. **[`backend/`](./backend/BACKEND.md)**: Lõi xử lý nghiệp vụ viết bằng Python 3.12+ và FastAPI theo kiến trúc Clean Architecture (`api`, `assistant`, `config`, `domain`, `handlers`, `infrastructure`, `ingestion`, `messaging`, `observability`, `outbound`, `parsing`, `validation`).
    - Tiếp nhận tin nhắn qua `POST /webhook` (< 50ms), lưu thô vào `zalo_messages` và đẩy vào hàng đợi `FIFOExtractionQueue`.
-   - Bóc tách thông tin vận tải đa tầng: **Tầng 1** (Regex & kiểm tra chữ số kiểm tra container ISO 6346 Modulo 11) -> **Tầng 2** (`LocalNLPExtractor` kết hợp **PhoBERT** tách từ ghép tiếng Việt & nhận diện thực thể BIO NER, **Từ điển danh mục** `vehicles`/`drivers`/`customers`/`warehouses` và **RapidFuzz** so khớp mờ) -> **Tầng 3** (Fallback sang `ai-service` khi thiếu trường hoặc độ tự tin thấp).
-   - Đối chiếu kế hoạch bằng `PlanResolutionEngine` xử lý 6 nhánh nghiệp vụ (`TH1` đến `TH6`), gom nhóm theo từng xe (`resolve_batch`), tự động kế thừa xe/tài xế nguyên tử từ lệnh trả (`RO`) sang lệnh đóng ghép vỏ (`LO`) và tự học bí danh kho (`WarehouseAlias`) khi ĐHVT duyệt ca trên Web.
-   - Trợ lý ảo vận tải (`src/assistant/`) phục vụ 3 vai trò: Khách hàng, Nhà xe (có luồng xác nhận 2 bước khi cập nhật xe/tài xế) và ĐHVT (tra cứu tổng quan lệnh đóng/lệnh trả toàn hệ thống hoặc theo từng vùng miền/tỉnh thành, cảnh báo vỏ, trùng xe, tóm tắt ca ưu tiên; chặn mọi thao tác ghi/duyệt trên Zalo qua `BLOCK_WRITE`).
+   - Bóc tách thông tin vận tải đa tầng: **Tầng 1** (Precision Regex tại `src/domain/patterns.py` cho biển số đầu kéo loại trừ R/RM, biển số rơ-moóc, số container ISO 6346, đa số điện thoại tài xế dạng `09..1 | 09..2` kèm hỗ trợ NBSP Zalo `\u00a0`) -> **Tầng 2** (`PhoBertLocalNlpEngine` chạy mặc định trọng số thật `vinai/phobert-base-v2` ở chế độ `phobert_transformers_local` với ngưỡng `INTENT_MIN_CONFIDENCE = 0.65`, kết hợp Từ điển danh mục TMS và **RapidFuzz**) -> **Tầng 3** (Fallback sang `ai-service` khi Tầng 2 chưa đủ độ tin cậy).
+   - Quy trình đối chiếu kế hoạch & đồng bộ dữ liệu lên TMS (`PlanResolutionEngine` & `CarrierFlowService`):
+     - Lệnh Trả (`RO`) và Lệnh Đóng độc lập (`LO` đã có số cont) hoạt động đồng nhất: nhóm `AUTO` đủ 5 trường tự đồng bộ TMS ngay, nhóm `MANUAL` chuyển nhóm ĐHVT duyệt.
+     - Lệnh Đóng kết hợp (`RO + LO` dùng chung cont): Lần 1 khi lệnh trả chưa có xe trên TMS, nhóm `MANUAL` gửi thông báo cả 2 lệnh tới ĐHVT; nhóm `AUTO` tự cập nhật lệnh trả (`RO`) lên TMS và gửi tin hỏi xác nhận/duyệt lệnh đóng (`LO`) cho Nhà xe.
+     - Container hợp lệ không có trong kế hoạch (`SHIPPING_NOT_FOUND`): vừa gửi cảnh báo thân thiện tới Nhà xe vừa báo ngay sang nhóm Zalo ĐHVT.
+   - Trải nghiệm vận hành Zalo cho Nhà xe & ĐHVT (`src/assistant/`, `src/outbound/`):
+     - **Nhà xe**: Chỉ nhóm Nhà xe áp dụng cửa sổ đợi im lặng 20s từ tin cuối kèm trần tối đa 60s (`GROUP_PROCESS_DELAY_SECONDS=20`, `GROUP_PROCESS_MAX_WAIT_SECONDS=60`) và bộ gom mảnh tin `carrier_fragment_buffer` để gộp nhiều tin rời rạc; hỗ trợ trích xuất Danh thiếp Zalo, xác nhận nhanh 5 trường OCR, câu thông báo lỗi thân thiện chuẩn `[VSICO] - ...` không lộ mã kỹ thuật (`OutboundTemplateBuilder`), lấy mẫu 5 dòng (`mẫu LOxxxx`), xem chuyến thiếu, báo sự cố (`[KHẨN]`).
+     - **ĐHVT**: Nhóm Zalo ĐHVT (`DHVT`), Khách hàng (`DESTINATION`) và Chat cá nhân (`DIRECT_CHAT`) phản hồi ngay lập tức; mọi thông báo ca duyệt gửi ĐHVT hiển thị rõ **Tên nhóm Zalo nguồn & Tên nhà xe** kèm link rút gọn 15 ký tự (`/[code]`), tự động gom nhiều ca/quá hạn cùng lúc thành 1 tin duy nhất theo chuẩn `[VSICO] - ...`; hỗ trợ nhân viên ĐHVT trả lời trực tiếp trên Zalo (`ok`, `oki`, `duyệt`, `đồng ý`, `sửa ...`, `hủy ...`) và chỉ phát **1 tin nhắn duy nhất** công khai tên ĐHVT đã xử lý + phản hồi ngược nhóm Nhà xe; hỗ trợ tra cứu thống kê ngày vs chi tiết lệnh theo tỉnh (`dhvt_get_province_plans`) kèm tỷ lệ `%` đóng/mở, kết xuất ảnh PNG chứa bảng thống kê lẫn bảng chi tiết lệnh (`HtmlReportImageGenerator`) và Watchdog giám sát Zalo OA (`ZaloOaWatchdog` + SSE `/api/events/stream`).
+   - API Kiểm thử NLP chuyên biệt tại `POST /api/sandbox/nlp-analyze` (đồng bộ với Postman Collection `vsico_api_zalo`).
    - Chi tiết luồng nghiệp vụ Zalo được đặc tả tại [`backend/zalo.md`](./backend/zalo.md).
 2. **[`ai-service/`](./ai-service/AISERVICE.md)**: Microservice AI & OCR độc lập, không trạng thái (Stateless), chỉ giao tiếp nội bộ với `backend` qua `X-Internal-Token`. Đảm nhiệm OCR ảnh/PDF lệnh giao nhận (PaddleOCR kết hợp Gemini Vision), bóc tách thực thể phức tạp, phân loại ý định trợ lý cho câu hỏi khó và Map địa chỉ kho đa tầng (`plan_cont` -> `habit` -> `fuzzy (RapidFuzz)` -> `vector` -> `llm`). Toàn bộ SĐT tài xế đều được che (`0903xxxx59`) trước khi gửi lên Cloud LLM.
 3. **[`frontend/`](./frontend/FRONTEND.md)**: Bảng điều khiển Web Quản lý (Next.js 16 App Router, React 19, TypeScript 5, Tailwind CSS v4) dành cho ĐHVT và Admin. Hỗ trợ theo dõi kế hoạch vận chuyển, xử lý ca chờ duyệt (`/reviews`) với danh sách kế hoạch ứng viên gợi ý (`candidate_plans`), quản lý nhóm Zalo thời gian thực (`/groups`), quản lý danh mục đồng bộ từ TMS (`/master/*`), giả lập luồng tin nhắn (`/sandbox`) và quản trị người dùng (`/admin/users`).
-4. **[`database/`](./database/DATABASE.md)**: Hệ quản trị cơ sở dữ liệu MySQL 8.4+ gồm **23 bảng** chia thành 4 nhóm nghiệp vụ chính, sử dụng khóa chính **Snowflake ID 64-bit (`BigInteger`)** sinh tại tầng ứng dụng và các khóa đồng bộ TMS (`BigInteger` có đánh chỉ mục).
+4. **[`database/`](./database/DATABASE.md)**: Hệ quản trị cơ sở dữ liệu MySQL 8.4+ gồm **24 bảng** chia thành 4 nhóm nghiệp vụ chính, sử dụng khóa chính **Snowflake ID 64-bit (`BigInteger`)** sinh tại tầng ứng dụng và các khóa đồng bộ TMS (`BigInteger` có đánh chỉ mục).
 5. **[`oa-bridge/`](./oa-bridge/OA_BRIDGE.md) & [`zca-js/`](./zca-js/ZCA_BRIDGE.md)**: Hai module cầu nối Zalo viết bằng Node.js. `oa-bridge` tích hợp Zalo Official Account (hỗ trợ nhóm GMF và chat cá nhân `direct_<user_id>`, tự động đồng bộ danh sách nhóm thực tế sang Backend); `zca-js` duy trì kết nối WebSocket thời gian thực và cung cấp REST API gửi tin nhắn.
 
 ---
@@ -89,13 +97,13 @@ vsico_zalo_bot/
 ├── backend/                  # FastAPI Core Backend (Clean Architecture, 23 ORM models, Pytest & Postman tests)
 │   ├── BACKEND.md            # Đặc tả kỹ thuật chi tiết của phân hệ Backend
 │   ├── zalo.md               # Đặc tả nghiệp vụ bóc tách, đối chiếu 6 nhánh và Trợ lý AI 3 vai trò
-│   └── tests/postman/        # Bộ kịch bản kiểm thử Postman chuyên nghiệp (01 -> 15)
+│   └── tests/postman/        # Bộ kịch bản kiểm thử Postman (01 -> 17 & Collection v2)
 ├── ai-service/               # Stateless AI & OCR Microservice (PaddleOCR, Gemini, RapidFuzz Warehouse Matcher)
 │   └── AISERVICE.md          # Đặc tả kỹ thuật của phân hệ AI Service
 ├── frontend/                 # Next.js 16 Web Dashboard cho ĐHVT & Admin
 │   └── FRONTEND.md           # Đặc tả kiến trúc và giao diện điều hành Frontend
 ├── database/                 # Thiết kế CSDL MySQL 8.4+ và sơ đồ ERD
-│   └── DATABASE.md           # Đặc tả chi tiết 23 bảng dữ liệu và quy ước Snowflake ID
+│   └── DATABASE.md           # Đặc tả chi tiết 24 bảng dữ liệu và quy ước Snowflake ID
 ├── oa-bridge/                # Cầu nối Zalo Official Account (Webhook & GMF Group Sync)
 │   └── OA_BRIDGE.md          # Tài liệu cấu hình và API của OA Bridge
 ├── zca-js/                   # Cầu nối Zalo WebSocket Listener & Outbound REST Server
@@ -125,7 +133,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Kiểm tra kết nối MySQL và cập nhật Alembic Migration (23 bảng)
+# Kiểm tra kết nối MySQL và cập nhật Alembic Migration (24 bảng)
 python scripts/manage_db.py check
 alembic upgrade head
 
@@ -165,10 +173,10 @@ npm run dev
 
 ## 4. Kiểm thử Hệ thống
 
-- **Kiểm thử tự động Backend (Unit, Integration, NLP PhoBERT + RapidFuzz & Golden Benchmark 56 mẫu)**:
+- **Kiểm thử tự động Backend (169 kịch bản chạy Proxy-only `ZALO_PROXY_ONLY=True`, NLP PhoBERT + RapidFuzz & Golden Benchmark)**:
   ```bash
   cd backend
-  .venv/bin/pytest tests -v
+  ENABLE_PHOBERT_TRANSFORMERS=1 HF_HUB_OFFLINE=1 .venv/bin/pytest tests -v
   ```
 - **Kiểm thử tự động AI Service**:
   ```bash
@@ -181,4 +189,4 @@ npm run dev
   npm run lint
   npm run build
   ```
-- **Kịch bản Kiểm thử Postman**: Xem danh mục 15 tài liệu hướng dẫn kiểm thử trên giao diện Postman tại [`backend/tests/postman/README.md`](./backend/tests/postman/README.md) (đặc biệt kịch bản tổng hợp số 15: [`15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md`](./backend/tests/postman/15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md)).
+- **Kịch bản Kiểm thử Postman**: Xem danh mục 17 tài liệu hướng dẫn và Postman Collection v2.1 tại [`backend/tests/postman/README.md`](./backend/tests/postman/README.md) (đặc biệt kịch bản tổng hợp số 15 [`15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md`](./backend/tests/postman/15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md) và [`17_tms_dispatch_assignment.md`](./backend/tests/postman/17_tms_dispatch_assignment.md)).

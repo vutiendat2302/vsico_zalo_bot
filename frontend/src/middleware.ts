@@ -60,7 +60,7 @@ export function middleware(request: NextRequest) {
   // 2. Chưa đăng nhập hoặc JWT đã hết hạn -> Dọn cookie và chuyển về /login
   if (!isLoginPage && !isAuthenticated) {
     const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("from", pathname);
+    loginUrl.searchParams.set("from", `${pathname}${request.nextUrl.search}`);
     return clearExpiredCookies(NextResponse.redirect(loginUrl));
   }
 

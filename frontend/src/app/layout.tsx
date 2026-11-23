@@ -15,10 +15,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="vi">
-      <body className="bg-slate-50 text-slate-900 min-h-screen flex flex-col font-sans antialiased">
+      <body className="bg-slate-50 text-slate-900 h-dvh overflow-hidden flex flex-col font-sans antialiased">
         <ToastProvider>
           <Navbar />
-          <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-10 flex flex-col">
+          <main className="flex-1 min-h-0 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col overflow-y-auto">
             {children}
           </main>
         </ToastProvider>

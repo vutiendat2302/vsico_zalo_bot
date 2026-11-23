@@ -192,7 +192,7 @@ class Driver(Base):
     )
     full_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     normalized_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     identity_no: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     license_no: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -242,7 +242,7 @@ class TransportPlan(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     carrier_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("carriers.id"), nullable=True, index=True)
     driver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    driver_phone: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    driver_phone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     tms_sync_status: Mapped[str] = mapped_column(String(32), nullable=False, default="NOT_STARTED", server_default="NOT_STARTED")
     plan_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
@@ -397,7 +397,7 @@ class TruckRecord(Base):
     truck_plate: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     trailer_plate: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     driver_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    driver_phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    driver_phone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     raw_data: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now

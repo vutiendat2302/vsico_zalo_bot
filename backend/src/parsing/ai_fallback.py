@@ -179,7 +179,7 @@ class AIFallbackExtractor:
         for idx, item in enumerate(ai_res.items, start=1):
             raw_plate = item.get("plate_number") or item.get("plate")
             norm_plate = clean_plate(raw_plate)
-            raw_trailer = item.get("trailer_number")
+            raw_trailer = item.get("trailer_number") or item.get("trailer_plate")
             norm_trailer = clean_plate(raw_trailer) if raw_trailer else None
             cont_no = clean_container(item.get("container_no") or item.get("cont_no"))
             phone = clean_phone(item.get("driver_phone")) if item.get("driver_phone") else None

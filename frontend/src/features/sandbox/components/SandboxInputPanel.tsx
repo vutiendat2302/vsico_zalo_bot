@@ -385,7 +385,7 @@ export function SandboxInputPanel({
             type="text"
             value={timestamp}
             onChange={(e) => onTimestampChange(e.target.value)}
-            placeholder="Giờ gửi ISO (tùy chọn)"
+            placeholder="Giờ gửi chuẩn thời gian (tùy chọn)"
             className="w-full px-2 py-1 text-xs font-mono text-slate-900 bg-white border border-slate-300 rounded-sm focus:outline-none focus:border-purple-700"
           />
         </div>

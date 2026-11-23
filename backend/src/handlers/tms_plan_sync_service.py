@@ -305,7 +305,16 @@ def sync_transport_plans_from_tms(
                 plan_obj.container_status_message = c_status_msg
                 plan_obj.dispatch_state = order.get("dispatch_state")
                 plan_obj.cargo_weight = _to_decimal(order.get("gross_weight"))
-                plan_obj.required_time = (order.get("required_time") or "").strip() or None
+                raw_req_time = (
+                    order.get("required_time")
+                    or (disp_sub.get("required_time") if isinstance(disp_sub, dict) else None)
+                    or (
+                        points[0].get("required_time")
+                        if isinstance(points, list) and points and isinstance(points[0], dict)
+                        else None
+                    )
+                )
+                plan_obj.required_time = str(raw_req_time).strip() or None if raw_req_time else None
                 plan_obj.customer_name = cust_name
                 plan_obj.customer_id = cust_id
                 plan_obj.warehouse_id = wh_id

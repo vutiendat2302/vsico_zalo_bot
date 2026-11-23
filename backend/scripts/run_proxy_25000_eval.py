@@ -1995,7 +1995,7 @@ def main() -> None:
         w.writerow(["=== SECTION 1: TONG QUAN HE THONG & 26 CHI SO DANH GIA ==="])
         w.writerow(["Nhom chi so", "Chi so", "Gia tri toan bo (25000)", "Don vi", "Ghi chu danh gia"])
         metric_spec = [
-            ("00. Tong quan", "Tong kich ban", overall["total"], "scenarios", f"Wall clock={total_wall_s}s"),
+            ("00. Tong quan", "Tong kich ban", overall["total"], "scenarios", f"Wall clock={total_wall_s}s | NLP={evaluator.nlp_engine.backend_mode} ({evaluator.nlp_engine.model_name})"),
             ("00. Tong quan", "So ca PASS (Core Local Proxy)", overall["pass"], "scenarios", ""),
             ("00. Tong quan", "So ca FAIL (Can nang cap / LLM)", overall["fail"], "scenarios", ""),
             ("00. Tong quan", "So ca BLOCKED (An toan / Quyen)", overall["blocked"], "scenarios", ""),
@@ -2201,6 +2201,7 @@ def main() -> None:
     ewb.save(eval_wb_path)
 
     # In tóm tắt để kiểm chứng nhanh
+    print(f"NLP ENGINE: backend_mode={evaluator.nlp_engine.backend_mode} | model_name={evaluator.nlp_engine.model_name}")
     print(f"DONE in {total_wall_s}s | PASS={overall['pass']}/{overall['total']} ({overall['pass_rate']}%) | FAIL={overall['fail']} | BLOCKED={overall['blocked']}")
     print(f"Entity P={overall['entity_precision']}% R={overall['entity_recall']}% F1={overall['entity_f1']}%")
     print(f"Tier1 Rule={overall['tier1_rule_rate']}% | Tier2 Local NLP={overall['tier2_local_nlp_rate']}% | Tier3 LLM Needed={overall['tier3_llm_fallback_rate']}% (Raw AI Gate={overall['llm_gate_raw_rate']}%)")

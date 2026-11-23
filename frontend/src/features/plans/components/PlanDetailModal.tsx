@@ -13,46 +13,70 @@ interface PlanDetailModalProps {
   onClose: () => void;
 }
 
+/**
+ * Định dạng phương thức giao nhận sang tiếng Việt.
+ */
 export function formatDeliveryTerm(term?: number | null): string {
   if (term === 1) return "Nguyên cont";
   if (term === 2) return "Kiểm đếm";
   return "—";
 }
 
+/**
+ * Định dạng kích cỡ và loại container hiển thị.
+ */
 export function formatContainerSizeBadge(size?: string | null, type?: string | null): string {
   if (!size) return "—";
   if (type) return `${size}${type}`;
   return `${size}HC`;
 }
 
+/**
+ * Định dạng quyền sở hữu vỏ container sang nhãn thân thiện.
+ */
 function formatOwnership(ownership?: number | null): string {
-  if (ownership === 1) return "COC (vỏ VSICO)";
-  if (ownership === 2) return "SOC";
+  if (ownership === 1) return "Vỏ VSICO";
+  if (ownership === 2) return "Vỏ chủ hàng";
   return "—";
 }
 
+/**
+ * Định dạng trạng thái điều phối TMS sang tiếng Việt.
+ */
 function formatDispatchState(state?: number | null): string {
   if (state === 2) return "Chờ điều phối";
-  if (state === 3) return "Đã nhận / Sẵn sàng";
+  if (state === 3) return "Đã nhận";
   if (state === 5) return "Đang thực hiện";
-  if (state !== null && state !== undefined) return `Trạng thái #${state}`;
-  return "Chưa gán TMS";
+  if (state !== null && state !== undefined) return "Đã đồng bộ";
+  return "Chưa gán điều phối";
 }
 
+/**
+ * Hiển thị trạng thái cảnh báo tình trạng vỏ container.
+ */
 function renderWarningBadge(warning?: string | null, msg?: string | null) {
   if (!warning && !msg) return "—";
   const label = msg || warning;
-  let cls = "bg-slate-100 text-slate-700 border-slate-200";
-  if (warning === "normal") cls = "bg-emerald-50 text-emerald-700 border-emerald-200";
-  else if (warning === "over_combined") cls = "bg-amber-50 text-amber-700 border-amber-200";
-  else if (warning === "empty_drop") cls = "bg-rose-50 text-rose-700 border-rose-200";
-  else if (warning === "other_requested" || warning === "soc") {
-    cls = "bg-purple-50 text-purple-700 border-purple-200";
+  let dotCls = "bg-slate-400";
+  let textCls = "text-slate-700";
+  if (warning === "normal") {
+    dotCls = "bg-emerald-500";
+    textCls = "text-emerald-700";
+  } else if (warning === "over_combined") {
+    dotCls = "bg-amber-500";
+    textCls = "text-amber-700";
+  } else if (warning === "empty_drop") {
+    dotCls = "bg-rose-500";
+    textCls = "text-rose-700";
+  } else if (warning === "other_requested" || warning === "soc") {
+    dotCls = "bg-purple-600";
+    textCls = "text-purple-700";
   }
 
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[11px] font-medium border ${cls}`}>
-      {label}
+    <span className={`inline-flex items-center gap-1.5 text-base font-medium ${textCls}`}>
+      <span className={`w-2 h-2 rounded-full ${dotCls}`} />
+      <span>{label}</span>
     </span>
   );
 }
@@ -64,14 +88,10 @@ export function PlanDetailModal({ plan, onClose }: PlanDetailModalProps) {
   if (!plan) return null;
 
   const isTra = plan.order_type === "tra";
-  const headerPrefix = isTra ? "Lệnh trả" : "Lệnh đóng";
-  const headerTitle = `${headerPrefix}${plan.order_code ? ` (${plan.order_code})` : ""}${
-    plan.forwarder_name ? ` — ${plan.forwarder_name}` : ""
-  }`;
+  const headerTitle = plan.order_code || (isTra ? "Lệnh trả" : "Lệnh đóng");
   const subtitleParts = [
     plan.plan_date ? `Ngày: ${plan.plan_date}` : null,
-    plan.container_no ? `Cont: ${plan.container_no}` : null,
-    plan.tms_order_id ? `Mã TMS: ${plan.tms_order_id}` : null,
+    plan.container_no ? `Container: ${plan.container_no}` : null,
   ].filter(Boolean);
 
   const points = Array.isArray(plan.points_json) ? plan.points_json : [];
@@ -81,55 +101,50 @@ export function PlanDetailModal({ plan, onClose }: PlanDetailModalProps) {
       open={!!plan}
       onClose={onClose}
       title={headerTitle}
-      subtitle={subtitleParts.join("  |  ") || `ID: ${plan.id}`}
+      subtitle={subtitleParts.join("  |  ") || undefined}
+      maxWidthClass="max-w-4xl"
     >
       {/* 1. THÔNG TIN CHUNG */}
-      <DetailSection title="Thông tin chung">
-        <DetailField label="Mã lệnh" value={plan.order_code || `#${plan.stt || plan.id}`} />
+      <DetailSection title="Thông tin chung" columns={3}>
+        <DetailField label="Mã lệnh" value={plan.order_code || (plan.stt ? `Dòng ${plan.stt}` : "—")} />
         <DetailField
           label="Loại lệnh"
           value={
-            <span
-              className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[11px] font-medium ${
-                isTra
-                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                  : "bg-sky-50 text-sky-700 border border-sky-200"
-              }`}
-            >
-              {isTra ? "Trả hàng (Nhập - I)" : "Đóng hàng (Xuất - X)"}
+            <span className={isTra ? "text-emerald-700 font-semibold" : "text-purple-700 font-semibold"}>
+              {isTra ? "Trả hàng" : "Đóng hàng"}
             </span>
           }
         />
-        <DetailField label="Đơn vị Forwarder" value={plan.forwarder_name || "—"} />
+        <DetailField label="Đơn vị giao nhận" value={plan.forwarder_name || "—"} />
         <DetailField label="Khách hàng" value={plan.customer_name || "—"} />
         <DetailField label="Hàng hóa" value={plan.cargo_type || "—"} />
         <DetailField
-          label={isTra ? "Số B/L" : "Số Booking"}
+          label={isTra ? "Số vận đơn" : "Số đặt chỗ"}
           value={plan.bill_of_lading_no || plan.booking_no || "—"}
         />
       </DetailSection>
 
       {/* 2. CONTAINER & TÌNH TRẠNG VỎ */}
-      <DetailSection title="Container & Vỏ">
+      <DetailSection title="Container & Vỏ" columns={3}>
         <DetailField
-          label="Số Container"
+          label="Số container"
           value={
-            <span className="font-mono font-semibold text-slate-900">
-              {plan.container_no || "Chưa cấp số cont"}
+            <span className="font-semibold text-slate-900 tabular-nums">
+              {plan.container_no || "Chưa cấp số container"}
             </span>
           }
         />
-        <DetailField label="Số Seal" value={plan.seal_no || "—"} />
+        <DetailField label="Số chì" value={<span className="tabular-nums">{plan.seal_no || "—"}</span>} />
         <DetailField
-          label="Kích cỡ / Loại cont"
+          label="Kích cỡ container"
           value={formatContainerSizeBadge(plan.container_size, plan.container_type)}
         />
-        <DetailField label="Phân hạng vỏ (Grade)" value={plan.container_grade || "—"} />
+        <DetailField label="Phân hạng vỏ" value={plan.container_grade || "—"} />
         <DetailField label="Loại vỏ" value={formatOwnership(plan.container_ownership)} />
         <DetailField label="Phương thức giao nhận" value={formatDeliveryTerm(plan.delivery_term)} />
         <DetailField
-          label="Tải trọng (cả vỏ)"
-          value={plan.cargo_weight != null ? `${Number(plan.cargo_weight).toFixed(2)}T` : "—"}
+          label="Tải trọng"
+          value={plan.cargo_weight != null ? `${Number(plan.cargo_weight).toFixed(2)} tấn` : "—"}
         />
         <DetailField
           label="Tình trạng vỏ"
@@ -138,7 +153,7 @@ export function PlanDetailModal({ plan, onClose }: PlanDetailModalProps) {
       </DetailSection>
 
       {/* 3. TUYẾN & ĐỊA ĐIỂM */}
-      <DetailSection title="Tuyến & Địa điểm">
+      <DetailSection title="Tuyến & Địa điểm" columns={3}>
         <DetailField
           label={isTra ? "Kho trả" : "Kho đóng"}
           value={plan.warehouse_name || "—"}
@@ -149,49 +164,45 @@ export function PlanDetailModal({ plan, onClose }: PlanDetailModalProps) {
         <DetailField label="Cảng nhập / xuất" value={plan.full_depot || plan.empty_depot || "—"} />
         <DetailField label="Tuyến vận chuyển" value={plan.route_name || "—"} />
         <DetailField label="Tàu - Số chuyến" value={plan.vessel_voyage || "—"} />
-        <DetailField label={isTra ? "ETA tàu" : "ETD tàu"} value={plan.eta || "—"} />
+        <DetailField label={isTra ? "Ngày tàu đến" : "Ngày tàu đi"} value={plan.eta || "—"} />
         <DetailField label="Địa chỉ chi tiết" value={plan.delivery_address || "—"} fullWidth />
       </DetailSection>
 
       {/* 4. THỜI GIAN & ĐIỀU PHỐI XE / ZALO */}
-      <DetailSection title="Thời gian, Điều phối & Zalo">
-        <DetailField label="YC giờ có mặt" value={plan.required_time || "—"} />
-        <DetailField label="Trạng thái TMS" value={formatDispatchState(plan.dispatch_state)} />
-        <DetailField label="Đội xe / Nhà xe" value={plan.fleet_partner || plan.carrier_name || "—"} />
-        <DetailField label="Biển số xe" value={plan.planned_truck_plate || "—"} />
-        <DetailField label="Biển số rơ-moóc" value={plan.planned_trailer_plate || "—"} />
+      <DetailSection title="Thời gian, Điều phối & Zalo" columns={3}>
+        <DetailField label="Giờ có mặt" value={<span className="tabular-nums">{plan.required_time || "—"}</span>} />
+        <DetailField label="Trạng thái điều phối" value={formatDispatchState(plan.dispatch_state)} />
+        <DetailField label="Nhà xe phụ trách" value={plan.fleet_partner || plan.carrier_name || "—"} />
+        <DetailField label="Biển số xe" value={<span className="tabular-nums">{plan.planned_truck_plate || "—"}</span>} />
+        <DetailField label="Biển số rơ-moóc" value={<span className="tabular-nums">{plan.planned_trailer_plate || "—"}</span>} />
         <DetailField label="Tài xế" value={plan.driver_name || "—"} />
-        <DetailField label="SĐT tài xế" value={plan.driver_phone || "—"} />
+        <DetailField label="SĐT tài xế" value={<span className="tabular-nums">{plan.driver_phone || "—"}</span>} />
         <DetailField label="Cán bộ giao nhận" value={plan.operator_staff || "—"} />
         <DetailField
           label="Nhóm Zalo nhận tin"
-          value={
-            <span className="font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-sm">
-              {plan.group_name ? `${plan.group_name} (${plan.group_id})` : plan.group_id || "—"}
-            </span>
-          }
+          value={plan.group_name || "Chưa gán nhóm"}
         />
       </DetailSection>
 
-      {/* 5. LỊCH TRÌNH ĐA ĐIỂM (NẾU CÓ) */}
+      {/* 5. LỊCH TRÌNH ĐIỂM (NẾU CÓ) */}
       {points.length > 0 && (
-        <DetailSection title={`Lịch trình điểm (${points.length} điểm)`}>
-          <div className="sm:col-span-2 space-y-1.5">
+        <DetailSection title="Lịch trình điểm" columns={2}>
+          <div className="sm:col-span-2 space-y-2">
             {points.map((pt, idx) => (
               <div
                 key={idx}
-                className="bg-white border border-slate-200 rounded-sm px-2.5 py-2 text-[11px]"
+                className="bg-white border border-slate-200 rounded-sm px-3.5 py-2.5 text-base"
               >
                 <div className="flex items-center justify-between gap-2 font-semibold text-slate-900">
                   <span>
                     Điểm {pt.sequence ?? idx + 1}: {pt.warehouse_name || "Kho"}
                   </span>
-                  <span className="text-purple-700 font-mono">
+                  <span className="text-purple-700 tabular-nums">
                     {pt.required_time || "—"}
                     {pt.end_time ? ` - ${pt.end_time}` : ""}
                   </span>
                 </div>
-                {pt.address && <div className="text-slate-600 mt-0.5">{pt.address}</div>}
+                {pt.address && <div className="text-sm text-slate-600 mt-1">{pt.address}</div>}
               </div>
             ))}
           </div>
@@ -200,7 +211,7 @@ export function PlanDetailModal({ plan, onClose }: PlanDetailModalProps) {
 
       {/* 6. GHI CHÚ & PHÁT SINH */}
       {(plan.notes || plan.extra_fee_notes) && (
-        <DetailSection title="Ghi chú & Phát sinh">
+        <DetailSection title="Ghi chú & Phát sinh" columns={2}>
           <DetailField label="Ghi chú" value={plan.notes || "—"} fullWidth />
           <DetailField label="Phát sinh" value={plan.extra_fee_notes || "—"} fullWidth />
         </DetailSection>

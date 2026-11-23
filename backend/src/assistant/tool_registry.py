@@ -26,6 +26,7 @@ CARRIER_TOOLS = (
     "carrier_list_plans_by_date",
     "carrier_list_incomplete_plans",
     "carrier_get_order_detail",
+    "carrier_get_order_template",
     "carrier_get_vehicle_schedule",
     "carrier_check_submission_status",
     "carrier_supplement_trip",
@@ -39,6 +40,7 @@ CARRIER_TOOLS = (
 )
 DHVT_TOOLS = (
     "dhvt_get_daily_overview",
+    "dhvt_get_province_plans",
     "dhvt_get_unassigned_plans",
     "dhvt_get_order_or_cont_detail",
     "dhvt_get_vehicle_trips",
@@ -52,6 +54,8 @@ DHVT_TOOLS = (
     "dhvt_analyze_change_impact",
     "dhvt_get_audit_timeline",
     "dhvt_get_bot_performance",
+    "dhvt_direct_review_action",
+    "dhvt_remind_carrier",
 )
 WRITE_TOOLS = frozenset(
     {
@@ -62,6 +66,8 @@ WRITE_TOOLS = frozenset(
         "carrier_append_draft",
         "carrier_multi_order_update",
         "carrier_report_issue_or_cancel",
+        "dhvt_direct_review_action",
+        "dhvt_remind_carrier",
         "CONFIRM",
     }
 )
@@ -114,13 +120,26 @@ def execute(
         )
     if call.intent == "get_role_help":
         examples = {
-            "CUSTOMER": "Mai có chuyến nào? | Booking B123 mấy xe? | Cont … xe nào chở? | Xin đổi giờ LO2447 | Ca #… xong chưa?",
-            "CARRIER": "Hôm nay có chuyến nào? | Lệnh nào thiếu chì? | Xe 447.22 chạy chuyến nào? | LO2447 đổi sang xe … | xác nhận #mã đề xuất",
-            "DHVT": "Hôm nay bao nhiêu chuyến? | Ca chờ | Xe nào trùng giờ? | Tại sao ca #… cần duyệt? | Tỷ lệ dùng LLM hôm nay?",
+            "CUSTOMER": (
+                "Menu lệnh nhanh Khách hàng:\n"
+                "- Mai có chuyến nào? | Booking B123 mấy xe? | Cont SELU... xe nào chở?\n"
+                "- Xin đổi giờ LO2447 | Ca #... xong chưa?"
+            ),
+            "CARRIER": (
+                "Menu lệnh nhanh Nhà xe:\n"
+                "- Hôm nay có chuyến nào? | Chuyến thiếu | Lịch ngày mai\n"
+                "- Mẫu LO2564 (lấy mẫu 5 dòng báo xe) | Xe 15H-012.34 chạy chuyến nào?\n"
+                "- Báo sự cố: 'LO2564 kẹt xe trễ 1 tiếng' | Quote tin cũ để đổi tài/bổ sung cont"
+            ),
+            "DHVT": (
+                "Menu lệnh nhanh ĐHVT:\n"
+                "- Ca chờ / Việc gấp | Hôm nay bao nhiêu chuyến? (kèm ảnh bảng thống kê)\n"
+                "- kt LO2564 / kt SELU... / Xe 15H-012.34 (tra cứu 360 độ)\n"
+                "- Nhà xe nào chưa báo đủ hôm nay? | Lệnh lỗi đồng bộ TMS | Xe nào trùng giờ?\n"
+                "- Nhắc nhà xe Tuấn Hưng lệnh thiếu | Nhắc LO2564\n"
+                "- Quote tin báo duyệt và trả lời: 'duyệt' / 'oki' / 'sửa xe ...' / 'hủy ...'"
+            ),
         }
-        return AssistantReply(
-            text=examples[scope.role]
-            + "\nGiờ đến là giờ kế hoạch. ĐHVT xử lý duyệt/sửa/hủy trên Web."
-        )
+        return AssistantReply(text=examples[scope.role])
     runner = {"CUSTOMER": run_customer, "CARRIER": run_carrier, "DHVT": run_dhvt}[scope.role]
     return runner(db, scope, call, message)

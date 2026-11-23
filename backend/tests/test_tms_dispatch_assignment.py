@@ -742,10 +742,14 @@ def test_23_trailer_plate_includes_carrier_mooc_id_and_ro_mooc_no(db_session):
         },
     )
     assert err_matched is None
-    assert payload_matched["carrier_mooc_id"] == tr_a.tms_mooc_id
-    assert payload_matched["ro_mooc_no"] == "15R-181.29"
+    assert payload_matched == {
+        "order_code": env["ro_plan"].order_code,
+        "vehicle_id": env["veh_a"].tms_vehicle_id,
+        "carrier_mooc_id": tr_a.tms_mooc_id,
+    }
+    assert "ro_mooc_no" not in payload_matched
     assert "carrier_mooc_id" in fields_matched
-    assert "ro_mooc_no" in fields_matched
+    assert "ro_mooc_no" not in fields_matched
 
     payload_unknown, _, err_unknown = build_dispatch_assignment_payload(
         db_session,
@@ -757,4 +761,86 @@ def test_23_trailer_plate_includes_carrier_mooc_id_and_ro_mooc_no(db_session):
         "order_code": env["ro_plan"].order_code,
         "carrier_mooc_id": None,
         "ro_mooc_no": "15R-999.99",
+    }
+
+    # Khi SĐT khớp tài xế trong DB nhưng tên gửi kèm viết lệch ("Tịnh Văn Duân" vs "Trần Văn Hùng"),
+    # hoặc tên khớp nhưng SĐT lạ -> chỉ gửi driver_id, không gửi driver_name/driver_phone
+    payload_phone_match, _, err_pm = build_dispatch_assignment_payload(
+        db_session,
+        env["lo_plan"],
+        changed_fields={"driver_name": "Tịnh Văn Duân", "driver_phone": "0986123456"},
+    )
+    assert err_pm is None
+    assert payload_phone_match == {
+        "order_code": env["lo_plan"].order_code,
+        "driver_id": env["drv_a"].tms_driver_id,
+    }
+
+    payload_name_match, _, err_nm = build_dispatch_assignment_payload(
+        db_session,
+        env["lo_plan"],
+        changed_fields={"driver_name": "Trần Văn Hùng", "driver_phone": "0977000111"},
+    )
+    assert err_nm is None
+    assert payload_name_match == {
+        "order_code": env["lo_plan"].order_code,
+        "driver_id": env["drv_a"].tms_driver_id,
+    }
+
+
+def test_24_multi_phone_extraction_validation_and_tms_payload(db_session):
+    """Bắt đủ 2+ SĐT cho 1 tài xế dạng `'09..1 | 09..2'`, hợp lệ hóa và đẩy cả 2 số sang TMS."""
+    from src.parsing.trip_parser import TripParser
+    from src.validation.validators import ContainerValidator
+
+    env = _setup_fixture(db_session)
+    # 1. Nhà xe gửi 2 SĐT cho 1 tài xế + tiền tố dính biển số + tên dính phím
+    msg = (
+        "Xe29C49670 / 29R-30065 / phạmđứcvĩ / '0394251493/0984131254/ VSIU2461945\n"
+        "Xe 29C49722 / 29RM-04802 / Bùi Văn Tuyên / 0375185207 - 0912345678 / VSIU2421290"
+    )
+    lines = ContainerValidator.validate_all(TripParser.parse_message(msg))
+    assert len(lines) == 2
+    assert lines[0].truck_plate == "29C-496.70"
+    assert lines[0].trailer_plate == "29R-300.65"
+    assert lines[0].driver_name == "Phạm Đức Vĩ"
+    assert lines[0].driver_phone == "0394251493 | 0984131254"
+    assert lines[0].validation_status == "VALID"
+
+    assert lines[1].truck_plate == "29C-497.22"
+    assert lines[1].trailer_plate == "29RM-048.02"
+    assert lines[1].driver_phone == "0375185207 | 0912345678"
+    assert lines[1].validation_status == "VALID"
+
+    # 2. Đẩy TMS khi tài xế khớp DB theo 1 trong 2 SĐT -> vẫn gửi kèm đủ 2 SĐT `'09..1 | 09..2'`
+    payload_multi_matched, _, err_mm = build_dispatch_assignment_payload(
+        db_session,
+        env["lo_plan"],
+        changed_fields={
+            "driver_name": "Trần Văn Hùng",
+            "driver_phone": "0986123456 | 0912345678",
+        },
+    )
+    assert err_mm is None
+    assert payload_multi_matched == {
+        "order_code": env["lo_plan"].order_code,
+        "driver_id": env["drv_a"].tms_driver_id,
+        "driver_phone": "0986123456 | 0912345678",
+    }
+
+    # 3. Đẩy TMS khi tài xế ngoài có 2 SĐT -> driver_id: None + driver_name + cả 2 SĐT
+    payload_multi_ext, _, err_me = build_dispatch_assignment_payload(
+        db_session,
+        env["lo_plan"],
+        changed_fields={
+            "driver_name": "Lê Văn Ngoài",
+            "driver_phone": "0394251493/0984131254",
+        },
+    )
+    assert err_me is None
+    assert payload_multi_ext == {
+        "order_code": env["lo_plan"].order_code,
+        "driver_id": None,
+        "driver_phone": "0394251493 | 0984131254",
+        "driver_name": "Lê Văn Ngoài",
     }

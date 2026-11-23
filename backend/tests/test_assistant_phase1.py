@@ -60,8 +60,8 @@ REFERENCE = datetime(2026, 11, 9, 17, 30, tzinfo=UTC)
         ("DHVT", "Nếu hủy lệnh LO2447 thì ảnh hưởng gì?", "dhvt_analyze_change_impact"),
         ("DHVT", "Chuyến LO2447 đã đổi những gì?", "dhvt_get_audit_timeline"),
         ("DHVT", "Hôm nay tỷ lệ dùng LLM?", "dhvt_get_bot_performance"),
-        ("DHVT", "Duyệt ca #123", "BLOCK_WRITE"),
-        ("DHVT", "ok", "BLOCK_WRITE"),
+        ("DHVT", "Duyệt ca #123", "dhvt_direct_review_action"),
+        ("DHVT", "ok", "dhvt_direct_review_action"),
         ("CUSTOMER", "Xe tới km nào?", "UNSUPPORTED"),
     ],
 )
@@ -340,7 +340,7 @@ def dhvt_identity(db):
 @pytest.mark.parametrize(
     "text,expected",
     [
-        ("Hôm nay bao nhiêu chuyến?", "Tổng quan"),
+        ("Hôm nay bao nhiêu chuyến?", "KẾ HOẠCH VẬN CHUYỂN"),
         ("Chuyến nào chưa có xe?", "Kế hoạch"),
         ("LO8200 hiện thế nào?", "LO8200"),
         ("Xe 29C-440.22 chạy chuyến nào?", "29C-440.22"),
@@ -353,7 +353,7 @@ def dhvt_identity(db):
         ("Nếu hủy lệnh LO8200 thì ảnh hưởng gì?", "chỉ đọc"),
         ("LO8200 đã đổi những gì?", "phạm vi"),
         ("Hôm nay tỷ lệ dùng LLM?", "lượt"),
-        ("Duyệt ca #1", "không hỗ trợ"),
+        ("Duyệt ca #1", "Chưa xác định được ca"),
     ],
 )
 def test_dhvt_conversations_are_read_only(db_session, assistant_env, text, expected):
@@ -480,6 +480,7 @@ def test_fill_missing_seal_stays_local_and_queues_customer_notification(db_sessi
     plan = plans[0]
     plan.container_no = "MSCU123456" + str(compute_iso6346_check_digit("MSCU1234560"))
     plan.container_size = "40HC"
+    plan.planned_trailer_plate = "29R-181.29"
     plan.driver_name = "Tài xế test"
     plan.driver_phone = "0903123459"
     plan.delivery_address = "Kho test"
@@ -926,6 +927,7 @@ def test_carrier_missing_container_warning_is_dispatched_to_zalo(db_session, mon
             customer_id=cust.id,
             customer_name=cust.name,
             container_no=cont_ok,
+            planned_trailer_plate="15R-017.85",
             seal_no="SL998877",
             group_id=cust_grp.zalo_group_id,
         )
@@ -960,11 +962,11 @@ def test_carrier_missing_container_warning_is_dispatched_to_zalo(db_session, mon
     reply = db_session.scalar(select(BotReply).where(BotReply.message_id == msg.id))
     assert reply is not None
     assert reply.zalo_msg_id is not None
-    assert "thiếu số container" in reply.reply_text
+    assert "số container" in reply.reply_text.lower()
     assert "khách hàng" not in reply.reply_text
     assert db_session.scalar(select(ReviewCase).where(ReviewCase.message_id == msg.id)) is None
     assert any(
-        c["group_id"] == car_grp.zalo_group_id and "thiếu số container" in str(c["message"])
+        c["group_id"] == car_grp.zalo_group_id and "số container" in str(c["message"]).lower()
         for c in sent_calls
     )
 

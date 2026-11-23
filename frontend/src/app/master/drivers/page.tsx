@@ -77,8 +77,8 @@ export default function DriversPage() {
   }, [search, carrierId, isActive, page]);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="h-full min-h-0 flex flex-col gap-3">
+      <div className="shrink-0 flex items-center justify-between">
         <div>
           <h1 className="text-lg font-semibold text-slate-900">Tài xế</h1>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -87,9 +87,9 @@ export default function DriversPage() {
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-sm overflow-hidden">
+      <div className="flex-1 min-h-0 bg-white border border-slate-200 rounded-sm overflow-hidden flex flex-col">
         {/* Filter Bar */}
-        <div className="p-3 border-b border-slate-200 flex flex-wrap items-center gap-2.5">
+        <div className="shrink-0 p-3 border-b border-slate-200 flex flex-wrap items-center gap-2.5">
           <MasterSearchInput
             value={searchInput}
             onChange={setSearchInput}
@@ -125,9 +125,9 @@ export default function DriversPage() {
         </div>
 
         {/* Table */}
-        <div className="overflow-x-auto">
+        <div className="flex-1 min-h-[220px] overflow-auto">
           <table className="w-full text-left border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-500">
                 <th className="px-4 py-2.5">Họ tên tài xế</th>
                 <th className="px-4 py-2.5">Số điện thoại</th>

@@ -54,12 +54,58 @@ def summary(db: Session, scope: ScopeContext, call: ToolCall) -> AssistantReply:
     if scope.role == "CUSTOMER":
         sent_stmt = sent_stmt.where(OutboundMessage.target_group_id == scope.group_id)
     sent = db.scalar(sent_stmt) or 0
-    date_label = f" {call.entities.plan_date}" if call.entities.plan_date else ""
-    return AssistantReply(
-        text=f"Tổng quan kế hoạch vận chuyển{date_label}: {total} lệnh.\n"
-        f"Đã có xe: {assigned}; chưa có xe: {total - assigned}; đã phát hành thông báo: {sent} lệnh.\n"
-        + "\n".join(f"{kind} / {size or 'Chưa rõ cỡ'}: {count}" for kind, size, count, _ in rows)
+    date_label = (
+        f" | {call.entities.plan_date.strftime('%d/%m')}"
+        if call.entities.plan_date
+        else ""
     )
+    assigned_pct = f"{(assigned / total) * 100:.1f}%".replace(".", ",") if total else "0,0%"
+    unassigned = total - assigned
+    unassigned_pct = f"{(unassigned / total) * 100:.1f}%".replace(".", ",") if total else "0,0%"
+
+    ret_sizes: dict[str, int] = {}
+    load_sizes: dict[str, int] = {}
+    ret_total = 0
+    load_total = 0
+    for kind, size, count, _ in rows:
+        k_low = (kind or "").strip().lower()
+        sz = (size or "").strip()
+        if k_low in ("tra", "return", "ro"):
+            ret_total += count
+            if sz:
+                ret_sizes[sz] = ret_sizes.get(sz, 0) + count
+        elif k_low in ("dong", "load", "lo"):
+            load_total += count
+            if sz:
+                load_sizes[sz] = load_sizes.get(sz, 0) + count
+
+    def _fmt_sizes(size_map: dict[str, int]) -> str:
+        """Định dạng danh sách cỡ container ngắn gọn (VD: 9 cont 20' · 62 cont 40')."""
+        if not size_map:
+            return ""
+        parts = [f"{cnt} cont {sz}'" for sz, cnt in sorted(size_map.items())]
+        return " (" + " · ".join(parts) + ")"
+
+    ret_pct = f"{(ret_total / total) * 100:.1f}%".replace(".", ",") if total else "0,0%"
+    load_pct = f"{(load_total / total) * 100:.1f}%".replace(".", ",") if total else "0,0%"
+
+    breakdown_lines: list[str] = []
+    if ret_total:
+        breakdown_lines.append(f"• Lệnh trả: {ret_total} ({ret_pct}){_fmt_sizes(ret_sizes)}")
+    if load_total:
+        breakdown_lines.append(f"• Lệnh đóng: {load_total} ({load_pct}){_fmt_sizes(load_sizes)}")
+
+    lines = [
+        f"[VSICO] - 📊 KẾ HOẠCH VẬN CHUYỂN{date_label}",
+        "",
+        f"🚛 {total} lệnh vận chuyển",
+        f"✅ Đã bố trí xe: {assigned} ({assigned_pct})",
+        f"⏳ Chưa có xe: {unassigned} ({unassigned_pct})",
+        f"📢 Đã phát hành thông báo: {sent}",
+    ]
+    if breakdown_lines:
+        lines.extend(["", "Phân loại:", *breakdown_lines])
+    return AssistantReply(text="\n".join(lines))
 
 
 def _booking_count_line(db: Session, scope: ScopeContext, entities: Entities) -> tuple[str | None, list[str]]:

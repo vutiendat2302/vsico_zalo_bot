@@ -244,57 +244,6 @@ def list_groups(
     }
 
 
-@router.delete("/test-groups", response_model=dict[str, Any])
-def delete_all_test_groups(db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Xóa tất cả các nhóm thử nghiệm (test groups) khỏi cơ sở dữ liệu.
-
-    Chỉ giữ lại các nhóm thật đang phục vụ vận hành thực tế (ví dụ nhóm đích thật 6469608867469758994).
-    """
-    # Điều kiện nhận diện nhóm test: is_test=True hoặc chứa các tiền tố/mẫu test
-    test_conditions = or_(
-        ZaloGroup.is_test == True,
-        ZaloGroup.zalo_group_id.ilike("%test%"),
-        ZaloGroup.zalo_group_id.ilike("pytest_%"),
-        ZaloGroup.zalo_group_id.ilike("grp_test_%"),
-        ZaloGroup.zalo_group_id.ilike("direct_%"),
-        ZaloGroup.zalo_group_id.ilike("{{%"),
-        ZaloGroup.zalo_group_id == "2001000000000000001",
-        ZaloGroup.zalo_group_id == "3051850159021421440",
-    )
-    test_groups = list(db.scalars(select(ZaloGroup).where(test_conditions)).all())
-    deleted_ids = []
-    deleted_names = []
-
-    for tg in test_groups:
-        deleted_ids.append(tg.id)
-        deleted_names.append(f"{tg.name or tg.zalo_group_id} (ID: {tg.id})")
-        db.delete(tg)
-
-    db.commit()
-
-    # Lấy danh sách nhóm thật còn lại
-    remaining_real_groups = list(db.scalars(select(ZaloGroup).order_by(ZaloGroup.id.asc())).all())
-    remaining_out = [
-        {
-            "id": str(rg.id),
-            "zalo_group_id": rg.zalo_group_id,
-            "name": rg.name,
-            "send_mode": rg.send_mode,
-            "is_active": rg.is_active,
-            "is_test": rg.is_test,
-        }
-        for rg in remaining_real_groups
-    ]
-
-    return {
-        "ok": True,
-        "message": f"Đã xóa thành công {len(deleted_ids)} nhóm thử nghiệm khỏi hệ thống.",
-        "deleted_count": len(deleted_ids),
-        "deleted_groups": deleted_names,
-        "remaining_real_groups": remaining_out,
-    }
-
-
 @router.put("/by-zalo-id/{zalo_group_id}/status", response_model=dict[str, Any])
 def update_real_group_status_by_zalo_id(
     zalo_group_id: str,

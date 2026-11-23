@@ -1,19 +1,33 @@
-"""Module Phân Loại Ý Định Tin Nhắn Zalo & Bộ Lọc Hội Thoại Tối Ưu (Fast 2-Tier Intent Classifier).
+"""Module Phân Loại Ý Định Tin Nhắn Zalo & Bộ Lọc Tín Hiệu Xe 2 Tầng (Fast 2-Tier Intent Classifier).
 
-Tích hợp cơ chế lọc 2 tầng (2-Tier Gatekeeper) siêu nhẹ giúp chặn ngay lập tức các tin nhắn
-giao tiếp xã giao ('chào', 'hello', 'cảm ơn', 'dạ vâng', icon...) trong < 0.05ms mà không tốn
-chi phí phân tích sâu hay gọi AI:
-- Tầng 1 (Instant Social Chat Filter): Kiểm tra độ dài, số lượng chữ số và mẫu câu chào hỏi/xã giao.
-- Tầng 2 (Pattern & Keyword Classifier): Nhận diện chính xác tin báo xe (F1, F2, F3, tự do),
-  tin cập nhật/đổi xe/lùi giờ, tin bổ sung cont/chì, tin hủy chuyến, hoặc lệnh duyệt của ĐHVT.
+Tích hợp cơ chế thẩm định tín hiệu phương tiện (`extract_vehicle_signals`, `classify_junk`) và
+phân cấp ưu tiên xử lý xung đột (Conflict Resolution Hierarchy):
+- Tầng 1 (Junk / Social Chat Filter): Chặn tin rỗng, chỉ emoji, URL không chứa xe/cont,
+  câu chào hỏi/xã giao (`COMMON_CHAT_PHRASES`), tin không có tín hiệu xe -> `IGNORE_CHAT`.
+- Tầng 2 (Pattern & Keyword Classifier): Nhận diện chính xác lệnh duyệt/sửa của ĐHVT,
+  yêu cầu hủy chuyến (`CANCEL_REQUEST`), đổi xe/đổi tài/sửa chì/lùi giờ (`UPDATE_REQUEST`),
+  bổ sung thông tin (`SUPPLEMENT`), hoặc tin báo xe (`PARSE_TRUCK_INFO`).
 """
 
 import re
+from typing import Any
 from src.domain.enums import Intent
+from src.domain.patterns import ANY_PLATE_REGEX, CONT_REGEX, PHONE_PATTERN
+
+
+# Danh sách cụm từ xã giao ngắn không liên quan đến điều xe
+COMMON_CHAT_PHRASES: frozenset[str] = frozenset({
+    "ok", "oke", "okay", "dạ", "da", "vâng", "vang", "dạ em nhận rồi ạ",
+    "da em nhan roi a", "nhận rồi", "nhan roi", "đã nhận", "da nhan",
+    "cảm ơn", "cam on", "cảm ơn anh", "cam on anh", "cảm ơn em", "cam on em",
+    "xin chào", "xin chao", "xin chào cả nhà", "chào cả nhà", "chao ca nha",
+    "chào anh", "chao anh", "ok a", "ok anh", "da vang", "dạ vâng",
+    "dạ a", "da a", "done", "da gui", "dạ gửi", "thanks", "tks",
+})
 
 
 class IntentClassifier:
-    """Bộ phân loại ý định tin nhắn tối ưu hiệu năng với cơ chế lọc sớm hội thoại xã giao."""
+    """Bộ phân loại ý định tin nhắn tối ưu hiệu năng kết hợp bộ lọc tín hiệu xe."""
 
     # Mẫu nhận diện nhanh các câu chào hỏi, cảm ơn, xác nhận xã giao phổ biến trên Zalo
     _SOCIAL_CHAT_EXACT_REGEX = re.compile(
@@ -27,25 +41,18 @@ class IntentClassifier:
         re.IGNORECASE,
     )
 
-    # Biểu thức nhận diện biển số xe (có dấu gạch/chấm/gạch chéo, khoảng trắng hoặc viết liền, hỗ trợ 4-6 chữ số)
-    _PLATE_PATTERN = re.compile(
-        r"\b\d{2}[A-Za-z]{1,2}(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6})\b"
-    )
-    # Biểu thức nhận diện số hiệu container (đúng 4 chữ + 7 số theo ISO 6346 hoặc viết liền/chấm/gạch 4 chữ + 7 số)
-    _CONTAINER_PATTERN = re.compile(
-        r"\b(?:[A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d){7}|[A-Za-z]{4}[\.\-]?\d(?:[\s.\-]*\d){6})\b",
-        re.IGNORECASE,
-    )
-    # Biểu thức nhận diện SĐT
-    _PHONE_PATTERN = re.compile(
-        r"(?:\+?84|0)\d[\d\s.\-*xX]{7,11}[\d*xX]"
-    )
+    # Biểu thức nhận diện biển số xe (đầu kéo + rơ-moóc, chuẩn _PROVINCE/_SEP/_DIGITS/_TAIL)
+    _PLATE_PATTERN = ANY_PLATE_REGEX
+    # Biểu thức nhận diện số hiệu container (3 chữ + U/J/Z + đúng 7 chữ số)
+    _CONTAINER_PATTERN = CONT_REGEX
+    # Biểu thức nhận diện SĐT Việt Nam (đúng 10 ký tự số/che, hỗ trợ +84/0 và NBSP)
+    _PHONE_PATTERN = PHONE_PATTERN
     # Từ khóa nghiệp vụ vận tải (có dấu + không dấu)
     _TRUCK_KEYWORDS = re.compile(
-        r"(?:biển\s*số|bien\s*so|\bbks\b|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo|mooc|rơ\s*moóc|ro\s*mooc|"
-        r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|bác\s*tài|bac\s*tai|\btx\b|\blx\b|"
+        r"(?:biển\s*số|bien\s*so|\bbks\b|\bbsx\b|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo|mooc|moóc|rơ[\s.\-]?moóc|ro[\s.\-]?mooc|\brm\b|"
+        r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|bác\s*tài|bac\s*tai|\btx\b|\blx\b|\bsđt\b|\bsdt\b|\bđt\b|"
         r"số\s*cont|so\s*cont|container|\bcntr\b|\bcont\b|chưa\s*lấy\s*cont|chờ\s*cấp\s*cont|chưa\s*có\s*cont|"
-        r"số\s*chì|so\s*chi|\bseal\b|niêm\s*chì|niem\s*chi|"
+        r"số\s*chì|so\s*chi|\bchì\b|\bchi\b|\bseal\b|niêm\s*chì|niem\s*chi|"
         r"đóng\s*hàng|dong\s*hang|lệnh\s*đóng|lenh\s*dong|đóng\s*cont|dong\s*cont|lấy\s*cont\s*rỗng|lay\s*cont\s*rong|"
         r"trả\s*hàng|tra\s*hang|lệnh\s*trả|lenh\s*tra|trả\s*cont|tra\s*cont|hạ\s*cont|ha\s*cont|hạ\s*bãi|ha\s*bai|"
         r"hàng\s*xuất|hang\s*xuat|hàng\s*nhập|hang\s*nhap|"
@@ -56,8 +63,68 @@ class IntentClassifier:
     )
 
     @classmethod
+    def extract_vehicle_signals(cls, text: str) -> dict[str, Any]:
+        """Trích xuất danh mục các tín hiệu điều vận (container, biển số, SĐT, chì/seal, từ khóa vận tải)."""
+        t_clean = (text or "").strip()
+        # Tách tiền tố viết dính liền biển số (VD: 'Xe15h00814' -> 'Xe 15h00814') để giữ ranh giới (?<!\w)
+        t_norm_plate = re.sub(
+            r"(?i)\b(xe|bks|bsx|bs|bien|biển|so|số|mooc|rm)\s*([0-9]{2}[A-Za-zĐđ])",
+            r"\1 \2",
+            t_clean,
+        )
+        t_low = t_clean.lower()
+        m_cont = cls._CONTAINER_PATTERN.findall(t_clean)
+        m_plate = cls._PLATE_PATTERN.findall(t_norm_plate)
+        m_phone = cls._PHONE_PATTERN.findall(t_clean)
+        has_seal = bool(re.search(r"\b(?:seal|chì|niêm\s*chì|chi)\b", t_low))
+        has_truck_kw = bool(cls._TRUCK_KEYWORDS.search(t_clean))
+        return {
+            "has_cont": len(m_cont) > 0,
+            "conts": m_cont,
+            "has_plate": len(m_plate) > 0,
+            "plates": m_plate,
+            "has_phone": len(m_phone) > 0,
+            "phones": m_phone,
+            "has_seal": has_seal,
+            "has_truck_kw": has_truck_kw,
+        }
+
+    @classmethod
+    def classify_junk(cls, text: str) -> tuple[str, str, dict[str, Any]]:
+        """Phân loại sơ bộ tin nhắn thành `JUNK` (bỏ qua), `SUSPECT` (1 tín hiệu yếu) hoặc `CANDIDATE`."""
+        signals = cls.extract_vehicle_signals(text)
+        t_clean = (text or "").strip()
+        t_low = t_clean.lower()
+
+        if not t_clean:
+            return "JUNK", "Tin nhắn rỗng", signals
+
+        if not re.search(r"[a-zA-Z0-9\u00C0-\u1EF9]", t_clean):
+            return "JUNK", "Chỉ chứa biểu tượng hoặc ký tự đặc biệt", signals
+
+        if re.search(r"https?://|www\.", t_low):
+            if not signals["has_cont"] and not signals["has_plate"]:
+                return "JUNK", "Liên kết trang web không có thông tin xe", signals
+
+        t_words = re.sub(r"[\.,\!\?\:\;\-~]", "", t_low).strip()
+        if t_words in COMMON_CHAT_PHRASES:
+            return "JUNK", "Xác nhận xã giao hoặc chào hỏi thông thường", signals
+
+        digit_count = sum(1 for ch in t_clean if ch.isdigit())
+        if digit_count < 2 and cls._SOCIAL_CHAT_EXACT_REGEX.match(t_low):
+            return "JUNK", "Câu chào hỏi/xã giao không chứa thực thể vận tải", signals
+
+        if signals["has_cont"] or signals["has_plate"] or signals["has_truck_kw"]:
+            return "CANDIDATE", "Có tín hiệu phương tiện hoặc container", signals
+
+        if signals["has_phone"]:
+            return "SUSPECT", "Chỉ có tín hiệu SĐT, cần kiểm tra ngữ cảnh", signals
+
+        return "JUNK", "Không chứa tín hiệu điều vận", signals
+
+    @classmethod
     def classify(cls, text: str) -> Intent:
-        """Phân tích nội dung văn bản qua bộ lọc 2 tầng để xác định ý định (Intent) nhanh và tiết kiệm nhất.
+        """Phân tích nội dung văn bản qua bộ lọc tín hiệu và thứ tự ưu tiên nghiệp vụ.
 
         Args:
             text (str): Nội dung tin nhắn văn bản thô từ Zalo.
@@ -80,40 +147,38 @@ class IntentClassifier:
             return Intent.EDIT_PENDING
 
         # 3. Kiểm tra yêu cầu hủy chuyến xe (loại trừ trường hợp "hủy thay xe / hủy đổi xe" vẫn chạy chuyến)
-        if re.search(r"\b(?:hủy\s*xe|huy\s*xe|hủy\s*chuyến|huy\s*chuyen|báo\s*hủy|bao\s*huy)\b", lower):
+        if re.search(r"\b(?:hủy\s*xe|huy\s*xe|hủy\s*chuyến|huy\s*chuyen|hủy\s*cont|huy\s*cont|xin\s*hủy|xin\s*huy|báo\s*hủy|bao\s*huy)\b", lower):
             return Intent.CANCEL_REQUEST
 
-        # 4. TẦNG 1 (Fast Gatekeeper): Nếu không có ít nhất 2 chữ số và khớp mẫu chào hỏi/xã giao -> Bỏ qua ngay lập tức
-        digit_count = sum(1 for ch in normalized if ch.isdigit())
-        if digit_count < 2 and cls._SOCIAL_CHAT_EXACT_REGEX.match(lower):
-            return Intent.IGNORE_CHAT
-
-        # 5. Kiểm tra yêu cầu đổi xe / đổi tài xế / đính chính / sửa cont / đổi giờ / hủy thay xe (T27, T28, T29)
-        if re.search(
-            r"\b(?:đổi\s+(?:sang|qua|thành|lại|về)|doi\s+(?:sang|qua|thanh|lai|ve)|"
-            r"thay\s+(?:bằng|sang|xe)|chuyển\s+sang\s+xe|chỉ\s*đổi\s*xe|chi\s*doi\s*xe|"
+        # 4. Yêu cầu đổi xe / đổi tài xế / đính chính / sửa cont / đổi giờ / hủy thay xe (T27, T28, T29)
+        if not re.search(r"\bcập\s*nhật\s*số\s*cont\b|\bcap\s*nhat\s*so\s*cont\b", lower) and re.search(
+            r"\b(?:đổi\s+(?:sang|qua|thành|lại|về|thông\s*tin)|doi\s+(?:sang|qua|thanh|lai|ve|thong\s*tin)|"
+            r"thay\s+(?:bằng|sang|xe|đổi)|chuyển\s+sang\s+xe|chỉ\s*đổi\s*xe|chi\s*doi\s*xe|"
             r"hủy\s*(?:thay|đổi)\s*xe|huy\s*(?:thay|doi)\s*xe|không\s*đổi\s*nữa|khong\s*doi\s*nua|"
             r"đổi\s*xe|doi\s*xe|đổi\s*tài|doi\s*tai|đổi\s*lái\s*xe|doi\s*lai\s*xe|"
-            r"đổi\s*số|doi\s*so|sửa\s*số|sua\s*so|đính\s*chính|dinh\s*chinh|sửa\s*cont|sua\s*cont|sửa\s*chì|sua\s*chi|"
-            r"cập\s*nhật\s*lại|cap\s*nhat\s*lai|lùi\s*giờ|lui\s*gio|đổi\s*lịch|doi\s*lich|xe\s*đến\s*muộn)\b",
+            r"đổi\s*rơ[\s.\-]?moóc|doi\s*ro[\s.\-]?mooc|đổi\s*mooc|doi\s*mooc|"
+            r"sửa\s*thông\s*tin|sua\s*thong\s*tin|thay\s*doi|"
+            r"đổi\s*số|doi\s*so|sửa\s*số|sua\s*so|đính\s*chính|dinh\s*chinh|sửa\s*cont|sua\s*cont|sửa\s*chì|sua\s*chi|sửa\s*seal|sua\s*seal|"
+            r"cập\s*nhật(?:\s*lại|\s*thông\s*tin|\s*xe)?|cap\s*nhat(?:\s*lai|\s*thong\s*tin|\s*xe)?|"
+            r"lùi\s*giờ|lui\s*gio|đổi\s*lịch|doi\s*lich|xe\s*đến\s*muộn)\b",
             lower,
         ):
             return Intent.UPDATE_REQUEST
 
-        # 6. Kiểm tra tin nhắn trả lời bổ sung thông tin (T26: bổ sung cont, chì, giờ)
+        # 5. Tin nhắn trả lời bổ sung thông tin (T26: bổ sung cont, chì, giờ, seal cont)
         if re.search(
-            r"\b(?:bổ\s*sung|bo\s*sung|gửi\s*thêm\s*số\s*cont|gui\s*them\s*so\s*cont|báo\s*thêm\s*chì|cập\s*nhật\s*số\s*cont)\b",
+            r"\b(?:bổ\s*sung|bo\s*sung|gửi\s*thêm\s*số\s*cont|gui\s*them\s*so\s*cont|báo\s*thêm\s*chì|cập\s*nhật\s*số\s*cont)\b"
+            r"|^(?:seal\s+cont|chì\s+cont|chi\s+cont)\b",
             lower,
         ):
             return Intent.SUPPLEMENT
 
-        # 7. TẦNG 2: Kiểm tra dấu hiệu báo thông tin xe / container (biển số, số cont, SĐT, từ khóa vận tải)
-        has_plate = bool(cls._PLATE_PATTERN.search(normalized))
-        has_cont = bool(cls._CONTAINER_PATTERN.search(normalized))
-        has_phone = bool(cls._PHONE_PATTERN.search(normalized))
-        has_keywords = bool(cls._TRUCK_KEYWORDS.search(normalized))
+        # 6. TẦNG 1 & 2: Thẩm định tín hiệu xe (JUNK -> IGNORE_CHAT, CANDIDATE/SUSPECT -> PARSE_TRUCK_INFO)
+        verdict, _, signals = cls.classify_junk(normalized)
+        if verdict == "JUNK":
+            return Intent.IGNORE_CHAT
 
-        if has_plate or has_cont or (has_phone and has_keywords) or has_keywords:
+        if signals["has_plate"] or signals["has_cont"] or signals["has_truck_kw"]:
             return Intent.PARSE_TRUCK_INFO
 
         return Intent.IGNORE_CHAT

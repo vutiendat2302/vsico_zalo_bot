@@ -293,20 +293,47 @@ export async function getGroupConversation(groupId, offset = 0, count = 20) {
  * @param {string | null} quoteMsgId Mã tin nhắn trích dẫn (nếu có).
  * @returns {Promise<{ ok: boolean, msgId?: string, error?: string, raw?: any }>}
  */
-export async function sendGroupMessage(groupId, text, quoteMsgId = null) {
+export async function sendGroupMessage(groupId, text, quoteMsgId = null, imageUrl = null) {
+  const messageObj = {};
+  if (text) {
+    messageObj.text = String(text);
+  }
+  if (quoteMsgId) {
+    messageObj.quote_message_id = String(quoteMsgId).trim();
+  }
+  if (imageUrl) {
+    messageObj.attachment = {
+      type: "template",
+      payload: {
+        template_type: "media",
+        elements: [{ media_type: "image", url: String(imageUrl).trim() }],
+      },
+    };
+  }
   const payload = {
     recipient: { group_id: String(groupId).trim() },
-    message: { text: String(text) },
+    message: messageObj,
   };
-  if (quoteMsgId) {
-    payload.message.quote_message_id = String(quoteMsgId).trim();
-  }
 
-  const data = await callZaloApi(ZALO_OA_GROUP_MESSAGE_URL, {
+  let data = await callZaloApi(ZALO_OA_GROUP_MESSAGE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+
+  // Nếu API nhóm GMF từ chối attachment media URL, fallback gửi văn bản kèm liên kết ảnh rõ ràng
+  if (Number(data?.error) !== 0 && imageUrl) {
+    const fallbackText = text ? `${text}\nXem bảng ảnh báo cáo: ${imageUrl}` : `Xem bảng ảnh báo cáo: ${imageUrl}`;
+    const fallbackPayload = {
+      recipient: { group_id: String(groupId).trim() },
+      message: { text: fallbackText, ...(quoteMsgId ? { quote_message_id: String(quoteMsgId).trim() } : {}) },
+    };
+    data = await callZaloApi(ZALO_OA_GROUP_MESSAGE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fallbackPayload),
+    });
+  }
 
   if (Number(data?.error) !== 0) {
     return {

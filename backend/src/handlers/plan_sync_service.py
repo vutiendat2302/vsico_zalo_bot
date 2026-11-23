@@ -32,6 +32,7 @@ from src.domain.rules import (
     clean_plate,
     compact_plate,
     mask_phone,
+    split_phones,
     validate_iso6346,
 )
 from src.infrastructure.models import (
@@ -79,9 +80,9 @@ class PlanSyncOutcome:
 def _norm_order(val: Optional[str]) -> str:
     """Chuẩn hóa loại lệnh về `'dong'` hoặc `'tra'` để so sánh nhất quán."""
     raw = (val or "").strip().lower()
-    if raw in ("load", "dong", "xuat"):
+    if raw in ("load", "dong", "lo", "xuat"):
         return "dong"
-    if raw in ("return", "tra", "nhap"):
+    if raw in ("return", "tra", "ro", "nhap"):
         return "tra"
     return raw
 
@@ -98,6 +99,73 @@ def _norm_text(val: Optional[str]) -> str:
 def _is_blank(val: Optional[str]) -> bool:
     """Kiểm tra giá trị chuỗi trên kế hoạch có đang trống hay không."""
     return val is None or not str(val).strip()
+
+
+def extract_plan_expected_time(plan: Optional[TransportPlan]) -> Optional[str]:
+    """Lấy thời gian dự kiến có mặt tại kho từ kế hoạch vận chuyển trong DB (`required_time` -> `points_json` -> `estimated_drop_time` -> `eta`)."""
+    if plan is None:
+        return None
+    if plan.required_time and str(plan.required_time).strip():
+        return str(plan.required_time).strip()
+    if isinstance(plan.points_json, list):
+        for pt in plan.points_json:
+            if isinstance(pt, dict) and pt.get("required_time") and str(pt["required_time"]).strip():
+                return str(pt["required_time"]).strip()
+    if plan.estimated_drop_time and str(plan.estimated_drop_time).strip():
+        return str(plan.estimated_drop_time).strip()
+    if plan.eta and str(plan.eta).strip():
+        return str(plan.eta).strip()
+    return None
+
+
+def resolve_job_expected_time(
+    db: Session,
+    job: Optional[ContainerJob],
+    plan: Optional[TransportPlan] = None,
+) -> Optional[str]:
+    """Lấy thời gian dự kiến của ContainerJob; nếu trống thì tra ngược từ TransportPlan trong DB."""
+    if job is not None:
+        raw = job.raw_fields if isinstance(job.raw_fields, dict) else {}
+        existing_eta = raw.get("eta") or raw.get("eta_text")
+        if existing_eta and str(existing_eta).strip():
+            return str(existing_eta).strip()
+        if job.estimated_at:
+            return job.estimated_at.strftime("%H:%M")
+
+    if plan is not None:
+        p_eta = extract_plan_expected_time(plan)
+        if p_eta:
+            return p_eta
+
+    if job is None:
+        return None
+
+    raw = job.raw_fields if isinstance(job.raw_fields, dict) else {}
+    pid = raw.get("transport_plan_id")
+    if pid:
+        try:
+            linked_plan = db.get(TransportPlan, int(pid))
+            p_eta = extract_plan_expected_time(linked_plan)
+            if p_eta:
+                return p_eta
+        except (TypeError, ValueError):
+            pass
+
+    if job.container_no:
+        cont_clean = clean_container(job.container_no) or job.container_no.strip().upper()
+        stmt = (
+            select(TransportPlan)
+            .where(TransportPlan.container_no == cont_clean)
+            .order_by(TransportPlan.plan_date.desc(), TransportPlan.id.desc())
+        )
+        for cand_plan in db.scalars(stmt.limit(5)).all():
+            if job.customer_id and cand_plan.customer_id and job.customer_id != cand_plan.customer_id:
+                continue
+            p_eta = extract_plan_expected_time(cand_plan)
+            if p_eta:
+                return p_eta
+
+    return None
 
 
 def _narrow_plans_by_context(plans: list[TransportPlan], job: ContainerJob) -> list[TransportPlan]:
@@ -262,7 +330,9 @@ def sync_job_to_local_plan(
     conflicts: list[str] = []
 
     if plan.customer_id and job.customer_id and plan.customer_id != job.customer_id and not allow_plan_override:
-        conflicts.append(f"Lệch khách hàng so với kế hoạch (#{plan.customer_id} / #{job.customer_id})")
+        conflicts.append(
+            f"Lệch khách hàng so với kế hoạch ({plan.customer_name or 'theo kế hoạch'} / {job.customer_hint or 'theo tin nhắn'})"
+        )
 
     plan_seal_norm = re.sub(r"[^A-Za-z0-9]", "", plan.seal_no or "").upper()
     job_seal_norm = re.sub(r"[^A-Za-z0-9]", "", job.seal_no or "").upper()
@@ -377,15 +447,19 @@ def sync_job_to_local_plan(
         )
 
     if eta_val:
+        is_plan_derived_eta = (
+            isinstance(raw.get("field_evidences"), dict)
+            and raw["field_evidences"].get("eta_time") == "transport_plan"
+        )
         prev_time = plan.required_time
         _apply_field(
             "required_time",
             "Giờ đến dự kiến",
             eta_val,
             lambda v: " ".join(str(v).lower().split()),
-            allow_update=True,
+            allow_update=not is_plan_derived_eta,
         )
-        if _is_blank(plan.eta) or plan.eta != plan.required_time or prev_time != plan.required_time:
+        if (not is_plan_derived_eta and (_is_blank(plan.eta) or plan.eta != plan.required_time)) or prev_time != plan.required_time:
             plan.eta = plan.required_time
 
     if plan.warehouse_id is None and job.warehouse_id:
@@ -639,16 +713,14 @@ def resolve_vehicle_for_plan(
         if not norm_cmp:
             return {"vehicle_id": None, "resolution": "invalid_or_cross_carrier_vehicle_id"}
 
-    if norm_cmp and carrier_id is not None:
-        vehicles = list(
-            db.scalars(
-                select(Vehicle).where(
-                    Vehicle.carrier_id == carrier_id,
-                    Vehicle.is_active.is_(True),
-                    Vehicle.vehicle_type == 1,
-                )
-            ).all()
+    if norm_cmp:
+        veh_stmt = select(Vehicle).where(
+            Vehicle.is_active.is_(True),
+            Vehicle.vehicle_type == 1,
         )
+        if carrier_id is not None:
+            veh_stmt = veh_stmt.where(Vehicle.carrier_id == carrier_id)
+        vehicles = list(db.scalars(veh_stmt).all())
         matched = [v for v in vehicles if compact_plate(v.plate_no) == norm_cmp]
         if len(matched) == 1:
             return {
@@ -790,7 +862,6 @@ def resolve_trailer_for_plan(
             if not norm_cmp or tr.normalized_plate == norm_cmp:
                 return {
                     "mooc_id": int(tr.tms_mooc_id),
-                    "planned_trailer_plate": _preserve_plate_text(tr.license_plate),
                     "resolution": "matched_by_id",
                 }
         if not norm_cmp:
@@ -801,7 +872,6 @@ def resolve_trailer_for_plan(
         if tr is not None:
             return {
                 "mooc_id": int(tr.tms_mooc_id),
-                "planned_trailer_plate": _preserve_plate_text(tr.license_plate),
                 "resolution": "matched_by_plate",
             }
 
@@ -822,44 +892,64 @@ def resolve_driver_for_plan(
     driver_phone: Optional[str] = None,
     requested_driver_id: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Tra cứu `driver_id` (`tms_driver_id`) thuộc đúng nhà xe theo ID / SĐT / tên không mơ hồ."""
+    """Tra cứu `driver_id` (`tms_driver_id`) thuộc đúng nhà xe theo ID / SĐT / tên không mơ hồ.
+
+    Hỗ trợ tài xế có nhiều SĐT dạng `'09..1 | 09..2'`: khi có >= 2 SĐT, luôn gửi kèm `driver_phone`
+    đầy đủ sang TMS (kèm `driver_id` nếu một trong các SĐT khớp duy nhất tài xế trong DB).
+    """
     carrier_id = _resolve_plan_carrier_id(db, plan)
     clean_name = " ".join(str(driver_name).strip().split()) if driver_name and str(driver_name).strip() else None
-    norm_phone = clean_phone(str(driver_phone)) if driver_phone and str(driver_phone).strip() else None
-    if norm_phone and not re.fullmatch(r"0\d{9}", norm_phone):
-        norm_phone = re.sub(r"\s+", "", str(driver_phone).strip())
+    phone_list = split_phones(driver_phone) if driver_phone and str(driver_phone).strip() else []
+    norm_phone = " | ".join(phone_list) if phone_list else None
+    has_multi_phones = len(phone_list) >= 2
+    phone_set = set(phone_list)
 
-    carrier_drivers: list[Driver] = (
-        list(
-            db.scalars(
-                select(Driver).where(Driver.carrier_id == carrier_id, Driver.is_active.is_(True))
-            ).all()
-        )
-        if carrier_id is not None
-        else []
-    )
+    drv_stmt = select(Driver).where(Driver.is_active.is_(True))
+    if carrier_id is not None:
+        drv_stmt = drv_stmt.where(Driver.carrier_id == carrier_id)
+    carrier_drivers: list[Driver] = list(db.scalars(drv_stmt).all())
 
     if requested_driver_id is not None and carrier_drivers:
         drv = next((d for d in carrier_drivers if d.tms_driver_id == int(requested_driver_id)), None)
         if drv is not None:
-            phone_ok = not norm_phone or clean_phone(drv.phone) == norm_phone
+            drv_phones = set(split_phones(drv.phone))
+            phone_ok = not phone_set or bool(drv_phones & phone_set)
             name_ok = not clean_name or _norm_text(drv.full_name) == _norm_text(clean_name)
             if phone_ok and name_ok:
-                return {"driver_id": int(drv.tms_driver_id), "resolution": "matched_by_id"}
+                out_id: dict[str, Any] = {"driver_id": int(drv.tms_driver_id), "resolution": "matched_by_id"}
+                if has_multi_phones and norm_phone:
+                    out_id["driver_phone"] = norm_phone
+                return out_id
+
+    if phone_set:
+        by_phone = [d for d in carrier_drivers if set(split_phones(d.phone)) & phone_set]
+        if len(by_phone) == 1:
+            out_matched: dict[str, Any] = {
+                "driver_id": int(by_phone[0].tms_driver_id),
+                "resolution": "matched_by_phone_multi" if has_multi_phones else "matched_by_phone",
+            }
+            if has_multi_phones and norm_phone:
+                out_matched["driver_phone"] = norm_phone
+            return out_matched
+
+    if clean_name:
+        in_norm = _norm_text(clean_name)
+        by_exact = [d for d in carrier_drivers if _norm_text(d.normalized_name or d.full_name) == in_norm]
+        if len(by_exact) == 1:
+            out_exact: dict[str, Any] = {
+                "driver_id": int(by_exact[0].tms_driver_id),
+                "resolution": "matched_by_exact_name",
+            }
+            if has_multi_phones and norm_phone:
+                out_exact["driver_phone"] = norm_phone
+            return out_exact
+        if not norm_phone:
+            return {
+                "driver_name": clean_name,
+                "resolution": "ambiguous_or_unmatched_name_only",
+            }
 
     if norm_phone:
-        by_phone = [d for d in carrier_drivers if clean_phone(d.phone) == norm_phone]
-        if len(by_phone) == 1:
-            drv = by_phone[0]
-            drv_norm = _norm_text(drv.full_name)
-            in_norm = _norm_text(clean_name)
-            if (
-                not in_norm
-                or drv_norm == in_norm
-                or drv_norm.endswith(" " + in_norm)
-                or in_norm in drv_norm
-            ):
-                return {"driver_id": int(drv.tms_driver_id), "resolution": "matched_by_phone"}
         out_unmatched: dict[str, Any] = {
             "driver_id": None,
             "driver_phone": norm_phone,
@@ -868,16 +958,6 @@ def resolve_driver_for_plan(
         if clean_name:
             out_unmatched["driver_name"] = clean_name
         return out_unmatched
-
-    if clean_name:
-        in_norm = _norm_text(clean_name)
-        by_exact = [d for d in carrier_drivers if _norm_text(d.normalized_name or d.full_name) == in_norm]
-        if len(by_exact) == 1:
-            return {"driver_id": int(by_exact[0].tms_driver_id), "resolution": "matched_by_exact_name"}
-        return {
-            "driver_name": clean_name,
-            "resolution": "ambiguous_or_unmatched_name_only",
-        }
 
     return {}
 

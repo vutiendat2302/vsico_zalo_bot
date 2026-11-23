@@ -5,9 +5,8 @@ from src.infrastructure.models import ContainerJob, TransportPlan
 from .schemas import AssistantReply
 
 NOT_FOUND = (
-    "Hiện tại VSICO chưa ghi nhận thông tin điều xe cho mã tra cứu Quý khách cung cấp "
-    "trong phạm vi tuyến phụ trách của nhóm. Quý khách vui lòng kiểm tra lại mã container/biển số "
-    "hoặc liên hệ bộ phận Điều hành vận tải để được hỗ trợ."
+    "[VSICO] - 🔍 Hiện chưa tìm thấy thông tin điều xe phù hợp với mã tra cứu trong phạm vi tuyến phụ trách.\n\n"
+    "Anh/chị vui lòng kiểm tra lại mã lệnh, số container hoặc ngày cần xem nhé."
 )
 LIMIT = 20
 MAX_ZALO_TEXT_CHARS = 1900

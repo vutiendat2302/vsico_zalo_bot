@@ -434,10 +434,12 @@ def _build_routemap_scope_filter(entity_cls: Any, routes: list[RouteMap]):
 
 def _format_customer_job_summary(db: Session, job: ContainerJob) -> str:
     """Định dạng thông tin điều xe trả lời khách hàng (luôn che 6 số cuối SĐT)."""
+    from src.handlers.plan_sync_service import resolve_job_expected_time
+
     truck = job.truck_record
     wh = db.get(Warehouse, job.warehouse_id) if job.warehouse_id else None
     raw = job.raw_fields if isinstance(job.raw_fields, dict) else {}
-    eta = raw.get("eta") or raw.get("eta_time") or "Đang cập nhật"
+    eta = raw.get("eta") or raw.get("eta_time") or resolve_job_expected_time(db, job) or "Đang cập nhật"
     plate = truck.truck_plate if truck and truck.truck_plate else "Chưa điều xe"
     trailer = truck.trailer_plate if truck and truck.trailer_plate else None
     driver = truck.driver_name if truck and truck.driver_name else "Chưa cập nhật"
@@ -456,13 +458,15 @@ def _format_customer_job_summary(db: Session, job: ContainerJob) -> str:
 
 def _format_customer_plan_summary(db: Session, plan: TransportPlan) -> str:
     """Định dạng thông tin từ kế hoạch vận chuyển khi chưa có bản ghi điều xe hoàn chỉnh."""
+    from src.handlers.plan_sync_service import extract_plan_expected_time
+
     wh = db.get(Warehouse, plan.warehouse_id) if plan.warehouse_id else None
     plate = plan.planned_truck_plate or "Chưa điều xe"
     driver = plan.driver_name or "Chưa cập nhật"
     masked_phone = _mask_phone_for_customer(plan.driver_phone)
     seal = plan.seal_no or "Chưa cập nhật"
     size = plan.container_size or "N/A"
-    eta = plan.eta or plan.estimated_drop_time or "Đang cập nhật"
+    eta = extract_plan_expected_time(plan) or "Đang cập nhật"
     wh_label = wh.name if wh else (plan.delivery_address or plan.address or "Theo kế hoạch")
     return (
         f"- Container: {plan.container_no or 'Chưa cấp số'} ({size})\n"
@@ -1055,13 +1059,15 @@ def _format_dhvt_plans_report(db: Session) -> str:
         or 0
     )
     unassigned = max(0, total - assigned)
+    assigned_pct = f"{(assigned / total) * 100:.1f}%".replace(".", ",") if total else "0,0%"
+    unassigned_pct = f"{(unassigned / total) * 100:.1f}%".replace(".", ",") if total else "0,0%"
     return (
-        "Tổng quan kế hoạch vận chuyển:\n"
-        f"- Tổng kế hoạch: {total}\n"
-        f"- Đã cập nhật biển số xe: {assigned}\n"
-        f"- Chưa có xe: {unassigned}\n"
-        f"- Chưa cấp số container: {missing_cont}\n"
-        f"Xem chi tiết tại: {base}/plans"
+        "[VSICO] - 📊 KẾ HOẠCH VẬN CHUYỂN\n\n"
+        f"🚛 {total} lệnh vận chuyển\n"
+        f"✅ Đã bố trí xe: {assigned} ({assigned_pct})\n"
+        f"⏳ Chưa có xe: {unassigned} ({unassigned_pct})\n"
+        f"📦 Chưa cấp số container: {missing_cont}\n\n"
+        f"🔗 Xem chi tiết trên Web: {base}/plans"
     )
 
 

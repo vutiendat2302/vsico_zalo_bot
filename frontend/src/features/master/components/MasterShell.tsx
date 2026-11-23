@@ -100,7 +100,7 @@ export function MasterPagination({
   const end = Math.min(page * perPage, total);
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-t border-slate-200 bg-slate-50/50 text-xs text-slate-600">
+    <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-t border-slate-200 bg-slate-50/50 text-xs text-slate-600">
       <div>
         Hiển thị <span className="font-medium text-slate-900">{start}</span> -{" "}
         <span className="font-medium text-slate-900">{end}</span> trên{" "}
@@ -138,14 +138,19 @@ interface DetailModalProps {
   onClose: () => void;
   title: string;
   subtitle?: string;
+  maxWidthClass?: string;
   children: React.ReactNode;
 }
 
+/**
+ * Khung hộp thoại chi tiết dùng chung cho các màn hình danh mục và kế hoạch.
+ */
 export function MasterDetailModal({
   open,
   onClose,
   title,
   subtitle,
+  maxWidthClass = "max-w-lg",
   children,
 }: DetailModalProps) {
   if (!open) return null;
@@ -156,38 +161,38 @@ export function MasterDetailModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg bg-white border border-slate-200 rounded-sm overflow-hidden"
+        className={`w-full ${maxWidthClass} bg-white border border-slate-200 rounded-sm overflow-hidden`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Purple Header matching TMS modal design */}
-        <div className="bg-purple-700 text-white px-5 py-3.5 flex items-start justify-between">
+        <div className="bg-purple-700 text-white px-6 py-4 flex items-start justify-between">
           <div>
-            <h3 className="text-sm font-semibold leading-snug">{title}</h3>
+            <h3 className="text-lg font-semibold leading-snug">{title}</h3>
             {subtitle && (
-              <p className="text-[11px] text-purple-100 mt-0.5">{subtitle}</p>
+              <p className="text-sm text-purple-100 mt-0.5">{subtitle}</p>
             )}
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-purple-100 hover:text-white p-0.5 rounded-sm"
+            className="text-purple-100 hover:text-white p-1 rounded-sm"
             aria-label="Đóng"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Body */}
-        <div className="p-4 space-y-3 max-h-[72vh] overflow-y-auto bg-white">
+        <div className="p-5 space-y-4 max-h-[78vh] overflow-y-auto bg-white">
           {children}
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 flex justify-end">
+        <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex justify-end">
           <button
             type="button"
             onClick={onClose}
-            className="px-3.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-sm hover:bg-slate-100"
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-sm hover:bg-slate-100"
           >
             Đóng
           </button>
@@ -197,25 +202,38 @@ export function MasterDetailModal({
   );
 }
 
+/**
+ * Nhóm thông tin theo từng chủ đề trong hộp thoại chi tiết.
+ */
 export function DetailSection({
   title,
+  columns = 2,
   children,
 }: {
   title: string;
+  columns?: 2 | 3;
   children: React.ReactNode;
 }) {
+  const gridClass =
+    columns === 3
+      ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-3 text-base"
+      : "grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-3 text-base";
+
   return (
-    <div className="border border-slate-200 rounded-sm p-3 bg-slate-50/50">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
+    <div className="border border-slate-200 rounded-sm p-4 bg-slate-50/50">
+      <div className="text-sm font-semibold text-slate-700 mb-3 pb-1.5 border-b border-slate-200">
         {title}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs">
+      <div className={gridClass}>
         {children}
       </div>
     </div>
   );
 }
 
+/**
+ * Một cặp nhãn và giá trị trong hộp thoại chi tiết.
+ */
 export function DetailField({
   label,
   value,
@@ -226,9 +244,9 @@ export function DetailField({
   fullWidth?: boolean;
 }) {
   return (
-    <div className={fullWidth ? "sm:col-span-2" : undefined}>
-      <div className="text-[11px] text-slate-500">{label}</div>
-      <div className="text-xs font-medium text-slate-900 mt-0.5 break-words">
+    <div className={fullWidth ? "sm:col-span-2 lg:col-span-3" : undefined}>
+      <div className="text-sm text-slate-500">{label}</div>
+      <div className="text-base font-medium text-slate-900 mt-0.5 break-words">
         {value ?? "—"}
       </div>
     </div>

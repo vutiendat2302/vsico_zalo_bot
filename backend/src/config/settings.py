@@ -20,6 +20,20 @@ BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_ROOT, ".."))
 ROOT_ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 FALLBACK_ENV_PATH = os.path.join(BACKEND_ROOT, ".env")
+VERSION_FILE_PATH = os.path.join(PROJECT_ROOT, "VERSION")
+
+
+def load_app_version(default: str = "1.5.0") -> str:
+    """Đọc số phiên bản hệ thống từ tệp `VERSION` tại thư mục gốc dự án."""
+    for path in (VERSION_FILE_PATH, os.path.join(BACKEND_ROOT, "VERSION")):
+        if os.path.exists(path):
+            try:
+                value = open(path, "r", encoding="utf-8").read().strip()
+                if value:
+                    return value
+            except OSError:
+                pass
+    return default
 
 
 class Settings(BaseSettings):
@@ -32,6 +46,7 @@ class Settings(BaseSettings):
     )
 
     # 1. Cấu hình Server
+    APP_VERSION: str = load_app_version()
     APP_ENV: str = "development"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -61,6 +76,19 @@ class Settings(BaseSettings):
     AI_MODEL_NAME: str = "gemini-3.5-flash"
     AI_TIMEOUT_SECONDS: int = 10
     AI_FALLBACK_CONFIDENCE_THRESHOLD: float = 0.65
+
+    # 4b. Cấu hình PhoBERT Local NLP & Gom tin nhà xe 60 giây & Giám sát Zalo OA
+    ENABLE_PHOBERT_TRANSFORMERS: bool = True
+    PHOBERT_MODEL_PATH: str = "vinai/phobert-base-v2"
+    CARRIER_DEBOUNCE_SECONDS: int = 20
+    GROUP_PROCESS_DELAY_SECONDS: int = 20
+    GROUP_PROCESS_MAX_WAIT_SECONDS: int = 60
+    ZALO_PROXY_ONLY: bool = False
+    ZALO_WATCHDOG_ENABLED: bool = True
+    ZALO_OVERDUE_ESCALATION_ENABLED: bool = False
+    ZALO_WATCHDOG_INTERVAL_SECONDS: int = 60
+    ZALO_FALLBACK_ALERT_WEBHOOK_URL: str = ""
+    PUBLIC_API_BASE_URL: str = "https://api.vtdat.com"
 
     # 5. Cấu hình Zalo Outbound Bridge (zca-js bot_api_server)
     ZALO_BRIDGE_URL: str = "http://localhost:3000"
@@ -116,6 +144,16 @@ class Settings(BaseSettings):
 
     # 12. Đường dẫn Web Dashboard điều hành (gắn vào thông báo nhóm Zalo ĐHVT)
     FRONTEND_BASE_URL: str = "http://localhost:3001"
+
+    @property
+    def short_link_secret(self) -> str:
+        """Trả về khóa bí mật dùng chung để mã hóa/giải mã mã liên kết rút gọn."""
+        return (
+            self.JWT_SECRET_KEY
+            or self.INTERNAL_SECRET
+            or self.ZALO_SECRET_KEY
+            or "vsico-short-link-default-secret"
+        )
 
 
 settings = Settings()

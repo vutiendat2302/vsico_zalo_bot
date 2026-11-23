@@ -499,9 +499,9 @@ export default function MasterTransportPlansPage() {
             Không có kế hoạch vận chuyển phù hợp.
           </div>
         ) : viewMode === "province" ? (
-          <div className="overflow-x-auto">
+          <div className="max-h-[55vh] overflow-auto">
             <table className="w-full text-left border-collapse text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium">
                   <th className="px-4 py-2.5">Tỉnh</th>
                   <th className="px-3 py-2.5 text-center" colSpan={2}>
@@ -775,9 +775,9 @@ export default function MasterTransportPlansPage() {
           </div>
         ) : (
           /* Danh sách lệnh (phẳng) */
-          <div className="overflow-x-auto">
+          <div className="max-h-[55vh] overflow-auto">
             <table className="w-full text-left border-collapse text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium whitespace-nowrap">
                   <th className="px-3 py-2.5">Mã lệnh</th>
                   <th className="px-3 py-2.5">Loại</th>

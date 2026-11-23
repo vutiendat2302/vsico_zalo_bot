@@ -482,8 +482,46 @@ Theo quy tắc nghiệp vụ, ĐHVT không được duyệt hoặc sửa kế ho
 }
 ```
 - **Kết quả mong đợi**:
-  - Không có bất kỳ bản ghi `ReviewCase` hay `TransportPlan` nào bị thay đổi trạng thái.
-  - Bot phản hồi: `"Không thực hiện duyệt/sửa/hủy trực tiếp trên Zalo. Vui lòng xử lý trên Web: .../reviews"`.
+  - Với nhân viên ĐHVT đã đăng ký tài khoản `users.zalo_user_id` trong nhóm ĐHVT: Bot tìm ca duyệt `#123` (hoặc ca được quote). Nếu ca tồn tại ở trạng thái `PENDING`, Bot duyệt/sửa/hủy trực tiếp, đồng bộ TMS, thông báo công khai vào nhóm ĐHVT (`"ĐHVT <Tên> đã duyệt/sửa/hủy..."`) và phản hồi kết quả về nhóm Nhà xe.
+  - Nếu mã ca `#123` không tồn tại hoặc chưa chỉ rõ ca: Bot giữ nguyên dữ liệu kế hoạch và hướng dẫn quote tin báo duyệt hoặc ghi kèm mã lệnh/số container.
+  - Với tài khoản Zalo chưa gắn quyền ĐHVT/Admin: Bot từ chối thực thi ghi dữ liệu.
+
+---
+
+### Kịch Bản 12B: Kiểm Thử Trực Tiếp Bộ Bóc Tách NLP 3 Tầng (`Precision Regex + vinai/phobert-base-v2 + Kế Hoạch`)
+
+Endpoint dry-run `POST /api/sandbox/nlp-analyze` (không ghi DB, không gửi Zalo thật) trả chi tiết kết quả bóc tách của Tầng 1 (`PLATE_REGEX`, `TRAILER_PLATE_REGEX`, `CONT_REGEX`, `PHONE_PATTERN`), Tầng 2 (`phobert_transformers_local`, `vinai/phobert-base-v2`, ngưỡng `INTENT_MIN_CONFIDENCE = 0.65`, span `PER`/`LOC` với confidence động), cờ kích hoạt Tầng 3 LLM, thông báo lỗi thân thiện xem trước và kết quả phát hiện lệnh kết hợp `RO + LO`.
+
+- **Method**: `POST`
+- **URL**: `{{baseUrl}}/api/sandbox/nlp-analyze`
+- **Headers**:
+  - `Content-Type`: `application/json`
+- **Body (`raw` - JSON)**:
+```json
+{
+  "text": "Xe 29C\u00a0447.12 mooc 29RM-048.02 cont MSCU6635324 lái xe Tịnh Văn Duân 0987369401 / 0912345678",
+  "include_plan_resolution": true
+}
+```
+- **Script tab `Tests` trên Postman**:
+```javascript
+const res = pm.response.json();
+pm.test("HTTP 200 OK và chạy trọng số thật vinai/phobert-base-v2", function () {
+    pm.response.to.have.status(200);
+    pm.expect(res.ok).to.be.true;
+    pm.expect(res.tier2_phobert_nlp.backend_mode).to.eql("phobert_transformers_local");
+    pm.expect(res.tier2_phobert_nlp.model_name).to.eql("vinai/phobert-base-v2");
+    pm.expect(res.records[0].driver_phone).to.eql("0987369401 | 0912345678");
+});
+```
+
+---
+
+### Kịch Bản 12C: Kiểm Tra Sức Khỏe Kết Nối Zalo OA Watchdog
+
+- **Method**: `GET`
+- **URL**: `{{baseUrl}}/api/health/zalo-oa?probe=true`
+- **Kết quả mong đợi**: HTTP `200 OK`, trả về trạng thái `HEALTHY` / `OA_DISCONNECTED` / `OA_SEND_FAILURE`, số lỗi liên tiếp, thời điểm kiểm tra và webhook gần nhất.
 
 ---
 
@@ -577,6 +615,6 @@ pm.test("Phản hồi hợp lệ (200 khi đúng version, 409 khi lệch version
 
 ---
 
-## 6. Kiểm Thử Tự Động Toàn Bộ Bằng Pytest (Không Cần Thao Tác Tay)
+## 6. Kiểm Thử Tự Động Toàn Bộ Bằng Pytest (Chế Độ Proxy-Only)
 
-Ngoài việc kiểm thử từng kịch bản qua Postman và giao diện Web (`/groups`, `/sandbox`, `/reviews`, `/plans`), toàn bộ 56 mẫu tin nhắn Golden Benchmark, 6 nhánh đối chiếu kế hoạch, tách từ PhoBERT, danh mục `RapidFuzz` và thống kê vùng/tỉnh của ĐHVT đã được đóng gói thành bộ kiểm thử tự động tại `backend/tests/test_nlp_phobert_and_golden_benchmark.py`.
+Ngoài việc kiểm thử từng kịch bản qua Postman và giao diện Web (`/groups`, `/sandbox`, `/reviews`, `/plans`), toàn bộ kịch bản Golden Benchmark, trọng số thật `vinai/phobert-base-v2`, cưỡng chế `MANUAL`, form `[VSICO] - ...`, thống kê ngày vs chi tiết tỉnh kèm ảnh PNG, cửa sổ đợi nhóm Nhà xe `20s / trần 60s` (`?force=true` khi cần ép xử lý ngay trong `POST /api/messages/process-fifo`) và phản hồi tức thì của ĐHVT đã được đóng gói thành **169 test tự động** tại `backend/tests/test_nlp_phobert_and_golden_benchmark.py` và `backend/tests/test_new_zalo_ux_and_tms_flows.py` (chạy 100% ở chế độ `ZALO_PROXY_ONLY=True`).

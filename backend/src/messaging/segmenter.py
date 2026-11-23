@@ -10,26 +10,62 @@ Hỗ trợ phân tách toàn bộ các bố cục tin nhắn thực tế trong B
 
 import json
 import re
+import unicodedata
+
+from src.domain.patterns import CONT_REGEX, PLATE_REGEX, TRAILER_PLATE_REGEX
+
+
+def normalize_segment_text(text: str) -> str:
+    """Chuẩn hóa Unicode NFC, đồng nhất xuống dòng và tách tiền tố viết dính liền biển số (VD: 'Xe15h00814' -> 'Xe 15h00814')."""
+    if not text:
+        return ""
+    cleaned = unicodedata.normalize("NFC", text)
+    cleaned = cleaned.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(
+        r"(?i)\b(xe|bks|bsx|bs|bien|biển|so|số|mooc|rm)\s*([0-9]{2}[A-Za-z])",
+        r"\1 \2",
+        cleaned,
+    )
+    return cleaned.strip()
+
+
+def detect_header_info(full_text: str) -> dict[str, str | None]:
+    """Trích xuất ngữ cảnh chung ở 1-2 dòng đầu tin nhắn (hướng đóng/trả, ngày, giờ) để kế thừa xuống các xe con."""
+    lines = [ln.strip() for ln in normalize_segment_text(full_text).split("\n") if ln.strip()]
+    header = " ".join(lines[:2]).lower()
+    res: dict[str, str | None] = {"order_type": None, "date_str": None, "time_str": None}
+    if not header:
+        return res
+
+    if ("nhập" in header or "nhap" in header or "trả" in header or "tra" in header) and (
+        "đóng" in header or "dong" in header
+    ):
+        res["order_type"] = None
+    elif "đóng" in header or "dong" in header:
+        res["order_type"] = "LOAD"
+    elif "trả" in header or "tra" in header or "nhập" in header or "nhap" in header:
+        res["order_type"] = "RETURN"
+
+    dm = re.search(r"\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b", header)
+    if dm:
+        res["date_str"] = dm.group(1)
+
+    tm = re.search(r"\b([01]?\d|2[0-3])[:h]([0-5]\d)\b(?!\d)|\b([01]?\d|2[0-3])h\b(?!\d)", header)
+    if tm and tm.group(0) != res["date_str"]:
+        res["time_str"] = tm.group(0)
+    return res
 
 
 class MessageSegmenter:
-    """Bộ phân tách tin nhắn phức hợp thành danh sách các khối văn bản độc lập kèm ngữ cảnh lệnh/kho/khách."""
+    """Bộ phân tách tin nhắn phức hợp 2 giai đoạn (Macro + Micro Inline) thành danh sách khối từng xe."""
 
-    _PLATE_REGEX = re.compile(
-        r"\b\d{2}[A-Za-z]{1,2}(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6})\b"
-    )
-    _TRAILER_PLATE_REGEX = re.compile(
-        r"\b\d{2}[A-Za-z]?R[M]?(?:[\s.\-/]*\d{3}[\s.\-]*\d{1,3}|[\s.\-/]*\d{4,6})\b",
-        re.IGNORECASE,
-    )
+    _PLATE_REGEX = PLATE_REGEX
+    _TRAILER_PLATE_REGEX = TRAILER_PLATE_REGEX
     _SWAP_PLATE_REGEX = re.compile(
-        r"(?:đổi|doi|thay)\s+(?:xe\s+|từ\s+|tu\s+)?\d{2}[A-Za-z]{1,2}[\s.\-/]*\d{3,6}(?:\.\d{2,3})?\s+(?:sang|qua|thành|thanh|bằng|bang)\s+(?:xe\s+)?\d{2}[A-Za-z]{1,2}[\s.\-/]*\d{3,6}(?:\.\d{2,3})?",
+        r"(?:đổi|doi|thay)\s+(?:xe\s+|từ\s+|tu\s+)?\d{2}[A-Za-zĐđ]{1,2}[ \t\u00a0.\-/]*\d{3,6}(?:\.\d{2,3})?\s+(?:sang|qua|thành|thanh|bằng|bang)\s+(?:xe\s+)?\d{2}[A-Za-zĐđ]{1,2}[ \t\u00a0.\-/]*\d{3,6}(?:\.\d{2,3})?",
         re.IGNORECASE,
     )
-    _CONT_REGEX = re.compile(
-        r"\b(?:[A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d){7}|[A-Za-z]{4}[\.\-]?\d(?:[\s.\-]*\d){6})\b",
-        re.IGNORECASE,
-    )
+    _CONT_REGEX = CONT_REGEX
     _TABLE_HEADER_REGEX = re.compile(
         r"^(?:\|\s*)?(?:stt|tt)\s*[|\t].*(?:biển\s*số|bien\s*so|\bxe\b|\bcont|container|tài\s*xế|tai\s*xe|sđt|sdt|điện\s*thoại)"
         r"|^(?:biển\s*số|bien\s*so)\s*[|\t]\s*(?:container|cont)\s*[|\t]\s*(?:tài\s*xế|tai\s*xe)",
@@ -181,15 +217,28 @@ class MessageSegmenter:
         if len([p for p in tag_parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)]) >= 2:
             return [p for p in tag_parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)]
 
-        # 3. Đánh số thứ tự hoặc nhãn xe trên cùng một hàng: `1) ... 2) ...`, `1. ... 2. ...`, `Xe 1: ... Xe 2: ...`
+        # 3. Đánh số thứ tự hoặc nhãn xe trên cùng một hàng: `1) ... 2) ...`, `2)72C...`, `1. ... 2. ...`, `Xe 1: ... Xe 2: ...`
         inline_numbered = re.split(
-            r"(?:(?<=^)|(?<=[\s,|/]))(?=(?:xe\s*\d+\s*[:\-]|\d{1,2}[\.\)]\s+(?=[A-Za-z0-9À-ỹ])))",
+            r"(?:(?<=^)|(?<=[\s,|/;]))(?=(?:xe\s*\d+\s*[:\-]|\d{1,2}[\.\)]\s*(?=[A-Za-z0-9À-ỹ])))",
             text,
             flags=re.IGNORECASE,
         )
-        num_parts = [p.strip(" ,|/") for p in inline_numbered if p.strip(" ,|/")]
+        num_parts = [p.strip(" ,|/;") for p in inline_numbered if p.strip(" ,|/;")]
         if len([p for p in num_parts if cls._non_trailer_plates(p)]) >= 2:
             return [p for p in num_parts if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)]
+
+        # 3b. Ngăn cách nội dòng bằng `/` hoặc `;` ngay trước xe kế tiếp (VD: '/ Xe 15H00814', '/ 72C-64021') — không cắt trước rơ-moóc R/RM
+        if not cls._SWAP_PLATE_REGEX.search(text):
+            slash_parts = re.split(
+                r"[/;]\s*(?=(?:xe|bks|bsx|bs|số\s*xe)\s*[0-9]{2}(?![A-Za-z]?R[M]?\b)[A-Za-z]"
+                r"|\b[0-9]{2}(?![A-Za-z]?R[M]?(?:[\s.\-/]|\d))[A-Za-z]{1,2}[\s.\-/]*(?:\d{3}[\s.\-]\d{1,3}|\d{4,6})\b"
+                r"|\d{1,2}[\.\)]\s*)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            slash_valid = [p.strip(" ,|/;") for p in slash_parts if p.strip(" ,|/;")]
+            if len([p for p in slash_valid if cls._non_trailer_plates(p)]) >= 2:
+                return [p for p in slash_valid if cls._non_trailer_plates(p) or cls._CONT_REGEX.search(p)]
 
         # 4. Ngăn cách bằng dấu phẩy `,` hoặc dấu `|` khi mỗi đoạn đều có biển số đầu kéo riêng
         for delim_pat in (r"\s*\|\s*", r"\s*,\s*"):
@@ -295,7 +344,7 @@ class MessageSegmenter:
             return []
 
         main_text, quoted_text = cls.strip_quoted_block(raw_text)
-        cleaned_text = main_text.strip()
+        cleaned_text = normalize_segment_text(main_text)
 
         # Tiền xử lý JSON payload (1 object hoặc json_array nhiều chuyến)
         json_blocks = cls._try_segment_json(cleaned_text)

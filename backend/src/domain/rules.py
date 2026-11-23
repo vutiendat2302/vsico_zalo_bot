@@ -116,20 +116,11 @@ def clean_plate(raw_plate: Optional[str]) -> Optional[str]:
     return f"{prefix}-{digits}"
 
 
-def clean_phone(raw_phone: Optional[str]) -> Optional[str]:
-    """Chuẩn hóa số điện thoại di động Việt Nam về đúng 10 chữ số bắt đầu bằng số 0.
-
-    Lưu ý: Giữ nguyên số thật khi lưu vào cơ sở dữ liệu
-
-    Args:
-        raw_phone (Optional[str]): Chuỗi SĐT thô (ví dụ: '0931142873', '+84 903.976.359').
-
-    Returns:
-        Optional[str]: Chuỗi SĐT 10 chữ số (ví dụ: '0931142873').
-    """
-    if not raw_phone:
+def _clean_single_phone(raw_token: str) -> Optional[str]:
+    """Chuẩn hóa một số điện thoại di động đơn lẻ về dạng nội địa bắt đầu bằng 0."""
+    stripped = (raw_token or "").strip()
+    if not stripped:
         return None
-    stripped = raw_phone.strip()
     if "*" in stripped:
         masked = re.sub(r"[^0-9*]", "", stripped)
         if masked.startswith("84") and len(masked) == 11:
@@ -140,6 +131,99 @@ def clean_phone(raw_phone: Optional[str]) -> Optional[str]:
     if digits.startswith("84") and len(digits) == 11:
         digits = "0" + digits[2:]
     return digits if digits else None
+
+
+def split_phones(phone_str: Optional[str]) -> list[str]:
+    """Tách chuỗi một hoặc nhiều SĐT (ngăn cách bởi `|`, `/`, `,`, `;`) thành danh sách chuẩn hóa không trùng lặp."""
+    if not phone_str:
+        return []
+    raw = str(phone_str).strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in re.split(r"\s*[|/,;]\s*", raw) if p.strip()]
+    results: list[str] = []
+    for part in parts:
+        cleaned = _clean_single_phone(part)
+        if cleaned and cleaned not in results:
+            results.append(cleaned)
+    if not results:
+        single = _clean_single_phone(raw)
+        if single:
+            results.append(single)
+    return results
+
+
+def is_valid_phone_list(phone_str: Optional[str]) -> bool:
+    """Kiểm tra chuỗi 1 hoặc nhiều SĐT (`09..1 | 09..2`) có hợp lệ toàn bộ (mỗi số đúng 10 chữ số đầu 0)."""
+    phones = split_phones(phone_str)
+    if not phones:
+        return False
+    for ph in phones:
+        if "*" in ph:
+            if len(ph) != 10 or not ph.startswith("0"):
+                return False
+        elif not re.match(r"^0\d{9}$", ph):
+            return False
+    return True
+
+
+def clean_phone(raw_phone: Optional[str]) -> Optional[str]:
+    """Chuẩn hóa một hoặc nhiều SĐT di động Việt Nam (nhiều số lưu theo dạng `'09..1 | 09..2'`).
+
+    Lưu ý: Giữ nguyên số thật khi lưu vào cơ sở dữ liệu.
+
+    Args:
+        raw_phone (Optional[str]): Chuỗi SĐT thô (ví dụ: '0931142873', '+84 903.976.359', '0394251493/0984131254').
+
+    Returns:
+        Optional[str]: Chuỗi 1 SĐT hoặc nhiều SĐT ngăn cách bởi `' | '`.
+    """
+    if not raw_phone:
+        return None
+    stripped = str(raw_phone).strip()
+    if not stripped:
+        return None
+    if re.search(r"[|/,;]", stripped):
+        phones = split_phones(stripped)
+        return " | ".join(phones) if phones else None
+    return _clean_single_phone(stripped)
+
+
+# Danh mục âm tiết họ tên tiếng Việt phổ biến để tách các từ gõ dính liền phím (VD: 'tiếnhưng' -> 'tiến hưng')
+COMMON_VIETNAMESE_SYLLABLES: frozenset[str] = frozenset({
+    "nguyen", "nguyễn", "tran", "trần", "le", "lê", "pham", "phạm", "hoang", "hoàng", "huynh", "huỳnh",
+    "phan", "vu", "vũ", "vo", "võ", "dang", "đặng", "bui", "bùi", "do", "đỗ", "ho", "hồ", "ngo", "ngô",
+    "duong", "dương", "ly", "lý", "dao", "đào", "doan", "đoàn", "vuong", "vương", "trinh", "trịnh",
+    "truong", "trương", "dinh", "đinh", "lam", "lâm", "phung", "phùng", "mai", "to", "tô", "ha", "hà",
+    "luc", "lục", "ta", "tạ", "cao", "trieu", "triệu", "chau", "châu", "luong", "lương", "khuat", "khuất",
+    "van", "văn", "thi", "thị", "huu", "hữu", "duc", "đức", "xuan", "xuân", "quoc", "quốc", "dinh", "đình",
+    "tien", "tiến", "hung", "hưng", "hùng", "hai", "hải", "nam", "bao", "bảo", "khoa", "long",
+    "tuan", "tuấn", "dung", "dũng", "minh", "thanh", "thành", "dat", "đạt", "binh", "bình", "phat", "phát",
+    "luc", "lực", "anh", "tai", "tài", "thang", "thắng", "son", "sơn", "tung", "tùng", "quan", "quân",
+    "quang", "phuc", "phúc", "trong", "trọng", "trung", "kien", "kiên", "viet", "việt", "cuong", "cường",
+    "toan", "toàn", "ngoc", "ngọc", "chinh", "chính", "chien", "chiến", "cong", "công", "phuong", "phương",
+    "thao", "thảo", "trang", "linh", "nga", "huong", "hương", "lan", "tam", "tâm", "tuyen", "tuyên", "tuyển",
+    "thuan", "thuận", "tri", "trí", "hieu", "hiếu", "hien", "hiền", "hiển", "huy", "kha", "khả",
+    "giang", "hiep", "hiệp", "nhan", "nhân", "phong", "quy", "quý", "thuc", "thực", "diep", "diệp",
+    "vi", "vĩ", "hoa", "hòa", "huynh", "bien", "biên", "thoai", "thoại", "duan", "duẩn", "duân",
+    "tu", "tú", "tư", "loc", "lộc", "khanh", "khánh", "cuong", "sang", "sáng", "thinh", "thịnh",
+})
+
+
+def _split_syllables_recursive(w_low: str, extra_syllables: Optional[frozenset[str]] = None) -> list[str]:
+    """Tách đệ quy âm tiết tiếng Việt bị viết dính liền thành từng từ độc lập."""
+    vocab = COMMON_VIETNAMESE_SYLLABLES | extra_syllables if extra_syllables else COMMON_VIETNAMESE_SYLLABLES
+    if not w_low:
+        return []
+    if len(w_low) < 4 or w_low in vocab:
+        return [w_low]
+    for i in range(2, min(len(w_low) - 1, 8)):
+        p1 = w_low[:i]
+        if p1 in vocab:
+            rest = _split_syllables_recursive(w_low[i:], extra_syllables)
+            if rest and all(r in vocab for r in rest):
+                return [p1] + rest
+    return [w_low]
 
 
 _DRIVER_PREFIX_PATTERN = re.compile(
@@ -168,17 +252,14 @@ def _strip_symbols_and_controls(text: str) -> str:
     return "".join(cleaned_chars)
 
 
-def clean_driver_name(raw_name: Optional[str]) -> Optional[str]:
-    """Chuẩn hóa họ tên tài xế, loại bỏ emoji và nhãn phân cách nhưng giữ nguyên dấu tiếng Việt gốc.
+def clean_driver_name(
+    raw_name: Optional[str],
+    extra_syllables: Optional[frozenset[str]] = None,
+) -> Optional[str]:
+    """Chuẩn hóa họ tên tài xế, loại bỏ emoji/nhãn, tách âm tiết dính liền nhưng giữ nguyên dấu gốc.
 
     Chỉ cắt nhãn nghề nghiệp rõ ràng (`Tài xế:`, `Lái xe:`, `TX:`, `LX:`), không cắt các từ đơn
     như `anh`, `chú`, `tài` để tránh mất tên đệm/họ (VD: 'Anh Tuấn', 'Tài Linh').
-
-    Args:
-        raw_name (Optional[str]): Chuỗi tên tài xế thô từ tin nhắn hoặc từ AI Extractor.
-
-    Returns:
-        Optional[str]: Họ tên tài xế đã làm sạch, hoặc None nếu không còn ký tự tên hợp lệ.
     """
     if not raw_name:
         return None
@@ -209,7 +290,18 @@ def clean_driver_name(raw_name: Optional[str]) -> Optional[str]:
     if not text or not any(ch.isalpha() for ch in text):
         return None
 
-    return " ".join(word[0].upper() + word[1:].lower() for word in text.split() if word)
+    expanded_words: list[str] = []
+    for word in text.split():
+        if not word:
+            continue
+        if word.isalpha() and len(word) >= 5:
+            parts = _split_syllables_recursive(word.lower(), extra_syllables)
+            if len(parts) > 1:
+                expanded_words.extend(parts)
+                continue
+        expanded_words.append(word)
+
+    return " ".join(w[0].upper() + w[1:].lower() for w in expanded_words if w)
 
 
 def split_truck_plate_and_driver(

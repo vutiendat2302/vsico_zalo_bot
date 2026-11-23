@@ -60,6 +60,7 @@ def test_template_builder_supports_uppercase_load_and_return_orders() -> None:
         line = ExtractedContainerLine(
             line_no=1,
             truck_plate="50H-049.15",
+            trailer_plate="15R-181.29",
             driver_name="Trần Bình",
             driver_phone="0912345678",
             container_no=cont,
@@ -73,6 +74,13 @@ def test_template_builder_supports_uppercase_load_and_return_orders() -> None:
         )
         ok, missing = OutboundTemplateBuilder.check_core_fields_completeness(line)
         assert ok is True, f"Không mong đợi thiếu trường cho {order_type}: {missing}"
+        # Khi thiếu biển số rơ-moóc -> bắt buộc báo thiếu rơ-moóc ngay
+        from dataclasses import replace
+
+        line_no_trailer = replace(line, trailer_plate=None)
+        ok_no_tr, missing_no_tr = OutboundTemplateBuilder.check_core_fields_completeness(line_no_trailer)
+        assert ok_no_tr is False
+        assert "Biển số rơ-moóc" in missing_no_tr
         rendered = OutboundTemplateBuilder.build_customer_notification(line)
         assert expected_header in rendered
         assert cont in rendered

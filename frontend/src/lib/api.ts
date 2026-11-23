@@ -5,7 +5,18 @@
  * Toàn bộ dữ liệu hiển thị trên giao diện người dùng được gọi trực tiếp từ FastAPI Backend.
  */
 
+import { getAuthToken } from "./auth";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+function getAuthHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra || {}) };
+  const token = getAuthToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 export interface DashboardSummary {
   ok: boolean;
@@ -56,6 +67,7 @@ export interface DashboardSummary {
     id: string;
     zalo_message_id: string;
     group_id: string;
+    group_name?: string | null;
     sender_name: string;
     raw_text: string;
     sent_at: string;
@@ -209,6 +221,8 @@ export interface ReviewCandidatePlan {
   customer_name?: string | null;
   warehouse_name?: string | null;
   container_no?: string | null;
+  plan_date?: string | null;
+  required_time?: string | null;
   version?: number | null;
   score?: number;
   evidences?: string[];
@@ -226,6 +240,14 @@ export interface ReviewCaseItem {
   priority?: string | null;
   candidate_plans?: ReviewCandidatePlan[];
   details?: Record<string, any>;
+  outbound_preview?: {
+    id: string;
+    status: string;
+    message_kind?: string;
+    target_group_name?: string | null;
+    content: string;
+    last_error?: string | null;
+  } | null;
   created_at: string;
   resolved_at?: string | null;
   resolved_by?: string | null;
@@ -247,6 +269,7 @@ export interface ReviewCaseItem {
     trailer_plate?: string | null;
     driver_name?: string | null;
     driver_phone?: string | null;
+    eta?: string | null;
     validation_status?: string | null;
     warnings: string[];
   };
@@ -305,7 +328,8 @@ export async function getTransportPlans(params?: {
 export async function createTransportPlan(data: Partial<TransportPlanItem>): Promise<TransportPlanItem> {
   const res = await fetch(`${API_BASE_URL}/api/plans`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -320,7 +344,8 @@ export async function updateTransportPlan(
 ): Promise<TransportPlanItem> {
   const res = await fetch(`${API_BASE_URL}/api/plans/${id}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -332,6 +357,8 @@ export async function updateTransportPlan(
 export async function deleteTransportPlan(id: string | number): Promise<{ ok: boolean }> {
   const res = await fetch(`${API_BASE_URL}/api/plans/${id}`, {
     method: "DELETE",
+    credentials: "include",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Lỗi khi xóa Kế hoạch: HTTP ${res.status}`);
@@ -341,6 +368,8 @@ export async function deleteTransportPlan(id: string | number): Promise<{ ok: bo
 export async function deletePlansByDate(dateStr: string): Promise<{ ok: boolean; deleted_count: number }> {
   const res = await fetch(`${API_BASE_URL}/api/plans/by-date/${dateStr}`, {
     method: "DELETE",
+    credentials: "include",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Lỗi khi xóa Kế hoạch theo ngày: HTTP ${res.status}`);
@@ -361,6 +390,8 @@ export async function importPlanFile(
 
   const res = await fetch(`${API_BASE_URL}/api/plans/import?${query.toString()}`, {
     method: "POST",
+    credentials: "include",
+    headers: getAuthHeaders(),
     body: formData,
   });
   if (!res.ok) {
@@ -463,12 +494,18 @@ export async function getMessageDetail(idOrMsgId: string | number): Promise<any>
 export async function getReviewCases(params?: {
   status?: string;
   case_type?: string;
+  review_id?: string | number;
+  outbound_id?: string | number;
+  short_token?: string;
   limit?: number;
   offset?: number;
 }): Promise<ReviewsResponse> {
   const query = new URLSearchParams();
   if (params?.status) query.set("status", params.status);
   if (params?.case_type) query.set("case_type", params.case_type);
+  if (params?.review_id !== undefined) query.set("review_id", String(params.review_id));
+  if (params?.outbound_id !== undefined) query.set("outbound_id", String(params.outbound_id));
+  if (params?.short_token) query.set("short_token", params.short_token);
   if (params?.limit) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
 
@@ -482,7 +519,8 @@ export async function getReviewCases(params?: {
 export async function claimReviewCase(reviewId: string | number, operatorName?: string): Promise<any> {
   const res = await fetch(`${API_BASE_URL}/api/reviews/${reviewId}/claim`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ operator_name: operatorName || "admin" }),
   });
   if (!res.ok) {
@@ -506,12 +544,14 @@ export async function approveReviewCase(
     trailer_plate?: string;
     driver_name?: string;
     driver_phone?: string;
+    outbound_content?: string;
     cancel_reason?: string;
   }
 ): Promise<any> {
   const res = await fetch(`${API_BASE_URL}/api/reviews/${reviewId}/approve`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload || { operator_name: "admin" }),
   });
   if (!res.ok) {
@@ -527,7 +567,8 @@ export async function rejectReviewCase(
 ): Promise<any> {
   const res = await fetch(`${API_BASE_URL}/api/reviews/${reviewId}/reject`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ reason, operator_name: operatorName || "admin" }),
   });
   if (!res.ok) {
@@ -573,6 +614,7 @@ export interface OutboundContainerInfo {
   driver_phone?: string;
   seal_no?: string;
   plan_date?: string;
+  eta?: string;
 }
 
 export interface OutboundMessageItem {
@@ -587,6 +629,7 @@ export interface OutboundMessageItem {
   review_zalo_msg_id?: string;
   approved_by?: string;
   approved_at?: string;
+  approval_source?: "approved" | "auto" | string;
   status:
     | "SENT"
     | "PENDING_APPROVAL"
@@ -613,8 +656,12 @@ export interface OutboundSummary {
   total: number;
   da_gui: number;
   cho_duyet: number;
+  cho_gui?: number;
   huy: number;
   that_bai: number;
+  ket_qua_dat?: number;
+  da_duyet?: number;
+  tu_dong_dat?: number;
 }
 
 export async function getOutboundSummary(): Promise<OutboundSummary> {
@@ -628,6 +675,8 @@ export async function getOutboundSummary(): Promise<OutboundSummary> {
 }
 export async function getOutboundMessages(params?: {
   status?: string;
+  results_only?: boolean;
+  source_mode?: string;
   order_type?: string;
   search?: string;
   from_time?: string;
@@ -637,6 +686,8 @@ export async function getOutboundMessages(params?: {
 }): Promise<{ ok: boolean; total: number; messages: OutboundMessageItem[] }> {
   const query = new URLSearchParams();
   if (params?.status) query.set("status", params.status);
+  if (params?.results_only) query.set("results_only", "true");
+  if (params?.source_mode) query.set("source_mode", params.source_mode);
   if (params?.order_type) query.set("order_type", params.order_type);
   if (params?.search) query.set("search", params.search);
   if (params?.from_time) query.set("from_time", params.from_time);
@@ -662,16 +713,17 @@ export async function approveOutboundMessage(
   const hasBody = Boolean(content && content.trim());
   const res = await fetch(url, {
     method: "POST",
+    credentials: "include",
     ...(hasBody
       ? {
-          headers: { "Content-Type": "application/json" },
+          headers: getAuthHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({ content: content?.trim(), operator_name: operatorName || "Điều độ viên" }),
         }
-      : {}),
+      : { headers: getAuthHeaders() }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Lỗi khi duyệt tin #${id}`);
+    throw new Error(err.detail || `Lỗi khi duyệt tin gửi`);
   }
   return res.json();
 }
@@ -679,10 +731,10 @@ export async function approveMessageByDHVT(messageId: number, operatorName?: str
   const url = `${API_BASE_URL}/api/messages/${messageId}/approve?operator_name=${encodeURIComponent(
     operatorName || "Điều độ viên ĐHVT"
   )}`;
-  const res = await fetch(url, { method: "POST" });
+  const res = await fetch(url, { method: "POST", credentials: "include", headers: getAuthHeaders() });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Lỗi khi ĐHVT duyệt tin #${messageId}`);
+    throw new Error(err.detail || `Lỗi khi ĐHVT duyệt tin nhắn`);
   }
   return res.json();
 }
@@ -692,12 +744,13 @@ export async function rejectMessageByDHVT(messageId: number, reason?: string, op
   )}`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ reason: reason || "ĐHVT từ chối tin nhắn điều xe." }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Lỗi khi ĐHVT từ chối tin #${messageId}`);
+    throw new Error(err.detail || `Lỗi khi ĐHVT từ chối tin nhắn`);
   }
   return res.json();
 }
@@ -705,29 +758,22 @@ export async function cancelOutboundMessage(id: string | number, reason?: string
   const url = `${API_BASE_URL}/api/outbound/messages/${id}/cancel`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ reason }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Lỗi khi hủy tin #${id}`);
+    throw new Error(err.detail || `Lỗi khi hủy tin gửi`);
   }
   return res.json();
 }
 export async function resendOutboundMessage(id: string | number): Promise<any> {
   const url = `${API_BASE_URL}/api/outbound/messages/${id}/resend`;
-  const res = await fetch(url, { method: "POST" });
+  const res = await fetch(url, { method: "POST", credentials: "include", headers: getAuthHeaders() });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Lỗi khi gửi lại tin #${id}`);
-  }
-  return res.json();
-}
-export async function seedOutboundSamples(): Promise<any> {
-  const url = `${API_BASE_URL}/api/outbound/seed-samples`;
-  const res = await fetch(url, { method: "POST" });
-  if (!res.ok) {
-    throw new Error("Lỗi khi tạo tin nhắn kết quả mẫu");
+    throw new Error(err.detail || `Lỗi khi gửi lại tin nhắn`);
   }
   return res.json();
 }
@@ -785,7 +831,8 @@ export async function updateGroupSendMode(
   const url = `${API_BASE_URL}/api/groups/${groupId}/send-mode`;
   const res = await fetch(url, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ send_mode: sendMode }),
   });
   if (!res.ok) {
@@ -809,7 +856,8 @@ export async function updateRealGroupStatus(
   const url = `${API_BASE_URL}/api/groups/${groupId}/status`;
   const res = await fetch(url, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
@@ -832,29 +880,13 @@ export async function updateRealGroupStatusByZaloId(
   const url = `${API_BASE_URL}/api/groups/by-zalo-id/${encodeURIComponent(zaloGroupId)}/status`;
   const res = await fetch(url, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Lỗi khi cập nhật nhóm Zalo ${zaloGroupId}`);
-  }
-  return res.json();
-}
-export async function deleteAllTestGroups(): Promise<{
-  ok: boolean;
-  message: string;
-  deleted_count: number;
-  deleted_groups: string[];
-  remaining_real_groups: ZaloGroupItem[];
-}> {
-  const url = `${API_BASE_URL}/api/groups/test-groups`;
-  const res = await fetch(url, {
-    method: "DELETE",
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Lỗi khi xóa nhóm test");
   }
   return res.json();
 }
@@ -864,6 +896,8 @@ export async function deleteGroup(
   const url = `${API_BASE_URL}/api/groups/${groupId}`;
   const res = await fetch(url, {
     method: "DELETE",
+    credentials: "include",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -875,7 +909,8 @@ export async function createGroup(payload: Partial<ZaloGroupItem>): Promise<{ ok
   const url = `${API_BASE_URL}/api/groups`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
@@ -946,6 +981,8 @@ export async function syncTransportPlansFromTms(params: {
   }
   const res = await fetch(`${API_BASE_URL}/api/plans/sync-tms?${qs.toString()}`, {
     method: "POST",
+    credentials: "include",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

@@ -17,6 +17,7 @@ from src.config.settings import settings
 from src.domain.enums import MessageStatus, OutboundStatus
 from src.infrastructure.database import get_db
 from src.infrastructure.models import BotReply, OutboundMessage, OutboundMessageItem, ZaloGroup
+from src.infrastructure.zalo_watchdog import zalo_watchdog
 from src.ingestion.normalizer import WebhookIngestor
 
 router = APIRouter(tags=["1. Zalo Webhook & Ingestion"])
@@ -53,6 +54,7 @@ def receive_zalo_webhook(
         dict[str, Any]: Kết quả tiếp nhận, trạng thái FIFO và danh sách xe/container vừa bóc tách.
     """
     _verify_webhook_secret(x_webhook_secret)
+    zalo_watchdog.record_webhook_received()
 
     msg, is_duplicate = WebhookIngestor.ingest_webhook_payload(
         db=db,
@@ -127,6 +129,7 @@ def receive_zalo_webhook(
     return {
         "ok": True,
         "status": "DUPLICATE" if is_duplicate else "ENQUEUED",
+        "group_process_delay_seconds": int(getattr(settings, "GROUP_PROCESS_DELAY_SECONDS", 60) or 0),
         "record_id": msg.id,
         "zalo_message_id": msg.zalo_message_id,
         "group_id": msg.group_id,

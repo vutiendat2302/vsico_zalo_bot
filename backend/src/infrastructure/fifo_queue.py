@@ -16,9 +16,10 @@ from typing import Callable, Optional
 from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
-from src.domain.enums import MessageStatus
+from src.config.settings import settings
+from src.domain.enums import GroupRole, MessageStatus
 from src.infrastructure.database import SessionLocal
-from src.infrastructure.models import ZaloMessage
+from src.infrastructure.models import ZaloGroup, ZaloMessage
 from src.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -80,11 +81,62 @@ class FIFOExtractionQueue:
         """
         self.drain_fifo(db)
 
-    def drain_fifo(self, db: Optional[Session] = None) -> list[int]:
-        """Rút và xử lý toàn bộ các tin nhắn đang chờ theo đúng thứ tự FIFO (Vào Trước Ra Trước).
+    @staticmethod
+    def _to_naive_local(dt: Optional[datetime]) -> Optional[datetime]:
+        """Chuẩn hóa datetime về naive theo đồng hồ máy chủ (khớp `models.utc_now()`)."""
+        if dt is None:
+            return None
+        if dt.tzinfo is not None:
+            return dt.astimezone().replace(tzinfo=None)
+        return dt
+
+    @classmethod
+    def _is_group_ready(
+        cls,
+        pending_timestamps: list[datetime],
+        *,
+        group_role: Optional[str] = None,
+        has_processing_recovery: bool = False,
+        now: Optional[datetime] = None,
+        force: bool = False,
+    ) -> bool:
+        """Chỉ áp dụng cửa sổ đợi 20s (trần tối đa 60s) cho nhóm Nhà xe (`SOURCE`/`CARRIER`); nhóm ĐHVT và nhóm khác xử lý ngay."""
+        if force:
+            return True
+        if has_processing_recovery and not pending_timestamps:
+            return True
+        # Chỉ giữ chờ đối với nhóm Nhà xe (`SOURCE` / `CARRIER`); nhóm ĐHVT, Khách hàng và Chat cá nhân trả lời luôn
+        role_upper = (group_role or "").strip().upper()
+        if role_upper not in (GroupRole.SOURCE.value, GroupRole.CARRIER.value):
+            return True
+
+        delay_sec = max(0, int(getattr(settings, "GROUP_PROCESS_DELAY_SECONDS", 20) or 0))
+        if delay_sec <= 0 or not pending_timestamps:
+            return True
+
+        ref_now = cls._to_naive_local(now) or datetime.now()
+        norm_ts = [t for t in (cls._to_naive_local(x) for x in pending_timestamps) if t is not None]
+        if not norm_ts:
+            return True
+        earliest = min(norm_ts)
+        latest = max(norm_ts)
+
+        # Phương án A cho nhóm Nhà xe: Đợi nhóm im lặng đủ 20s tính từ tin nhắn cuối cùng
+        if (ref_now - latest) >= timedelta(seconds=delay_sec):
+            return True
+
+        # Trần tối đa 60s chống treo khi nhóm Nhà xe nhắn liên tục
+        max_wait_sec = max(0, int(getattr(settings, "GROUP_PROCESS_MAX_WAIT_SECONDS", 60) or 0))
+        if max_wait_sec > 0 and (ref_now - earliest) >= timedelta(seconds=max_wait_sec):
+            return True
+        return False
+
+    def drain_fifo(self, db: Optional[Session] = None, force: bool = False) -> list[int]:
+        """Rút và xử lý tin nhắn theo FIFO (nhóm Nhà xe đợi im lặng 20s/trần 60s, nhóm ĐHVT xử lý ngay).
 
         Args:
             db (Optional[Session]): Phiên kết nối DB truyền vào (nếu không truyền sẽ tự mở phiên mới).
+            force (bool): Bỏ qua thời gian đợi của nhóm Nhà xe để xử lý ngay (mặc định False).
 
         Returns:
             list[int]: Danh sách các `message_id` đã được xử lý theo đúng thứ tự thực thi.
@@ -93,16 +145,59 @@ class FIFOExtractionQueue:
             logger.warning("Chưa đăng ký hàm processor_fn cho FIFOExtractionQueue.")
             return []
 
+        now = datetime.now()
         if db is None:
             with SessionLocal() as scan:
-                rows = scan.execute(select(ZaloMessage.id, ZaloMessage.group_id).where(
-                    ZaloMessage.processing_status.in_(["RECEIVED", "QUEUED", "PROCESSING"])
-                ).order_by(ZaloMessage.id).limit(500)).all()
-            groups: dict[str, list[int]] = defaultdict(list)
-            for mid, gid in rows:
-                groups[gid].append(mid)
+                rows = scan.execute(
+                    select(
+                        ZaloMessage.id,
+                        ZaloMessage.group_id,
+                        ZaloMessage.processing_status,
+                        ZaloMessage.received_at,
+                        ZaloMessage.created_at,
+                    )
+                    .where(ZaloMessage.processing_status.in_(["RECEIVED", "QUEUED", "PROCESSING"]))
+                    .order_by(ZaloMessage.id)
+                    .limit(500)
+                ).all()
+                gids = list({gid for _mid, gid, *_ in rows if gid})
+                role_map: dict[str, str] = (
+                    dict(
+                        scan.execute(
+                            select(ZaloGroup.zalo_group_id, ZaloGroup.group_role).where(
+                                ZaloGroup.zalo_group_id.in_(gids)
+                            )
+                        ).all()
+                    )
+                    if gids
+                    else {}
+                )
+            group_ids_map: dict[str, list[int]] = defaultdict(list)
+            group_ts_map: dict[str, list[datetime]] = defaultdict(list)
+            group_has_proc: dict[str, bool] = defaultdict(bool)
+            for mid, gid, st, recv_at, crt_at in rows:
+                group_ids_map[gid].append(mid)
+                if st == "PROCESSING":
+                    group_has_proc[gid] = True
+                else:
+                    ts = recv_at or crt_at
+                    if ts is not None:
+                        group_ts_map[gid].append(ts)
+            ready_groups = {
+                gid: mids
+                for gid, mids in group_ids_map.items()
+                if self._is_group_ready(
+                    group_ts_map.get(gid, []),
+                    group_role=role_map.get(gid),
+                    has_processing_recovery=group_has_proc.get(gid, False),
+                    now=now,
+                    force=force,
+                )
+            }
+            if not ready_groups:
+                return []
             with ThreadPoolExecutor(max_workers=4) as executor:
-                batches = list(executor.map(self._process_group, groups.items()))
+                batches = list(executor.map(self._process_group, ready_groups.items()))
             return [mid for batch in batches for mid in batch]
 
         processed_ids: list[int] = []
@@ -110,9 +205,14 @@ class FIFOExtractionQueue:
             own_session = db is None
             session: Session = db if db is not None else SessionLocal()
             try:
-                # 1. Lấy tất cả các tin nhắn đang ở trạng thái chờ xử lý trong DB theo thứ tự id ASC (vào trước ra trước)
+                # 1. Lấy tất cả các tin nhắn đang ở trạng thái chờ xử lý trong DB theo thứ tự id ASC
                 pending_stmt = (
-                    select(ZaloMessage.id)
+                    select(
+                        ZaloMessage.id,
+                        ZaloMessage.group_id,
+                        ZaloMessage.received_at,
+                        ZaloMessage.created_at,
+                    )
                     .where(
                         ZaloMessage.processing_status.in_(
                             [MessageStatus.RECEIVED.value, MessageStatus.QUEUED.value]
@@ -120,26 +220,63 @@ class FIFOExtractionQueue:
                     )
                     .order_by(ZaloMessage.id.asc())
                 )
-                db_pending_ids = list(session.scalars(pending_stmt).all())
+                pending_rows = session.execute(pending_stmt).all()
+                gids_s = list({gid for _mid, gid, *_ in pending_rows if gid})
+                role_map_s: dict[str, str] = (
+                    dict(
+                        session.execute(
+                            select(ZaloGroup.zalo_group_id, ZaloGroup.group_role).where(
+                                ZaloGroup.zalo_group_id.in_(gids_s)
+                            )
+                        ).all()
+                    )
+                    if gids_s
+                    else {}
+                )
+                group_ids_map_s: dict[str, list[int]] = defaultdict(list)
+                group_ts_map_s: dict[str, list[datetime]] = defaultdict(list)
+                for mid, gid, recv_at, crt_at in pending_rows:
+                    group_ids_map_s[gid].append(mid)
+                    ts = recv_at or crt_at
+                    if ts is not None:
+                        group_ts_map_s[gid].append(ts)
 
-                # 2. Rút hết các phần tử hiện có trong in-memory queue để đồng bộ
-                mem_ids: list[int] = []
+                ready_id_set: set[int] = set()
+                unready_id_set: set[int] = set()
+                for gid, mids in group_ids_map_s.items():
+                    if self._is_group_ready(
+                        group_ts_map_s.get(gid, []),
+                        group_role=role_map_s.get(gid),
+                        now=now,
+                        force=force,
+                    ):
+                        ready_id_set.update(mids)
+                    else:
+                        unready_id_set.update(mids)
+
+                # 2. Chỉ tiêu thụ mem_ids thuộc các nhóm đã sẵn sàng; giữ lại ID chưa đủ 60s trong queue
+                requeue_ids: list[int] = []
+                mem_ready_ids: list[int] = []
                 while not self._queue.empty():
                     try:
-                        mem_ids.append(self._queue.get_nowait())
+                        mem_id = self._queue.get_nowait()
                         self._queue.task_done()
+                        if force or mem_id not in unready_id_set:
+                            if mem_id in ready_id_set or force:
+                                mem_ready_ids.append(mem_id)
+                            else:
+                                requeue_ids.append(mem_id)
+                        else:
+                            requeue_ids.append(mem_id)
                     except queue.Empty:
                         break
+                for r_id in requeue_ids:
+                    self._queue.put(r_id)
 
                 # 3. Hợp nhất danh sách cần xử lý theo thứ tự tăng dần của ID (đảm bảo tuyệt đối FIFO)
-                ordered_ids: list[int] = []
-                seen: set[int] = set()
-                for mid in sorted(set(db_pending_ids + mem_ids)):
-                    if mid not in seen:
-                        seen.add(mid)
-                        ordered_ids.append(mid)
+                ordered_ids: list[int] = sorted(ready_id_set | set(mem_ready_ids))
 
-                # 4. Thực thi tuần tự từng tin nhắn một
+                # 4. Thực thi tuần tự từng tin nhắn đã qua cửa sổ chờ 60s
                 for mid in ordered_ids:
                     try:
                         self._processor_fn(session, mid)

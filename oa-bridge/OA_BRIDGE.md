@@ -1,4 +1,4 @@
-# Đặc tả Kỹ thuật Cầu nối Zalo Official Account (`oa-bridge` v1.0.0)
+# Đặc tả Kỹ thuật Cầu nối Zalo Official Account (`oa-bridge` v1.5.0)
 
 Module `oa-bridge` là dịch vụ cầu nối viết bằng **Node.js (ESM)**, đóng vai trò trung gian giao tiếp hai chiều giữa nền tảng **Zalo Official Account (OA)** — bao gồm cả nhóm chat GMF (Group Message Feature) và hội thoại cá nhân 1-1 (`direct_<user_id>`) — với phân hệ `backend` FastAPI.
 
@@ -13,10 +13,10 @@ Module `oa-bridge` là dịch vụ cầu nối viết bằng **Node.js (ESM)**, 
 2. **Đồng bộ Danh sách Nhóm Thực tế (`GET /api/bot/groups`)**:
    - Kết nối trực tiếp tới Zalo OA GMF API (`https://openapi.zalo.me/v3.0/oa/group/getgroupsofoa`) để lấy danh sách nhóm thật của OA (tên nhóm, `group_id`, `total_member`, `group_link`, `status`).
    - Kết hợp cùng danh sách hội thoại cá nhân (`type: "oa_direct"`, `group_id: "direct_<userId>"`) và trả về cho `backend` khi `GET /api/groups` gọi đồng bộ tự động (`sync_live_groups_from_bridge`).
-3. **Chi tiết Thành viên Nhóm (`GET /api/bot/groups/:groupId`)**:
-   - Truy vấn thông tin chi tiết nhóm và danh sách thành viên để hiển thị trên màn hình Quản lý Nhóm Zalo (`/groups`) của Frontend Dashboard.
-4. **Phát hành Tin nhắn (`POST /api/bot/send`)**:
-   - Nhận lệnh gửi tin từ `ZaloOutboundThrottler` của `backend` và tự động phân nhánh gửi vào nhóm GMF hoặc gửi tin nhắn trực tiếp 1-1 (`direct_<user_id>`) qua Zalo OA OpenAPI.
+3. **Chi tiết Nhóm & Thành viên (`GET /api/bot/groups/:groupId/info`, `/members`, `/messages`)**:
+   - Truy vấn thông tin chi tiết nhóm, danh sách thành viên và lịch sử tin nhắn (hoặc cache realtime) phục vụ hiển thị trên màn hình Quản lý Nhóm Zalo (`/groups`) của Frontend Dashboard và Watchdog.
+4. **Phát hành Tin nhắn & Ảnh PNG (`POST /api/bot/send/group`, `POST /api/bot/send/user`)**:
+   - Nhận lệnh gửi tin văn bản hoặc ảnh báo cáo PNG (`imageUrl`) từ `ZaloOutboundThrottler` của `backend` và tự động phân nhánh gửi vào nhóm GMF hoặc gửi tin nhắn trực tiếp 1-1 (`direct_<user_id>`) qua Zalo OA OpenAPI.
 
 ---
 
@@ -43,7 +43,7 @@ sequenceDiagram
     BE->>BE: Đồng bộ vào bảng zalo_groups (SOURCE / TARGET / DHVT / DIRECT_CHAT)
     BE-->>FE: Hiển thị danh sách nhóm thực tế
 
-    BE->>OAB: POST /api/bot/send (to, text, quoteMsgId)
+    BE->>OAB: POST /api/bot/send/group (groupId, message, imageUrl, quoteMsgId)
     OAB->>Zalo: Gửi tin nhắn GMF hoặc OA Direct Message
     Zalo-->>OAB: Trả về message_id
     OAB-->>BE: { ok: true, messageId }
@@ -55,12 +55,18 @@ sequenceDiagram
 
 | Phương thức & Đường dẫn | Mô tả chức năng |
 | :--- | :--- |
-| `GET /health` | Kiểm tra trạng thái kết nối và cấu hình Zalo OA Access Token. |
-| `POST /webhook/zalo-oa` | Cổng nhận sự kiện Webhook từ Zalo Developer Console. |
+| `GET /health`, `/api/health`, `/api/bot/status` | Kiểm tra trạng thái kết nối và cấu hình Zalo OA Access Token (phục vụ `ZaloOaWatchdog`). |
+| `GET /api/oa/test-connection` | Kiểm tra nhanh kết nối tới Zalo OA OpenAPI (`getOaInfo`). |
+| `GET /webhook/zalo-oa`, `POST /webhook/zalo-oa` | Xác minh Webhook (`GET`) và tiếp nhận sự kiện Webhook từ Zalo OA (`POST`). |
 | `GET /api/bot/groups` | Trả về toàn bộ nhóm GMF thực tế của OA và các hội thoại `direct_<user_id>`. |
-| `GET /api/bot/groups/:groupId` | Trả về thông tin chi tiết và danh sách thành viên của một nhóm cụ thể. |
-| `POST /api/bot/send` | Gửi tin nhắn văn bản (kèm trích dẫn nếu có) vào nhóm GMF hoặc hội thoại `direct_<user_id>`. |
-| `POST /api/token/refresh` | Làm mới `ZALO_OA_ACCESS_TOKEN` bằng `ZALO_OA_REFRESH_TOKEN`. |
+| `GET /api/bot/groups/:groupId/info` | Trả về thông tin chi tiết của một nhóm GMF hoặc hội thoại trực tiếp. |
+| `GET /api/bot/groups/:groupId/members` | Trả về danh sách thành viên trong một nhóm GMF. |
+| `GET /api/bot/groups/:groupId/messages` | Lấy lịch sử tin nhắn của nhóm GMF hoặc hội thoại `direct_<user_id>`. |
+| `GET /api/bot/users`, `GET /api/bot/users/:userId` | Lấy danh sách hoặc thông tin chi tiết người dùng đang quan tâm OA. |
+| `GET /api/bot/realtime/messages`, `POST /api/bot/realtime/clear` | Tra cứu hoặc xóa bộ nhớ đệm tin nhắn realtime. |
+| `POST /api/bot/send/group` | Gửi tin nhắn văn bản hoặc ảnh (`imageUrl`, kèm `quoteMsgId` nếu có) vào nhóm GMF hoặc `direct_<user_id>`. |
+| `POST /api/bot/send/user` | Gửi tin nhắn trực tiếp 1-1 tới `userId`. |
+| `GET /zalo_verifier<ID>.html` | Phục vụ tệp xác minh tên miền Zalo OA nếu tồn tại trên thư mục gốc bridge. |
 
 ---
 

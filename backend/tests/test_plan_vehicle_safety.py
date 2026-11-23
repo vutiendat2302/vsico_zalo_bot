@@ -52,7 +52,7 @@ def test_outbox_updates_plan_without_fake_sent(db_session, monkeypatch):
     env = _setup_carrier_customer_env(db_session, cont_no=_valid_cont())
     msg = ZaloMessage(id=snowflake.generate(), zalo_message_id="test_" + uuid4().hex,
                       group_id=env["src_grp"].zalo_group_id, sender_id="test_driver",
-                      message_text=f"Xe 50H-049.15 tài xế Trần Bình 0912345678 đóng cont {_valid_cont()} 40HC seal ABC123 hẹn 09:30",
+                      message_text=f"Xe 50H-049.15 mooc 15R-181.29 tài xế Trần Bình 0912345678 đóng cont {_valid_cont()} 40HC seal ABC123 hẹn 09:30",
                       raw_payload={}, processing_status="QUEUED")
     db_session.add(msg)
     db_session.flush()

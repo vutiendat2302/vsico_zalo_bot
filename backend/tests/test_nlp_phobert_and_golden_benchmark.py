@@ -180,7 +180,15 @@ def test_enrich_local_rapidfuzz_catalog_and_coreference(db_session):
     assert enriched.warehouse_code_or_id == warehouse.id
     assert enriched.order_type == "LOAD"
     assert enriched.container_status == "DEFERRED"
-    assert enriched.field_evidences["nlp_engine"] == "rapidfuzz+catalog+phobert"
+    assert enriched.field_evidences["nlp_engine"] in ("rule_char_ngram_fuzzy_nlp", "phobert_transformers_local")
+    assert enriched.confidence >= 0.75  # Đủ tin cậy sau Tier 2, không gọi sang Tier 3 LLM
+
+    # 1b. Kiểm tra ngưỡng tin cậy intent: câu không liên quan có điểm thấp phải trả UNKNOWN (không đoán bừa)
+    from src.parsing.local_nlp_extractor import PhoBertLocalNlpEngine
+
+    low_res = PhoBertLocalNlpEngine.get_instance().analyze("thời tiết hôm nay trời nắng đẹp")
+    assert low_res.intent_label == "UNKNOWN"
+    assert low_res.intent_confidence < PhoBertLocalNlpEngine.INTENT_MIN_CONFIDENCE
 
     # 2. Giải quyết đồng tham chiếu 'xe trên' khi quote có đúng 1 xe duy nhất
     coref_raw = "Xe trên bổ sung chì SL9988 nhé"
@@ -554,23 +562,33 @@ def test_dhvt_assistant_order_stats_by_type_region_and_province(db_session, monk
 
     # 1. Hỏi tổng số lệnh và số lệnh đóng, trả theo từng vùng
     ans_all = ask_dhvt("Hôm nay tổng số lệnh, số lệnh đóng, trả theo từng vùng thế nào?")
-    assert "Tổng số lệnh: 4 | Số lệnh đóng (LO): 2 | Số lệnh trả (RO): 2" in ans_all
-    assert "Miền Bắc: tổng 3 lệnh (đóng: 2, trả: 1)" in ans_all
-    assert "Miền Trung: tổng 1 lệnh (đóng: 0, trả: 1)" in ans_all
-    assert "Tỉnh Bắc Ninh: tổng 2 lệnh (đóng: 2, trả: 0)" in ans_all
-    assert "Thành phố Hải Phòng: tổng 1 lệnh (đóng: 0, trả: 1)" in ans_all
+    assert "[VSICO] - 📊 KẾ HOẠCH VẬN CHUYỂN" in ans_all
+    assert "4 lệnh vận chuyển" in ans_all
+    assert "Lệnh đóng: 2 (50,0%)" in ans_all
+    assert "Lệnh trả: 2 (50,0%)" in ans_all
+    assert "Miền Bắc: 3 (đóng: 2 · trả: 1)" in ans_all
+    assert "Miền Trung: 1 (đóng: 0 · trả: 1)" in ans_all
+    assert "Bắc Ninh: 2 (đóng: 2 · trả: 0)" in ans_all
+    assert "Hải Phòng: 1 (đóng: 0 · trả: 1)" in ans_all
 
     # 2. Hỏi riêng số lệnh đóng
     ans_dong = ask_dhvt("Hôm nay có bao nhiêu lệnh đóng?")
-    assert "Tổng số lệnh: 2 | Số lệnh đóng (LO): 2 | Số lệnh trả (RO): 0" in ans_dong
+    assert "2 lệnh vận chuyển" in ans_dong
+    assert "Lệnh đóng: 2 (100,0%)" in ans_dong
+    assert "Lệnh trả: 0 (0,0%)" in ans_dong
 
     # 3. Hỏi riêng số lệnh trả
     ans_tra = ask_dhvt("Hôm nay có bao nhiêu lệnh trả?")
-    assert "Tổng số lệnh: 2 | Số lệnh đóng (LO): 0 | Số lệnh trả (RO): 2" in ans_tra
+    assert "2 lệnh vận chuyển" in ans_tra
+    assert "Lệnh đóng: 0 (0,0%)" in ans_tra
+    assert "Lệnh trả: 2 (100,0%)" in ans_tra
 
-    # 4. Hỏi theo tỉnh Bắc Ninh (không cần gõ chữ 'Tỉnh')
+    # 4. Hỏi theo tỉnh Bắc Ninh (không cần gõ chữ 'Tỉnh') -> tách riêng sang form Chi tiết tỉnh + danh sách lệnh
     ans_bn = ask_dhvt("Bắc Ninh hôm nay có bao nhiêu lệnh?")
-    assert "Tổng số lệnh: 2 | Số lệnh đóng (LO): 2 | Số lệnh trả (RO): 0" in ans_bn
+    assert "[VSICO] - 📍 CHI TIẾT KẾ HOẠCH BẮC NINH" in ans_bn
+    assert "2 lệnh tại Bắc Ninh" in ans_bn
+    assert "Lệnh đóng: 2 (100,0%)" in ans_bn
+    assert "Danh sách lệnh trong ngày:" in ans_bn
 
 
 # ==============================================================================
@@ -833,7 +851,7 @@ GOLDEN_MESSAGES = [
     ("DHVT", "Hôm nay có ca chờ nào cần xử lý gấp?", "dhvt_get_priority_digest"),
     ("DHVT", "Tại sao ca #123 cần duyệt?", "dhvt_explain_review_case"),
     ("DHVT", "Hôm nay tỷ lệ bot tự xử lý và dùng LLM thế nào?", "dhvt_get_bot_performance"),
-    ("DHVT", "Duyệt ca #123 cho gửi khách luôn", "BLOCK_WRITE"),
+    ("DHVT", "Duyệt ca #123 cho gửi khách luôn", "dhvt_direct_review_action"),
 ]
 
 
