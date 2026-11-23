@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { AUTH_COOKIE_NAME } from "./lib/auth";
+import { AUTH_COOKIE_NAME, TOKEN_COOKIE_NAME, isJwtExpired } from "./lib/auth";
 import { AuthUser } from "./features/auth/types";
 
 /**
+ * Xóa cookie phiên đăng nhập hết hạn khỏi phản hồi Next.js Middleware.
+ */
+function clearExpiredCookies(res: NextResponse): NextResponse {
+  res.cookies.delete(AUTH_COOKIE_NAME);
+  res.cookies.delete(TOKEN_COOKIE_NAME);
+  return res;
+}
+
+/**
  * Middleware bảo vệ các tuyến đường nội bộ của VSICO Logistics Dashboard.
- * Kiểm tra phiên đăng nhập qua cookie và phân quyền vai trò (admin / dhvt).
+ * Kiểm tra phiên đăng nhập, hạn dùng JWT token và phân quyền vai trò (admin / dhvt).
  */
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -20,8 +29,9 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Đọc cookie phiên
+  // Đọc cookie phiên và JWT token
   const sessionCookie = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+  const tokenCookie = request.cookies.get(TOKEN_COOKIE_NAME)?.value;
   let currentUser: AuthUser | null = null;
 
   if (sessionCookie) {
@@ -33,18 +43,25 @@ export function middleware(request: NextRequest) {
     }
   }
 
+  const hasValidToken = Boolean(tokenCookie && !isJwtExpired(tokenCookie));
+  const isAuthenticated = Boolean(currentUser && hasValidToken);
   const isLoginPage = pathname === "/login";
 
-  // 1. Đã đăng nhập nhưng truy cập vào trang login -> Chuyển về Dashboard
-  if (isLoginPage && currentUser) {
+  // 1. Đã đăng nhập hợp lệ nhưng truy cập vào trang login -> Chuyển về Dashboard
+  if (isLoginPage && isAuthenticated) {
     return NextResponse.redirect(new URL("/", request.url));
   }
 
-  // 2. Chưa đăng nhập và truy cập vào các trang quản trị -> Chuyển hướng về /login
-  if (!isLoginPage && !currentUser) {
+  // Ở trang login nhưng còn sót cookie hết hạn -> Dọn cookie để đăng nhập mới
+  if (isLoginPage && (sessionCookie || tokenCookie) && !isAuthenticated) {
+    return clearExpiredCookies(NextResponse.next());
+  }
+
+  // 2. Chưa đăng nhập hoặc JWT đã hết hạn -> Dọn cookie và chuyển về /login
+  if (!isLoginPage && !isAuthenticated) {
     const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("from", pathname);
-    return NextResponse.redirect(loginUrl);
+    loginUrl.searchParams.set("from", `${pathname}${request.nextUrl.search}`);
+    return clearExpiredCookies(NextResponse.redirect(loginUrl));
   }
 
   // 3. Phân quyền: Chỉ role admin mới được vào các tuyến /admin/*

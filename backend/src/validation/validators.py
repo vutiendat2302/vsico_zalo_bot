@@ -14,7 +14,7 @@ nghiệp vụ của VSICO:
 import re
 from src.domain.enums import ValidationStatus
 from src.domain.models import ExtractedContainerLine
-from src.domain.rules import compute_iso6346_check_digit, validate_iso6346
+from src.domain.rules import compute_iso6346_check_digit, is_valid_phone_list, validate_iso6346
 
 
 class ContainerValidator:
@@ -40,22 +40,32 @@ class ContainerValidator:
             if line.trailer_plate:
                 warnings.append(f"TRAILER_PLATE_IN_TRUCK_POSITION({line.trailer_plate})")
                 has_hard_error = True
-        elif not re.match(r"^\d{2}[A-Z]{1,2}-\d{3}\.\d{2}$|^\d{2}[A-Z]{1,2}-\d{4,5}$", line.truck_plate):
-            warnings.append("UNUSUAL_TRUCK_PLATE_FORMAT")
+        elif (
+            not re.match(r"^\d{2}[A-Z]{1,2}-\d{3}\.\d{2}$", line.truck_plate)
+            and line.field_evidences.get("truck_plate") not in ("carrier_vehicle_catalog", "carrier_vehicle_suffix")
+        ):
+            warnings.append("INVALID_TRUCK_PLATE_FORMAT")
+            has_hard_error = True
+
+        # 1b. Kiểm tra đầy đủ và định dạng biển số rơ-moóc (bắt buộc đủ 5 chữ số hoặc khớp danh mục)
+        if not line.trailer_plate:
+            warnings.append("MISSING_TRAILER_PLATE")
+        elif (
+            not re.match(r"^\d{2}[A-Z]?R[M]?-\d{3}\.\d{2}$", line.trailer_plate)
+            and line.field_evidences.get("trailer_plate")
+            not in ("carrier_trailer_catalog", "carrier_trailer_suffix", "carrier_trailer_catalog_reclassified")
+        ):
+            warnings.append("INVALID_TRAILER_PLATE_FORMAT")
+            has_hard_error = True
 
         # 2. Kiểm tra họ tên tài xế (Bảng 6.2 & T13: ít nhất 2 ký tự, không rỗng)
         if not line.driver_name or len(line.driver_name.strip()) < 2:
             warnings.append("MISSING_DRIVER_NAME")
 
-        # 3. Kiểm tra số điện thoại tài xế (Bảng 6.2 & TC-07, T14: đúng 10 chữ số, bắt đầu bằng 0)
+        # 3. Kiểm tra số điện thoại tài xế (hỗ trợ 1 hoặc nhiều SĐT dạng '09..1 | 09..2', mỗi số đúng 10 chữ số đầu 0)
         if not line.driver_phone:
             warnings.append("MISSING_DRIVER_PHONE")
-        elif "*" in line.driver_phone:
-            # SĐT bị ẩn một phần trong dữ liệu mẫu/log (VD: 0986****** dài 10 ký tự -> hợp lệ; 098****** dài 9 ký tự -> lỗi TC-07)
-            if len(line.driver_phone) != 10 or not line.driver_phone.startswith("0"):
-                warnings.append("INVALID_DRIVER_PHONE")
-                has_hard_error = True
-        elif not re.match(r"^0\d{9}$", line.driver_phone):
+        elif not is_valid_phone_list(line.driver_phone):
             warnings.append("INVALID_DRIVER_PHONE")
             has_hard_error = True
 

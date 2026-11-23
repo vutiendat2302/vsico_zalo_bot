@@ -181,7 +181,7 @@ def test_happy_path_carrier_dispatch_to_customer_notification(
 
     msg_text = (
         f"Đóng hàng - {env['customer'].name} - Kho Đức Hòa Long An\n"  # type: ignore[attr-defined]
-        f"Xe 15C-878.99 tài xế Nguyễn Văn An 0903123456\n"
+        f"Xe 15C-878.99 mooc 15R-181.29 tài xế Nguyễn Văn An 0903123456\n"
         f"Cont {cont} 40DC seal VS889900 hẹn 08:30"
     )
     resp = _post_and_process(api_client, db_session,
@@ -208,7 +208,7 @@ def test_happy_path_carrier_dispatch_to_customer_notification(
 def test_missing_seal_triggers_bot_reply_then_quote_supplement_resolves(
     api_client: TestClient, db_session: Session
 ) -> None:
-    """Tin thiếu chì -> tạo BotReply PENDING; nhà xe quote bổ sung chì -> merge và gửi thông báo khách."""
+    """Tin thiếu rơ-moóc -> tạo BotReply PENDING; nhà xe quote bổ sung rơ-moóc -> merge và gửi thông báo khách."""
     cont = _valid_cont("TEMU", "445566")
     env = _setup_carrier_customer_env(db_session, cont_no=cont)
     src_grp: ZaloGroup = env["src_grp"]  # type: ignore[assignment]
@@ -229,7 +229,7 @@ def test_missing_seal_triggers_bot_reply_then_quote_supplement_resolves(
     d1 = r1.json()
     assert d1["processing_status"] == MessageStatus.NEEDS_REVIEW.value
     assert d1["reply_to_carrier"] is not None
-    assert "chì" in d1["reply_to_carrier"].lower()
+    assert "rơ-moóc" in d1["reply_to_carrier"].lower()
 
     bot_reply = db_session.scalar(select(BotReply).where(BotReply.message_id == d1["record_id"]))
     assert bot_reply is not None
@@ -238,7 +238,7 @@ def test_missing_seal_triggers_bot_reply_then_quote_supplement_resolves(
     bot_reply.zalo_msg_id = f"test_bot_q_{uuid4().hex[:6]}"
     db_session.flush()
 
-    # Nhà xe reply quote đúng tin nhắc của bot để bổ sung số chì
+    # Nhà xe reply quote đúng tin nhắc của bot để bổ sung biển số rơ-moóc (kèm chì)
     r2 = _post_and_process(api_client, db_session,
         "/webhook",
         json={
@@ -246,7 +246,7 @@ def test_missing_seal_triggers_bot_reply_then_quote_supplement_resolves(
             "group_id": src_grp.zalo_group_id,
             "sender_id": "test_nha_xe_2",
             "quote_msg_id": bot_reply.zalo_msg_id,
-            "message_text": f"Bổ sung cont {cont} số chì HL778899",
+            "message_text": f"Bổ sung cont {cont} mooc 15R-181.29 số chì HL778899",
             "is_test": True,
         },
     )
@@ -286,7 +286,7 @@ def test_update_driver_flow_clarify_missing_cont_and_send_update_notification(
             "msg_id": f"test_init_{uuid4().hex[:8]}",
             "group_id": src_grp.zalo_group_id,
             "sender_id": "test_nha_xe_3",
-            "message_text": f"Xe 15C-111.22 lái xe Nguyễn A 0901112233 đóng cont {cont} 40DC chì SL1122 hẹn 08:00",
+            "message_text": f"Xe 15C-111.22 mooc 15R-181.29 lái xe Nguyễn A 0901112233 đóng cont {cont} 40DC chì SL1122 hẹn 08:00",
             "is_test": True,
         },
     )
@@ -396,7 +396,7 @@ def test_image_ocr_and_ai_service_extract_pipeline(
         classmethod(
             lambda cls, **kwargs: AIOCRResult(
                 engine="paddleocr",
-                text=f"Dong hang kho Duc Hoa\n15C-555.66 Le Minh 0905123456\nCont {cont} 40DC seal Z99881 hen 08:30",
+                text=f"Dong hang kho Duc Hoa\n15C-555.66 mooc 15R-181.29 Le Minh 0905123456\nCont {cont} 40DC seal Z99881 hen 08:30",
                 confidence=0.91,
                 lines=[{"text": f"15C-555.66 cont {cont}", "confidence": 0.91, "box": []}],
                 has_text=True,
@@ -413,6 +413,7 @@ def test_image_ocr_and_ai_service_extract_pipeline(
                 items=[
                     {
                         "plate_number": "15C-555.66",
+                        "trailer_number": "15R-181.29",
                         "driver_name": "Lê Minh",
                         "driver_phone": "0905123456",
                         "container_no": cont,
@@ -472,7 +473,7 @@ def test_outbound_send_failure_creates_alert_and_mark_manual_sent_resolves(
         sender_id="driver_real_fail",
         message_type="text",
         message_text=(
-            f"Xe 15C-777.88 tài xế Hoàng Dũng 0977888999 đóng cont {cont} "
+            f"Xe 15C-777.88 mooc 15R-181.29 tài xế Hoàng Dũng 0977888999 đóng cont {cont} "
             f"40DC seal MK112233 hẹn 10:00"
         ),
         raw_payload={"is_test": False},

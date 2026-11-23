@@ -45,6 +45,19 @@ def drain_outbox(session_factory=SessionLocal, only_ids: list[int] | None = None
             ):
                 out.status = "PENDING_APPROVAL"
                 out.last_error = "Nhóm đích không hợp lệ hoặc đã khóa."
+                for item in out.items:
+                    if item.container_job:
+                        DhvtNotificationService.create_or_merge_review_case(
+                            db=db,
+                            message_id=item.container_job.message_id,
+                            case_type="ROUTING_NOT_FOUND",
+                            reason=out.last_error,
+                            container_job_id=item.container_job_id,
+                            container_no=item.container_job.container_no,
+                            details={"outbound_message_id": str(out.id)},
+                            is_test_msg=bool(target.is_test) if target else False,
+                            notify_zalo=True,
+                        )
                 db.commit()
                 continue
 
@@ -169,17 +182,22 @@ def drain_outbox(session_factory=SessionLocal, only_ids: list[int] | None = None
                             notify_zalo=True,
                         )
                         item.container_job.message.processing_status = "NEEDS_REVIEW"
+                cont_list = [
+                    it.container_job.container_no
+                    for it in out.items
+                    if it.container_job and it.container_job.container_no
+                ]
                 DhvtNotificationService.notify_system_alert(
                     db=db,
-                    title="LOI GUI THONG BAO ZALO KHACH HANG",
+                    title="LỖI GỬI THÔNG BÁO ZALO KHÁCH HÀNG",
                     body=(
-                        f"Nhóm đích: {target.name} ({group_id})\n"
-                        f"Outbound ID: {out.id}\n"
-                        f"Lỗi: {error or 'Không xác định'}"
+                        f"Nhóm khách hàng: {target.name}\n"
+                        f"Container: {', '.join(cont_list) if cont_list else 'Chưa rõ'}\n"
+                        f"Nguyên nhân: {error or 'Không xác định'}"
                     ),
                     entity_type="outbound_message",
                     entity_id=str(out.id),
-                    web_path="/results",
+                    web_path="/reviews",
                     is_test_msg=bool(target.is_test),
                     details={"outbound_message_id": out.id, "group_id": group_id},
                 )

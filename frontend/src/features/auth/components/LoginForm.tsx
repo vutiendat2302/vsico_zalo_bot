@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff, LogIn, Loader2 } from "lucide-react";
-import { login } from "../api";
+import { getPostLoginRedirectPath, login } from "../api";
 import { LoginCredentials } from "../types";
 
 interface LoginFormProps {
@@ -33,7 +33,7 @@ export default function LoginForm({ credentials, onChange, onSuccess }: LoginFor
         if (onSuccess) {
           onSuccess();
         } else {
-          router.push("/");
+          router.push(getPostLoginRedirectPath());
           router.refresh();
         }
       } else {

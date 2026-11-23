@@ -28,6 +28,7 @@ from src.domain.enums import (
     TmsSyncStatus,
     ValidationStatus,
 )
+from src.handlers.plan_sync_service import resolve_job_expected_time
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
     ActivityLog,
@@ -42,6 +43,7 @@ from src.infrastructure.models import (
 )
 from src.infrastructure.security import get_optional_current_user
 from src.infrastructure.snowflake import snowflake
+from src.outbound.templates import format_arrival_time_display
 
 outbound_router = APIRouter(prefix="/api/outbound", tags=["Outbound Messages & Results"])
 
@@ -63,6 +65,7 @@ class OutboundContainerInfo(BaseModel):
     driver_phone: Optional[str] = None
     seal_no: Optional[str] = None
     plan_date: Optional[str] = None
+    eta: Optional[str] = None
 
 
 class OutboundMessageItemResponse(BaseModel):
@@ -93,9 +96,24 @@ class OutboundSummaryResponse(BaseModel):
     total: int = 0
     da_gui: int = 0
     cho_duyet: int = 0
+    cho_gui: int = 0
     huy: int = 0
     that_bai: int = 0
     bo_qua_trung_lap: int = 0
+    ket_qua_dat: int = 0
+    da_duyet: int = 0
+    tu_dong_dat: int = 0
+
+
+_DELIVERED_OR_PASSED_STATUSES = [
+    OutboundStatus.SENT.value,
+    "da_gui",
+    "SENT",
+    OutboundStatus.PENDING_SEND.value,
+    "PENDING_SEND",
+    OutboundStatus.SENDING.value,
+    "SENDING",
+]
 
 
 @outbound_router.get("/summary", response_model=OutboundSummaryResponse)
@@ -103,7 +121,7 @@ def get_outbound_summary(db: Session = Depends(get_db)) -> OutboundSummaryRespon
     """Lấy thống kê số lượng tin nhắn kết quả theo từng trạng thái.
 
     Returns:
-        OutboundSummaryResponse: Thống kê số lượng `da_gui`, `cho_duyet`, `huy`, `that_bai`, `bo_qua_trung_lap`.
+        OutboundSummaryResponse: Thống kê số lượng `da_gui`, `cho_duyet`, `huy`, `that_bai`, `ket_qua_dat`, `da_duyet`, `tu_dong_dat`.
     """
     total = db.scalar(select(func.count(OutboundMessage.id))) or 0
     da_gui = db.scalar(
@@ -114,6 +132,11 @@ def get_outbound_summary(db: Session = Depends(get_db)) -> OutboundSummaryRespon
     cho_duyet = db.scalar(
         select(func.count(OutboundMessage.id)).where(
             OutboundMessage.status.in_([OutboundStatus.PENDING_APPROVAL.value, "cho_duyet"])
+        )
+    ) or 0
+    cho_gui = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_([OutboundStatus.PENDING_SEND.value, OutboundStatus.SENDING.value])
         )
     ) or 0
     huy = db.scalar(
@@ -131,15 +154,32 @@ def get_outbound_summary(db: Session = Depends(get_db)) -> OutboundSummaryRespon
             OutboundMessage.status.in_([OutboundStatus.IGNORED_DUPLICATE.value, "bo_qua_trung_lap"])
         )
     ) or 0
+    ket_qua_dat = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_(_DELIVERED_OR_PASSED_STATUSES)
+        )
+    ) or 0
+    da_duyet = db.scalar(
+        select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status.in_(_DELIVERED_OR_PASSED_STATUSES),
+            OutboundMessage.approved_by.is_not(None),
+            OutboundMessage.approved_by != "auto_system",
+        )
+    ) or 0
+    tu_dong_dat = max(0, ket_qua_dat - da_duyet)
 
     return OutboundSummaryResponse(
         ok=True,
         total=total,
         da_gui=da_gui,
         cho_duyet=cho_duyet,
+        cho_gui=cho_gui,
         huy=huy,
         that_bai=that_bai,
         bo_qua_trung_lap=bo_qua_trung_lap,
+        ket_qua_dat=ket_qua_dat,
+        da_duyet=da_duyet,
+        tu_dong_dat=tu_dong_dat,
     )
 
 
@@ -185,6 +225,8 @@ def _parse_filter_dt(raw: str, end_of_day: bool = False) -> Optional[datetime]:
 @outbound_router.get("/messages")
 def list_outbound_messages(
     status: Optional[str] = Query(default=None, description="Trạng thái: all, PENDING_APPROVAL, SENT, CANCELLED, FAILED"),
+    results_only: bool = Query(default=False, description="Chỉ lấy kết quả đã duyệt hoặc đạt điều kiện tự động gửi"),
+    source_mode: Optional[str] = Query(default=None, description="Nguồn kết quả: all, approved, auto"),
     order_type: Optional[str] = Query(default=None, description="Loại lệnh: LOAD/dong, RETURN/tra"),
     search: Optional[str] = Query(default=None, description="Tìm kiếm theo nội dung, cont, biển số, tài xế, nhóm"),
     from_time: Optional[str] = Query(default=None, description="Từ thời điểm (YYYY-MM-DD hoặc ISO-8601)"),
@@ -201,6 +243,26 @@ def list_outbound_messages(
             selectinload(OutboundMessage.items).joinedload(OutboundMessageItem.container_job),
         )
     )
+
+    if results_only:
+        stmt = stmt.where(OutboundMessage.status.in_(_DELIVERED_OR_PASSED_STATUSES))
+
+    if source_mode and source_mode.strip().lower() != "all":
+        sm = source_mode.strip().lower()
+        if sm == "approved":
+            stmt = stmt.where(
+                OutboundMessage.approved_by.is_not(None),
+                OutboundMessage.approved_by != "auto_system",
+            )
+        elif sm == "auto":
+            stmt = stmt.where(
+                or_(
+                    OutboundMessage.approved_by.is_(None),
+                    OutboundMessage.approved_by == "auto_system",
+                )
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Nguồn kết quả không hợp lệ: {source_mode}")
 
     if status and status.strip().lower() != "all":
         key = status.strip().lower()
@@ -273,6 +335,7 @@ def list_outbound_messages(
     serialized: list[dict[str, Any]] = []
     for r in rows:
         containers_info: list[dict[str, Any]] = []
+        first_resolved_eta: Optional[str] = None
         for it in r.items:
             job = it.container_job
             if job:
@@ -287,6 +350,10 @@ def list_outbound_messages(
                         driver_name = truck.driver_name
                         driver_phone = truck.driver_phone
 
+                job_eta = resolve_job_expected_time(db, job)
+                if job_eta and first_resolved_eta is None:
+                    first_resolved_eta = job_eta
+
                 containers_info.append({
                     "container_no": job.container_no,
                     "truck_plate": truck_plate,
@@ -294,10 +361,17 @@ def list_outbound_messages(
                     "driver_phone": driver_phone,
                     "seal_no": job.seal_no,
                     "plan_date": (job.raw_fields or {}).get("plan_date") or (job.created_at.date().isoformat() if job.created_at else None),
+                    "eta": job_eta,
                 })
 
         group_name = r.target_group.name if r.target_group else None
         zalo_gid = r.target_group.zalo_group_id if r.target_group else None
+        content_display = r.content or ""
+        if first_resolved_eta and "- Giờ đến dự kiến: Chưa có" in content_display:
+            content_display = content_display.replace(
+                "- Giờ đến dự kiến: Chưa có",
+                f"- Giờ đến dự kiến: {format_arrival_time_display(first_resolved_eta)}",
+            )
 
         serialized.append({
             "id": str(r.id),
@@ -306,11 +380,12 @@ def list_outbound_messages(
             "target_zalo_group_id": zalo_gid,
             "order_type": r.order_type,
             "message_kind": r.message_kind,
-            "content": r.content,
+            "content": content_display,
             "idempotency_key": r.idempotency_key,
             "review_zalo_msg_id": r.review_zalo_msg_id,
             "approved_by": r.approved_by,
             "approved_at": r.approved_at.isoformat() if r.approved_at else None,
+            "approval_source": "approved" if (r.approved_by and r.approved_by != "auto_system") else "auto",
             "status": r.status,
             "attempt_count": r.attempt_count,
             "zalo_message_id": r.zalo_message_id,
@@ -337,6 +412,7 @@ def get_outbound_message_detail(message_id: int, db: Session = Depends(get_db)) 
         raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn kết quả yêu cầu.")
 
     containers_info: list[dict[str, Any]] = []
+    first_resolved_eta: Optional[str] = None
     for it in msg.items:
         job = it.container_job
         if job:
@@ -350,6 +426,10 @@ def get_outbound_message_detail(message_id: int, db: Session = Depends(get_db)) 
                     driver_name = truck.driver_name
                     driver_phone = truck.driver_phone
 
+            job_eta = resolve_job_expected_time(db, job)
+            if job_eta and first_resolved_eta is None:
+                first_resolved_eta = job_eta
+
             containers_info.append({
                 "container_no": job.container_no,
                 "truck_plate": truck_plate,
@@ -357,10 +437,17 @@ def get_outbound_message_detail(message_id: int, db: Session = Depends(get_db)) 
                 "driver_phone": driver_phone,
                 "seal_no": job.seal_no,
                 "plan_date": (job.raw_fields or {}).get("plan_date") or (job.created_at.date().isoformat() if job.created_at else None),
+                "eta": job_eta,
             })
 
     group_name = msg.target_group.name if msg.target_group else None
     zalo_gid = msg.target_group.zalo_group_id if msg.target_group else None
+    content_display = msg.content or ""
+    if first_resolved_eta and "- Giờ đến dự kiến: Chưa có" in content_display:
+        content_display = content_display.replace(
+            "- Giờ đến dự kiến: Chưa có",
+            f"- Giờ đến dự kiến: {format_arrival_time_display(first_resolved_eta)}",
+        )
 
     return {
         "ok": True,
@@ -371,11 +458,12 @@ def get_outbound_message_detail(message_id: int, db: Session = Depends(get_db)) 
             "target_zalo_group_id": zalo_gid,
             "order_type": msg.order_type,
             "message_kind": msg.message_kind,
-            "content": msg.content,
+            "content": content_display,
             "idempotency_key": msg.idempotency_key,
             "review_zalo_msg_id": msg.review_zalo_msg_id,
             "approved_by": msg.approved_by,
             "approved_at": msg.approved_at.isoformat() if msg.approved_at else None,
+            "approval_source": "approved" if (msg.approved_by and msg.approved_by != "auto_system") else "auto",
             "status": msg.status,
             "attempt_count": msg.attempt_count,
             "zalo_message_id": msg.zalo_message_id,
@@ -428,6 +516,16 @@ def approve_outbound_message(
         if cleaned_content != msg.content:
             msg.content = cleaned_content
             edited_content = True
+    elif msg.content and "- Giờ đến dự kiến: Chưa có" in msg.content:
+        for it in msg.items:
+            if it.container_job:
+                resolved_eta = resolve_job_expected_time(db, it.container_job)
+                if resolved_eta:
+                    msg.content = msg.content.replace(
+                        "- Giờ đến dự kiến: Chưa có",
+                        f"- Giờ đến dự kiến: {format_arrival_time_display(resolved_eta)}",
+                    )
+                    break
 
     now = _utc_now()
     msg.status = OutboundStatus.PENDING_SEND.value
@@ -447,13 +545,68 @@ def approve_outbound_message(
             if cj.message_id:
                 parent_msg_ids.add(cj.message_id)
 
-            # Cập nhật review_cases liên quan đến container này
-            for rc in db.scalars(
-                select(ReviewCase).where(
-                    ReviewCase.container_job_id == cj.id,
-                    ReviewCase.status.in_([ReviewStatus.PENDING.value, "pending"]),
+            # Đồng bộ kế hoạch cục bộ & TMS cho các ca MANUAL chờ duyệt khi ĐHVT duyệt từ màn /results
+            pending_rcs = list(
+                db.scalars(
+                    select(ReviewCase).where(
+                        ReviewCase.container_job_id == cj.id,
+                        ReviewCase.status.in_([ReviewStatus.PENDING.value, "pending"]),
+                    )
+                ).all()
+            )
+            if pending_rcs:
+                from src.handlers.plan_sync_service import (
+                    resolve_plan_detailed,
+                    sync_combined_ro_to_lo_plans,
+                    sync_job_to_local_plan,
+                    sync_plan_to_tms,
                 )
-            ).all():
+                from src.infrastructure.models import TransportPlan
+
+                first_det = pending_rcs[0].details if isinstance(pending_rcs[0].details, dict) else {}
+                raw_f = cj.raw_fields if isinstance(cj.raw_fields, dict) else {}
+                sel_pid = first_det.get("selected_plan_id") or first_det.get("transport_plan_id") or raw_f.get("transport_plan_id")
+                sec_pid = first_det.get("secondary_plan_id")
+                sel_plan = db.get(TransportPlan, int(sel_pid)) if sel_pid and str(sel_pid).isdigit() else None
+                sec_plan = db.get(TransportPlan, int(sec_pid)) if sec_pid and str(sec_pid).isdigit() else None
+                if sel_plan is None and cj.message_id:
+                    orig_m = db.get(ZaloMessage, cj.message_id)
+                    src_g = (
+                        db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == orig_m.group_id))
+                        if orig_m
+                        else None
+                    )
+                    if src_g:
+                        sel_plan = resolve_plan_detailed(db, cj, src_g, for_update=True).plan
+                if sel_plan is not None:
+                    if sec_plan is not None and sec_plan.id != sel_plan.id:
+                        ro_p = sec_plan if (sec_plan.order_type or "").lower() in ("tra", "return", "ro") else sel_plan
+                        lo_p = sel_plan if ro_p is sec_plan else sec_plan
+                        ro_out, lo_out = sync_combined_ro_to_lo_plans(
+                            db=db, job=cj, ro_plan=ro_p, lo_plan=lo_p, actor_id=actor, allow_plan_override=True
+                        )
+                        if ro_out.mode in ("FILLED", "UPDATED"):
+                            sync_plan_to_tms(
+                                db, ro_p, job=cj, changed_fields=ro_out.changed_fields,
+                                before_values=ro_out.before_values, allow_container_override=False, actor_id=actor
+                            )
+                        if lo_out.mode in ("FILLED", "UPDATED"):
+                            sync_plan_to_tms(
+                                db, lo_p, job=cj, changed_fields=lo_out.changed_fields,
+                                before_values=lo_out.before_values, allow_container_override=False, actor_id=actor
+                            )
+                    else:
+                        s_out = sync_job_to_local_plan(
+                            db=db, job=cj, plan=sel_plan, allow_plan_override=True, actor_id=actor
+                        )
+                        if s_out.mode in ("FILLED", "UPDATED"):
+                            sync_plan_to_tms(
+                                db, sel_plan, job=cj, changed_fields=s_out.changed_fields,
+                                before_values=s_out.before_values, allow_container_override=False, actor_id=actor
+                            )
+
+            # Cập nhật review_cases liên quan đến container này
+            for rc in pending_rcs:
                 rc.status = ReviewStatus.APPROVED.value
                 rc.resolved_at = now
                 rc.resolved_by = actor
@@ -615,91 +768,4 @@ def mark_outbound_manual_sent(
         "message_id": msg.id,
         "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
         "message": f"Đã đánh dấu tin nhắn #{message_id} là đã gửi thủ công.",
-    }
-
-
-@outbound_router.post("/seed-samples")
-def seed_outbound_samples(db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Tạo các bản ghi kết quả tin nhắn mẫu (Đã gửi, Chờ duyệt, Bị hủy, Thất bại) để người dùng xem và kiểm thử trực quan."""
-    # Tìm nhóm Zalo làm đích (ưu tiên nhóm test để không gửi ra Zalo thật khi duyệt mẫu)
-    target_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.is_test == True))
-    if not target_grp:
-        target_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == "test_sample_group"))
-    if not target_grp:
-        target_grp = ZaloGroup(
-            zalo_group_id="test_sample_group",
-            name="Nhóm Mẫu Test",
-            group_role="destination",
-            is_active=True,
-            is_test=True,
-        )
-        db.add(target_grp)
-        db.flush()
-
-    samples_def = [
-        {
-            "order_type": "tra",
-            "status": "da_gui",
-            "content": "[VSICO THÔNG BÁO XE TRẢ HÀNG]\n- Tuyến: HP - Tận Quang\n- Xe: 15C-170.66\n- Tài xế: Phạm Văn Huynh (0986713346)\n- Cont: VSIU2621051 (Seal: 23333878)\n- Khách hàng: Logitem (Tân Quang)\n- Giờ đến dự kiến: 07:00",
-            "key": f"sample_sent_{uuid4().hex[:8]}",
-            "sent_at": _utc_now(),
-            "approved_by": "Nguyễn Văn Hưng (ĐHVT)",
-            "zalo_msg_id": f"zalo_oa_{uuid4().hex[:12]}",
-        },
-        {
-            "order_type": "dong",
-            "status": "cho_duyet",
-            "content": "[VSICO THÔNG BÁO XE ĐÓNG HÀNG - CHỜ DUYỆT]\n- Tuyến: HP - Hải Dương\n- Xe: 29C-445.41\n- Tài xế: Vũ Tiến Đạt (0931142873)\n- Cont: GAOU7801569 (Seal: 23691177)\n- Khách hàng: DC (Bột ngọt)\n- Giờ hẹn: 07:00",
-            "key": f"sample_pending_{uuid4().hex[:8]}",
-            "sent_at": None,
-            "approved_by": None,
-            "zalo_msg_id": None,
-        },
-        {
-            "order_type": "tra",
-            "status": "huy",
-            "content": "[VSICO THÔNG BÁO HỦY CHUYẾN XE]\n- Xe 15H-006.42 gặp sự cố hỏng lốp trên đường về kho Long An.\n- Hủy cuốc vận chuyển cont VSIU2321938 ngày 12/10/2026.",
-            "key": f"sample_cancelled_{uuid4().hex[:8]}",
-            "sent_at": None,
-            "approved_by": "Trần Thị Lan (Điều hành)",
-            "zalo_msg_id": None,
-            "last_error": "Hủy bỏ: Xe hỏng đột xuất, đã điều xe 15H-067.22 thay thế.",
-        },
-        {
-            "order_type": "dong",
-            "status": "that_bai",
-            "content": "[VSICO THÔNG BÁO XE ĐÓNG HÀNG]\n- Xe: 15H-067.22 / Đào Đức Thoại (0364461978)\n- Cont: VSIU2323000 (Seal: 23333330)",
-            "key": f"sample_failed_{uuid4().hex[:8]}",
-            "sent_at": None,
-            "approved_by": None,
-            "zalo_msg_id": None,
-            "last_error": "Lỗi Zalo OA: Mã phản hồi HTTP 429 Too Many Requests (Quá tần suất cho phép)",
-        },
-    ]
-
-    created_ids = []
-    for s in samples_def:
-        msg = OutboundMessage(
-            target_group_id=target_grp.id,
-            order_type=s["order_type"],
-            message_kind="initial",
-            content=s["content"],
-            idempotency_key=s["key"],
-            status=s["status"],
-            approved_by=s.get("approved_by"),
-            approved_at=_utc_now() if s.get("approved_by") else None,
-            sent_at=s.get("sent_at"),
-            zalo_message_id=s.get("zalo_msg_id"),
-            last_error=s.get("last_error"),
-            created_at=_utc_now(),
-        )
-        db.add(msg)
-        db.flush()
-        created_ids.append(msg.id)
-
-    db.commit()
-    return {
-        "ok": True,
-        "message": f"Đã tạo {len(created_ids)} bản ghi tin nhắn kết quả mẫu đủ 4 trạng thái (Đã gửi, Chờ duyệt, Bị hủy, Thất bại).",
-        "created_ids": created_ids,
     }

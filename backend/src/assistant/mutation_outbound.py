@@ -31,6 +31,7 @@ def prepare_notification(
         line_no=1,
         line_text=message.message_text or "",
         truck_plate=plan.planned_truck_plate,
+        trailer_plate=plan.planned_trailer_plate,
         driver_name=plan.driver_name,
         driver_phone=plan.driver_phone,
         container_no=plan.container_no,
@@ -41,6 +42,7 @@ def prepare_notification(
         warehouse_code_or_id=plan.warehouse_id,
         customer_hint=plan.customer_name,
         warehouse_hint=plan.warehouse_name or plan.delivery_address,
+        plan_date=plan.plan_date.isoformat() if plan.plan_date else None,
     )
     complete, missing = OutboundTemplateBuilder.check_core_fields_completeness(line)
     if not complete or not validate_iso6346(plan.container_no):
@@ -110,6 +112,7 @@ def prepare_notification(
         line=line,
         customer_name=plan.customer_name or "Quý khách",
         warehouse_name=plan.warehouse_name or plan.delivery_address or "",
+        plan_date=plan.plan_date,
     )
     outbound = OutboundMessage(
         id=snowflake.generate(),

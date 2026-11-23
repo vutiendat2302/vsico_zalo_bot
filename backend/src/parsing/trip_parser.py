@@ -11,28 +11,31 @@ from typing import Optional
 
 from src.domain.enums import OrderType
 from src.domain.models import ExtractedContainerLine
+from src.domain.patterns import (
+    CONT_REGEX,
+    PHONE_MALFORMED_REGEX,
+    PHONE_PATTERN,
+    PLATE_REGEX,
+    TRAILER_PLATE_REGEX,
+)
 from src.domain.rules import (
     clean_container,
     clean_driver_name,
     clean_phone,
     clean_plate,
 )
-from src.messaging.segmenter import MessageSegmenter
+from src.messaging.segmenter import MessageSegmenter, detect_header_info, normalize_segment_text
 
 
 class TripParser:
     """Bộ bóc tách dữ liệu chuyến xe và container chuẩn hóa F1, F2, F3 và Tự do."""
 
-    _PLATE_REGEX = re.compile(
-        r"\b(\d{2}[A-Za-z]{1,2}(?:[\s.\-/]+\d{3}[\s.\-]+\d{1,3}|[\s.\-/]*\d{4,6}))\b"
-    )
-    _CONTAINER_STD_REGEX = re.compile(
-        r"\b([A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d{3}[\s.\-]*\d{3}[\s.\-]?\d|[\s.\-]*\d{6,7}))\b"
-    )
-    _CONTAINER_MALFORMED_REGEX = re.compile(r"\b([A-Za-z]{3}[UJuZujz](?:[\s.\-]*\d){4,8})\b")
-    _PHONE_REGEX = re.compile(
-        r"(?:\+?84[\s.\-]?|0)\d(?:[\s.\-]?\d){6,10}\b|(?:\+?84[\s.\-]?|0)\d{1,3}[\s.\-]*[\*xX]{3,7}[\d\*xX]*"
-    )
+    _PLATE_REGEX = PLATE_REGEX
+    _TRAILER_PLATE_REGEX = TRAILER_PLATE_REGEX
+    _CONTAINER_STD_REGEX = CONT_REGEX
+    _CONTAINER_MALFORMED_REGEX = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{3}[UJuZujz](?:[ \t\u00a0.\-]*\d){4,8})(?![A-Za-z0-9])")
+    _PHONE_REGEX = PHONE_PATTERN
+    _PHONE_MALFORMED_REGEX = PHONE_MALFORMED_REGEX
     _SIZE_REGEX = re.compile(
         r"\b(?:\d+\s*[xX]\s*(20|40|45)(?:DC|GP|RF|OT|FR|HC|HQ)?|(20\s*(?:DC|GP|RF|OT|FR|HC|HQ|FT|')|40\s*(?:HC|HQ|DC|GP|RF|OT|FR|FT|')|45\s*(?:HC|HQ|DC|FT|'))|(?:cont|loại|loai|size|cỡ|co)\s*(20|40|45)|\b(20DC|40HC|40HQ|40RF|20RF|20GP|40GP)\b)",
         re.IGNORECASE,
@@ -94,6 +97,7 @@ class TripParser:
             list[ExtractedContainerLine]: Danh sách các dòng container (mỗi container 1 bản ghi chuẩn).
         """
         overall_format = cls.detect_source_format(raw_text)
+        header_info = detect_header_info(raw_text)
         blocks = MessageSegmenter.segment(raw_text)
         results: list[ExtractedContainerLine] = []
         line_counter = 1
@@ -104,6 +108,7 @@ class TripParser:
                 start_line_no=line_counter,
                 reference_time=reference_time,
                 default_format=overall_format,
+                header_info=header_info,
             )
             results.extend(extracted_list)
             line_counter += len(extracted_list)
@@ -117,6 +122,7 @@ class TripParser:
         start_line_no: int = 1,
         reference_time: Optional[datetime] = None,
         default_format: Optional[str] = None,
+        header_info: Optional[dict[str, Optional[str]]] = None,
     ) -> list[ExtractedContainerLine]:
         """Bóc tách thông tin từ một khối văn bản đơn lẻ sang danh sách `ExtractedContainerLine`.
 
@@ -125,15 +131,25 @@ class TripParser:
             start_line_no (int): Số thứ tự dòng bắt đầu.
             reference_time (Optional[datetime]): Thời gian gửi tin nhắn để suy luận `plan_date` và `estimated_at`.
             default_format (Optional[str]): Định dạng tổng thể của tin nhắn (`F1`, `F2`, `F3`, `tu_do`).
+            header_info (Optional[dict]): Ngữ cảnh chung trích từ 1-2 dòng đầu tin nhắn gốc.
 
         Returns:
             list[ExtractedContainerLine]: Danh sách đối tượng `ExtractedContainerLine`.
         """
+        block_text = normalize_segment_text(block_text)
         source_format = default_format or cls.detect_source_format(block_text)
         if source_format == "tu_do":
             source_format = cls.detect_source_format(block_text)
 
         plan_date, parsed_plan_dt = cls._extract_plan_date(block_text, reference_time)
+        if header_info and header_info.get("date_str") and not re.search(
+            r"(?:ngày\s*chạy|ngay\s*chay|ngày|ngay)\s*[:\-]?\s*[\.,\s]*\d{1,2}[\/\-]\d{1,2}",
+            block_text,
+            flags=re.IGNORECASE,
+        ):
+            h_date, h_dt = cls._extract_plan_date(f"ngày {header_info['date_str']}", reference_time)
+            if h_dt is not None:
+                plan_date, parsed_plan_dt = h_date, h_dt
         effective_ref_time = parsed_plan_dt or reference_time or datetime.now()
 
         truck_plate, raw_truck_plate, trailer_plate, multiple_tractors = cls._extract_plates(block_text)
@@ -143,9 +159,18 @@ class TripParser:
         seal_no, is_seal_pending = cls._extract_seal(block_text, containers)
         booking_no = cls._extract_booking_no(block_text)
         order_type, inferred_order = cls._extract_order_type(block_text)
+        if not order_type and header_info and header_info.get("order_type"):
+            order_type = header_info["order_type"]
+            inferred_order = True
         warehouse_hint = cls._extract_warehouse_hint(block_text)
         customer_hint = cls._extract_customer_hint(block_text)
         eta_text, eta_time, estimated_at, is_time_vague = cls._extract_eta(block_text, effective_ref_time)
+        if not eta_time and header_info and header_info.get("time_str"):
+            h_eta_text, h_eta_time, h_est, h_vague = cls._extract_eta(
+                f"lúc {header_info['time_str']}", effective_ref_time
+            )
+            if h_eta_time:
+                eta_text, eta_time, estimated_at, is_time_vague = h_eta_text, h_eta_time, h_est, h_vague
         is_container_pending = cls._check_container_pending(block_text)
         driver_name, driver_name_certain = cls._extract_driver_name_with_certainty(
             block_text,
@@ -158,7 +183,7 @@ class TripParser:
         # Khối có nhãn tường minh, bảng/dấu phân cách rõ hoặc mã lệnh kèm thực thể chính -> tin cậy cao (tránh gọi AI thừa)
         has_structured_cues = source_format in ("F1", "F2", "F3") or bool(
             re.search(
-                r"[|｜\t;·•→—:/]|(?:^|[\s(\[])(?:xe|bks|biển(?:\s*số)?|bien(?:\s*so)?|cont|container|số\s*công|so\s*cong|tài\s*xế|tai\s*xe|tài|tx|lx|sđt|sdt|đt|seal|chì|booking|\bbk\b|lệnh|lenh|\b(?:ro|lo)\d{3,6})\b",
+                r"[|｜\t;·•→—:/\\]|(?:^|[\s(\[])(?:xe|bks|biển(?:\s*số)?|bien(?:\s*so)?|cont|container|số\s*công|so\s*cong|tài\s*xế|tai\s*xe|tài|tx|lx|sđt|sdt|đt|seal|chì|booking|\bbk\b|lệnh|lenh|\b(?:ro|lo)\d{3,6})\b",
                 block_text,
                 flags=re.IGNORECASE,
             )
@@ -203,6 +228,8 @@ class TripParser:
                         is_time_vague=is_time_vague,
                         is_container_pending=is_container_pending,
                         is_seal_pending=is_seal_pending,
+                        container_status="DEFERRED" if is_container_pending else "UNKNOWN",
+                        seal_status="DEFERRED" if is_seal_pending else "UNKNOWN",
                         has_conflicting_mapping=has_conflict,
                         confidence=line_confidence,
                     )
@@ -234,6 +261,8 @@ class TripParser:
                 is_time_vague=is_time_vague,
                 is_container_pending=is_container_pending,
                 is_seal_pending=is_seal_pending,
+                container_status="DEFERRED" if is_container_pending else "UNKNOWN",
+                seal_status="DEFERRED" if is_seal_pending else "UNKNOWN",
                 has_conflicting_mapping=has_conflict,
                 confidence=line_confidence,
             )
@@ -297,15 +326,15 @@ class TripParser:
         if explicit_mooc:
             trailer_plate = clean_plate(explicit_mooc.group(1))
 
-        for match in cls._PLATE_REGEX.finditer(text):
-            raw_candidate = match.group(1).strip()
-            before_pos = match.start()
-            after_pos = match.end()
-            if before_pos > 0 and text[before_pos - 1].isalpha():
-                continue
-            if after_pos < len(text) and text[after_pos].isdigit():
-                continue
+        # 1. Quét riêng biển số rơ-moóc (seri R/RM) bằng _TRAILER_PLATE_REGEX
+        for tr_match in cls._TRAILER_PLATE_REGEX.finditer(text):
+            norm_tr = clean_plate(tr_match.group(0).strip())
+            if norm_tr and trailer_plate is None:
+                trailer_plate = norm_tr
 
+        # 2. Quét biển số đầu kéo bằng _PLATE_REGEX (đã loại trừ trực tiếp seri R/RM)
+        for match in cls._PLATE_REGEX.finditer(text):
+            raw_candidate = match.group(0).strip()
             normalized = clean_plate(raw_candidate)
             if not normalized:
                 continue
@@ -340,12 +369,40 @@ class TripParser:
 
     @classmethod
     def _extract_phone(cls, text: str) -> Optional[str]:
-        """Trích xuất số điện thoại tài xế (kể cả SĐT viết thiếu/thừa chữ số như 9 số ở TC-07 để bộ Validator bắt lỗi Bảng 6.2)."""
-        for match in cls._PHONE_REGEX.finditer(text):
+        """Trích xuất toàn bộ SĐT tài xế trong khối xe (hỗ trợ 2+ SĐT ngăn cách bởi `' | '`, VD: `'0394251493 | 0984131254'`).
+
+        Loại trừ các dãy số nằm ngay sau nhãn CCCD/CMND, Số chì/Seal hoặc dính trong số Container.
+        Vẫn giữ lại SĐT thiếu/thừa số (8-12 ký tự) để `ContainerValidator` phát hiện và nhắc nhà xe.
+        """
+        # Loại bỏ các dòng/cụm CCCD, CMND, số seal/chì có nhãn để tránh nhận nhầm làm SĐT
+        sanitized = re.sub(
+            r"\b(?:cccd|cmnd|căn\s*cước|can\s*cuoc|chứng\s*minh|chung\s*minh|số\s*chì|so\s*chi|số\s*seal|so\s*seal|seal|chì|chi)\s*[:\-]?\s*[A-Za-z0-9\-]+",
+            " ",
+            text,
+            flags=re.IGNORECASE,
+        )
+        phones: list[str] = []
+        matched_spans: list[tuple[int, int]] = []
+        for match in cls._PHONE_REGEX.finditer(sanitized):
+            raw_tok = match.group(0)
+            cleaned = clean_phone(raw_tok)
+            if cleaned and 8 <= len(cleaned) <= 12 and cleaned not in phones:
+                phones.append(cleaned)
+                matched_spans.append(match.span())
+
+        # Bổ sung bắt SĐT di động bị thiếu/thừa 1 chữ số (VD: 098736941) để Validator báo lỗi nhắc nhà xe
+        for match in cls._PHONE_MALFORMED_REGEX.finditer(sanitized):
+            s_idx, e_idx = match.span()
+            if any(not (e_idx <= ms or s_idx >= me) for ms, me in matched_spans):
+                continue
             cleaned = clean_phone(match.group(0))
-            if cleaned and 8 <= len(cleaned) <= 12:
-                return cleaned
-        return None
+            if cleaned and 8 <= len(cleaned) <= 12 and cleaned not in phones:
+                phones.append(cleaned)
+                matched_spans.append((s_idx, e_idx))
+
+        if not phones:
+            return None
+        return " | ".join(phones)
 
     @classmethod
     def _extract_containers(cls, text: str) -> list[str]:
@@ -353,7 +410,7 @@ class TripParser:
         containers: list[str] = []
 
         for match in cls._CONTAINER_STD_REGEX.finditer(text):
-            cleaned = clean_container(match.group(1))
+            cleaned = clean_container(match.group(0))
             if cleaned and cleaned not in containers:
                 containers.append(cleaned)
 
@@ -431,6 +488,7 @@ class TripParser:
             r"danh\s*sách|danh\s*sach|kế\s*hoạch|ke\s*hoach|điều\s*xe|dieu\s*xe|chưa|chua|chờ|cho|kính\s*gửi|"
             r"stt|điện\s*thoại|dien\s*thoai|thông\s*tin\s*chuyến|chuyến|chuyen|báo\s*chuyến|bao\s*chuyen|"
             r"hôm\s*nay|hom\s*nay|cảm\s*ơn|cam\s*on|xác\s*nhận|xac\s*nhan|nhờ|nho|"
+            r"bổ\s*sung|bo\s*sung|cập\s*nhật|cap\s*nhat|đính\s*chính|dinh\s*chinh|thay\s*đổi|thay\s*doi|"
             r"nhé|nhe|nha|ơi|oi|ạ|giúp|giup|xong|rồi|roi|đã|sắp|sap|xếp|xep|đổi|doi|vẫn|van|"
             r"nữa|nua|bận|ban|kẹt|ket|chạy|chay|thấy|thay|giữ|giu|vâng|vang|dạ|ok|không|khong|"
             r"nx|báo|bao|xe|tại|lúc|hẹn|mới|cũ|bên|liệu|kiểm|check)\b",
@@ -493,6 +551,8 @@ class TripParser:
                 return None
             if cls._PLATE_REGEX.search(s) or cls._CONTAINER_STD_REGEX.search(s):
                 return None
+            if re.search(r"\b(?:LO|RO)\d+\b", s, re.IGNORECASE):
+                return None
             if stop_words_regex.search(s):
                 return None
             # Chấp nhận tên chuẩn không chứa số, hoặc họ tên 2+ từ có biệt danh 1-2 số ở cuối (VD: "Lê Văn Duy 88")
@@ -506,7 +566,7 @@ class TripParser:
         # Kiểu 1: Có nhãn rõ ràng trên dòng ("Tên lái xe:", "Tài xế:", "Tài ...", "TX ...", "👤 ...")
         # Ưu tiên cụm cập nhật tường minh ("tài ... đổi thành <Tên>", "tài xế mới: <Tên>") trước khi quét nhãn chung
         update_drv_m = re.search(
-            r"(?:tài(?:\s*xế)?|lái\s*xe)\b[^\n/|｜;]{0,45}?\b(?:đổi\s*(?:thành|sang|qua)|doi\s*(?:thanh|sang|qua)|mới\s*[:\-]?)\s+([^\n/|｜;\t,\[\]()\"'*#—–·•→]+)",
+            r"(?:tài(?:\s*xế)?|lái\s*xe)\b[^\n/\\|｜;]{0,45}?\b(?:đổi\s*(?:thành|sang|qua)|doi\s*(?:thanh|sang|qua)|mới\s*[:\-]?)\s+([^\n/\\|｜;\t,\[\]()\"'*#—–·•→]+)",
             sanitized_text,
             flags=re.IGNORECASE,
         )
@@ -517,8 +577,8 @@ class TripParser:
 
         # Duyệt tuần tự tất cả các nhãn để tránh cụm sai như "tài liệu" che khuất nhãn "tài xế ..." đứng sau
         labeled_re = re.compile(
-            r"(?:^|[\s/|｜;\t,\[\(—–·•→#])(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
-            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b|\btài\b|\btai\b)(?:\s*[:\-]\s*|\s+)([^\n/|｜;\t,\]\)\"*#—–·•→]+)",
+            r"(?:^|[\s/\\|｜;\t,\[\(—–·•→#])(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
+            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b|\btài\b|\btai\b)(?:\s*[:\-]\s*|\s+)([^\n/\\|｜;\t,\]\)\"*#—–·•→]+)",
             flags=re.IGNORECASE,
         )
         for labeled in labeled_re.finditer(sanitized_text):
@@ -541,10 +601,10 @@ class TripParser:
         ordered_lines = sorted(all_lines, key=lambda ln: 0 if (raw_truck_plate and raw_truck_plate.lower() in ln.lower()) else 1)
 
         for line in ordered_lines:
-            if re.search(r"[/|｜\t;·•→—–#]|(?:\s+-\s+)|,", line):
+            if re.search(r"[/\\|｜\t;·•→—–#]|(?:\s+-\s+)|,", line):
                 parts = [
                     p.strip()
-                    for p in re.split(r"\s*[/|｜\t;·•→—–#]+\s*|\s+-\s+|\s*,\s*", line)
+                    for p in re.split(r"\s*[/\\|｜\t;·•→—–#]+\s*|\s+-\s+|\s*,\s*", line)
                     if p.strip()
                 ]
                 for part in parts:
@@ -562,6 +622,20 @@ class TripParser:
                     if candidate and 2 <= len(candidate.split()) <= 6:
                         return candidate, True
 
+        # Kiểu 2b: Mẫu vị trí từ nhaxe_bot (tên tài xế kẹp giữa biển số xe và SĐT hoặc container, hoặc đứng trước SĐT)
+        positional_patterns = [
+            r"(?:[0-9]{2}[A-Za-z]{1,2}[\s.\-/]*[0-9.\-]{4,7})\s*(?:-|/|\\)?\s*([A-Za-zÀ-ỹ ]{3,35}?)\s*(?:-|/|\\)?\s*(?:sdt|sđt|đt|dt)?\s*[:\s'\"]*(?:\+84|0\d)",
+            r"(?:[0-9]{2}[A-Za-z]{1,2}[\s.\-/]*[0-9.\-]{4,7})\s*(?:-|/|\\)?\s*([A-Za-zÀ-ỹ ]{3,35}?)\s*(?:-|/|\\)?\s*(?:cont|\b[A-Za-z]{4}\d{7}\b)",
+            r"(?:^|[/\\,\n])\s*([A-Za-zÀ-ỹ ]{3,35}?)\s*(?:/|\\|-)?\s*(?:sdt|sđt|đt|dt)?\s*[:\s'\"]*(?:\+84|0\d)",
+        ]
+        for pos_pat in positional_patterns:
+            m_pos = re.search(pos_pat, sanitized_text, flags=re.IGNORECASE)
+            if m_pos:
+                raw_pos = re.sub(r"^(?:xe|tx|lx|anh|chị|bác)\s+", "", m_pos.group(1).strip(), flags=re.IGNORECASE).strip()
+                candidate = _finalize_name(raw_pos)
+                if candidate and 2 <= len(candidate.split()) <= 5:
+                    return candidate, True
+
         # Kiểu 3: Tin một dòng tự do không có dấu phân cách / nhãn (heuristic, không chắc chắn -> để AI tinh chỉnh nếu cần)
         for line in all_lines:
             if not (raw_truck_plate and raw_truck_plate in line):
@@ -569,6 +643,7 @@ class TripParser:
             rem = line
             if raw_truck_plate:
                 rem = rem.replace(raw_truck_plate, " | ")
+            rem = re.sub(r"\b(?:LO|RO)\d{3,8}\b", " | ", rem, flags=re.IGNORECASE)
             rem = re.sub(r"(?:rơ\s*moóc|mooc|rm)\s*[:\-]?\s*[0-9A-Za-z.\-]+", " | ", rem, flags=re.IGNORECASE)
             rem = re.sub(r"(?:sđt|sdt|đt|dt)?\s*[:\-]?\s*(?:\+?84[\s.\-]?|0)\d[\d\s.\-*xX]{7,11}[\d*xX]", " | ", rem, flags=re.IGNORECASE)
             for c in containers:
@@ -596,7 +671,12 @@ class TripParser:
                 continue
             candidate = _finalize_name(line_clean)
             if candidate and 2 <= len(candidate.split()) <= 5 and len(candidate) >= 3:
-                return candidate, False
+                is_pure_name_line = bool(
+                    has_other_entity
+                    and not any(ch.isdigit() for ch in line_clean)
+                    and len(words_raw) == len(line_clean.split())
+                )
+                return candidate, is_pure_name_line
 
         return None, False
 
@@ -645,7 +725,13 @@ class TripParser:
         """Trích xuất số chì niêm phong (Seal) trên cùng một dòng (tránh ăn sang dòng tiếp theo khi `Số seal:` để trống)."""
         is_pending = bool(
             re.search(
-                r"(?:chưa\s*có\s*chì|chua\s*co\s*chi|chưa\s*có\s*seal|chì\s*bổ\s*sung\s*sau|bổ\s*sung\s*chì\s*sau|nợ\s*chì)",
+                r"(?:chưa\s*(?:có|cấp|lấy|bấm|kẹp)\s*(?:số\s*)?(?:chì|seal)|"
+                r"chua\s*(?:co|cap|lay|bam|kep)\s*(?:so\s*)?(?:chi|seal)|"
+                r"(?:số\s*)?(?:chì|chi|seal)\s*(?:chưa|chua|không|khong)\s*(?:có|co|cấp|cap|lấy|lay|bấm|bam|kẹp|kep)|"
+                r"(?:không|khong)\s*có\s*(?:số\s*)?(?:chì|chi|seal)|"
+                r"(?:chì|chi|seal)\s*(?:báo|bao|bổ\s*sung|bo\s*sung)\s*sau|"
+                r"(?:bổ\s*sung|bo\s*sung|báo|bao)\s*(?:chì|chi|seal)\s*sau|"
+                r"(?:nợ|no)\s*(?:chì|chi|seal))",
                 text,
                 flags=re.IGNORECASE,
             )
@@ -675,11 +761,31 @@ class TripParser:
                 if not re.match(r"^(?:20|40|45|0\d{8,10})", cand):
                     return cand, False
 
+        # Tin nhắn ngắn chỉ chứa 1 mã chì độc lập (VD: "VS998877", "HL778899")
+        stripped = (text or "").strip()
+        if (
+            not containers
+            and stripped
+            and " " not in stripped
+            and "\n" not in stripped
+            and re.fullmatch(
+                r"(?!(?:BK|LO|RO)\d)(?![A-Z]{4}\d{7}$)(?!0\d{8,10}$)(?!\d{2}[A-Z]{1,2}\d{4,5}$)[A-Za-z0-9\-]{5,15}",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            and len(re.findall(r"\d", stripped)) >= 4
+            and not re.search(r"^\d{2}[A-Z]{1,2}[\.\-]?\d{3,5}(?:\.\d{2})?$", stripped, flags=re.IGNORECASE)
+        ):
+            return stripped.upper(), False
+
         return None, False
 
     @classmethod
     def _extract_booking_no(cls, text: str) -> Optional[str]:
         """Trích xuất mã lệnh / số lệnh / mã booking / số vận đơn."""
+        compact_bk = re.search(r"\b(BK\d{4,20})\b", text, flags=re.IGNORECASE)
+        if compact_bk:
+            return compact_bk.group(1).strip().upper()
         match = re.search(
             r"(?:mã\s*booking|ma\s*booking|số\s*booking|so\s*booking|booking|\bbk\b|"
             r"mã\s*lệnh|ma\s*lenh|số\s*lệnh|so\s*lenh|số\s*vận\s*đơn|so\s*van\s*don|vận\s*đơn|van\s*don|\bbill\b|\bb/l\b)"

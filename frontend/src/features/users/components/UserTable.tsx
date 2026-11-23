@@ -39,10 +39,10 @@ export default function UserTable({
   }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-sm overflow-hidden shadow-sm">
-      <div className="overflow-x-auto">
+    <div className="flex-1 min-h-0 bg-white border border-slate-200 rounded-sm overflow-hidden flex flex-col">
+      <div className="flex-1 min-h-[220px] overflow-auto">
         <table className="w-full text-left text-xs border-collapse">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider">
               <th className="px-3 py-2.5">ID (Snowflake)</th>
               <th className="px-3 py-2.5">Tên đăng nhập</th>

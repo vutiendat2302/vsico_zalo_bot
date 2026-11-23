@@ -38,6 +38,7 @@ from src.domain.enums import (
     ValidationStatus,
 )
 from src.handlers.extraction_handler import ExtractionHandler
+from src.handlers.plan_sync_service import resolve_job_expected_time
 from src.infrastructure.database import get_db
 from src.infrastructure.fifo_queue import fifo_queue
 from src.infrastructure.models import (
@@ -50,12 +51,7 @@ from src.infrastructure.models import (
     ZaloMessage,
 )
 from src.infrastructure.zalo_dispatcher import ZaloDispatcher
-from src.messaging.classifier import IntentClassifier
-from src.outbound.templates import OutboundTemplateBuilder
-from src.parsing.ai_fallback import AIFallbackExtractor
-from src.parsing.trip_parser import TripParser
-from src.validation.taxonomy import MessageTaxonomyAnalyzer
-from src.validation.validators import ContainerValidator
+from src.outbound.templates import format_arrival_time_display
 
 router = APIRouter(prefix="/api/messages", tags=["2. Truy Vấn Tin Nhắn & Thống Kê Taxonomy"])
 
@@ -142,16 +138,65 @@ def parse_flexible_datetime(
         ) from exc
 
 
-def serialize_message(msg: ZaloMessage, group_name: Optional[str] = None) -> MessageItemOut:
+def serialize_message(
+    msg: ZaloMessage,
+    group_name: Optional[str] = None,
+    db: Optional[Session] = None,
+) -> MessageItemOut:
     """Chuyển đổi bản ghi ORM `ZaloMessage` kèm các xe, container và Taxonomy sang Schema trả về API.
 
     Args:
         msg (ZaloMessage): Đối tượng ORM `ZaloMessage` từ cơ sở dữ liệu.
         group_name (Optional[str]): Tên hiển thị của nhóm Zalo tương ứng.
+        db (Optional[Session]): Phiên DB tùy chọn để tự động bổ sung thời gian dự kiến từ kế hoạch nếu bản ghi cũ còn trống.
 
     Returns:
         MessageItemOut: Đối tượng dữ liệu chuẩn hóa trả về JSON.
     """
+    taxonomy: Optional[dict[str, Any]] = None
+    containers: list[ContainerJobOut] = []
+    eta_by_truck_id: dict[int, str] = {}
+    fallback_msg_eta: Optional[str] = None
+
+    for c in sorted(msg.container_jobs, key=lambda x: ((x.line_no or 1), x.id)):
+        c_raw = c.raw_fields or {}
+        if taxonomy is None and c_raw.get("taxonomy"):
+            taxonomy = c_raw.get("taxonomy")
+        c_eta = c_raw.get("eta") or (resolve_job_expected_time(db, c) if db is not None else None)
+        if c_eta:
+            if c.truck_record_id:
+                eta_by_truck_id.setdefault(c.truck_record_id, c_eta)
+            if fallback_msg_eta is None:
+                fallback_msg_eta = c_eta
+        canon = c_raw.get("canonical_record")
+        if isinstance(canon, dict) and c_eta and not canon.get("eta"):
+            canon = {**canon, "eta": c_eta}
+        containers.append(
+            ContainerJobOut(
+                id=c.id,
+                truck_record_id=c.truck_record_id,
+                line_no=c.line_no or 1,
+                source_format=c_raw.get("source_format"),
+                plan_date=c_raw.get("plan_date"),
+                container_no=c.container_no,
+                container_size=c.container_size,
+                seal_no=c.seal_no,
+                booking_no=c_raw.get("booking_no"),
+                order_type=c.order_type,
+                warehouse_hint=c.warehouse_hint,
+                customer_hint=c.customer_hint,
+                eta=c_eta,
+                estimated_at=c.estimated_at,
+                match_source=c_raw.get("match_source") or c.match_method,
+                check_digit_valid=c.container_check_digit_valid,
+                validation_status=c.validation_status,
+                routing_status=c.routing_status,
+                tms_sync_status=c.tms_sync_status,
+                warnings=c_raw.get("warnings", []),
+                canonical_record=canon,
+            )
+        )
+
     trucks: list[TruckRecordOut] = []
     for t in sorted(msg.truck_records, key=lambda x: x.id):
         t_raw = t.raw_data or {}
@@ -169,42 +214,10 @@ def serialize_message(msg: ZaloMessage, group_name: Optional[str] = None) -> Mes
                 trailer_plate=t.trailer_plate,
                 driver_name=t.driver_name,
                 driver_phone=t.driver_phone,
-                eta_text=t_raw.get("eta_text"),
+                eta_text=t_raw.get("eta_text") or t_raw.get("eta") or eta_by_truck_id.get(t.id) or fallback_msg_eta,
                 estimated_at=est_dt,
                 note=t_raw.get("note"),
                 status=t_raw.get("status", "active"),
-            )
-        )
-
-    taxonomy: Optional[dict[str, Any]] = None
-    containers: list[ContainerJobOut] = []
-    for c in sorted(msg.container_jobs, key=lambda x: ((x.line_no or 1), x.id)):
-        c_raw = c.raw_fields or {}
-        if taxonomy is None and c_raw.get("taxonomy"):
-            taxonomy = c_raw.get("taxonomy")
-        containers.append(
-            ContainerJobOut(
-                id=c.id,
-                truck_record_id=c.truck_record_id,
-                line_no=c.line_no or 1,
-                source_format=c_raw.get("source_format"),
-                plan_date=c_raw.get("plan_date"),
-                container_no=c.container_no,
-                container_size=c.container_size,
-                seal_no=c.seal_no,
-                booking_no=c_raw.get("booking_no"),
-                order_type=c.order_type,
-                warehouse_hint=c.warehouse_hint,
-                customer_hint=c.customer_hint,
-                eta=c_raw.get("eta"),
-                estimated_at=c.estimated_at,
-                match_source=c_raw.get("match_source") or c.match_method,
-                check_digit_valid=c.container_check_digit_valid,
-                validation_status=c.validation_status,
-                routing_status=c.routing_status,
-                tms_sync_status=c.tms_sync_status,
-                warnings=c_raw.get("warnings", []),
-                canonical_record=c_raw.get("canonical_record"),
             )
         )
 
@@ -356,7 +369,7 @@ def query_messages_with_filters(
         groups = list(db.scalars(select(ZaloGroup).where(ZaloGroup.zalo_group_id.in_(group_ids))).all())
         group_name_map = {g.zalo_group_id: g.name for g in groups if g.name}
 
-    serialized = [serialize_message(r, group_name_map.get(r.group_id)) for r in records]
+    serialized = [serialize_message(r, group_name_map.get(r.group_id), db=db) for r in records]
 
     return MessageListResponse(
         ok=True,
@@ -554,159 +567,22 @@ def get_messages_by_user_in_group(
 
 
 @router.post("/process-fifo")
-def trigger_fifo_processing(db: Session = Depends(get_db)) -> dict[str, Any]:
+def trigger_fifo_processing(
+    force: bool = Query(
+        default=False,
+        description="Bật True để bỏ qua thời gian chờ 60 giây của nhóm và xử lý ngay",
+    ),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """Kích hoạt thủ công tiến trình vét và bóc tách các tin nhắn tồn đọng theo đúng thứ tự FIFO."""
-    processed_ids = fifo_queue.drain_fifo(db)
+    processed_ids = fifo_queue.drain_fifo(db, force=force)
     return {
         "ok": True,
         "status": "OK",
+        "force": force,
         "processed_count": len(processed_ids),
         "processed_message_ids_fifo_order": processed_ids,
         "queue_stats": fifo_queue.stats(),
-    }
-
-
-class TestParseRequest(BaseModel):
-    """Schema đầu vào cho API kiểm thử trực tiếp bộ đọc F1 / F2 / F3 / Bảng 6.2."""
-
-    text: str = Field(
-        ...,
-        description="Nội dung tin nhắn cần kiểm thử bóc tách (F1, F2, F3 hoặc Tự do).",
-        examples=["1 xe 15C17066/ Phạm Văn Huynh đt: 0986713346 / VSIU2621051 chì 23333878"],
-    )
-    timestamp: Optional[str] = Field(
-        default="2026-10-09T07:30:00",
-        description="Thời điểm gửi tin nhắn giả lập (dùng để suy luận plan_date cho F1/F3).",
-    )
-    allow_ai_fallback: bool = Field(
-        default=False,
-        description="Cho phép gọi AI (ZCB-10) nếu tin không theo F1/F2/F3. Mặc định False để kiểm thử thuần Rule-based.",
-    )
-
-
-def execute_single_parse_test(
-    db: Session,
-    raw_text: str,
-    timestamp_str: Optional[str] = "2026-10-09T07:30:00",
-    allow_ai_fallback: bool = False,
-) -> dict[str, Any]:
-    """Thực thi kiểm thử trọn vẹn luồng Đọc hiểu & Định tuyến (F1/F2/F3, Bảng 6.2, định tuyến AI ZCB-10).
-
-    Args:
-        db (Session): Phiên làm việc cơ sở dữ liệu để đối chiếu danh mục/alias.
-        raw_text (str): Nội dung tin nhắn đầu vào.
-        timestamp_str (Optional[str]): Mốc thời gian gửi tin.
-        allow_ai_fallback (bool): Có gọi thật AI Fallback khi tin là `tu_do` hay không.
-
-    Returns:
-        dict[str, Any]: Kết quả chi tiết gồm `source_format`, `used_ai`, `route_to_ai_zcb10`,
-            `canonical_records`, `warnings`, `reply_to_carrier` và `taxonomy`.
-    """
-    ref_time = parse_flexible_datetime(timestamp_str) or datetime(2026, 10, 9, 7, 30, 0)
-    clean_text = (raw_text or "").strip()
-
-    # 1. Bộ lọc 2 tầng chặn tin nhắn xã giao (TC-16)
-    intent = IntentClassifier.classify(clean_text)
-    if intent == Intent.IGNORE_CHAT:
-        taxonomy = MessageTaxonomyAnalyzer.analyze(
-            raw_text=clean_text,
-            intent=intent,
-            lines=[],
-        )
-        return {
-            "ok": True,
-            "intent": intent.value,
-            "processing_status": MessageStatus.IGNORED_CHAT.value,
-            "source_format": None,
-            "used_ai": False,
-            "route_to_ai_zcb10": False,
-            "model_name": "fast-gatekeeper-v2",
-            "canonical_records": [],
-            "validation_results": [],
-            "warnings": [],
-            "reply_to_carrier": None,
-            "taxonomy": taxonomy,
-        }
-
-    # 2. Bóc tách bằng Bộ đọc F1 / F2 / F3 / Tự do
-    extracted_lines = TripParser.parse_message(clean_text, reference_time=ref_time)
-    validated_lines = ContainerValidator.validate_all(extracted_lines)
-    used_ai = False
-    model_name = "vsico-hybrid-rule-v2"
-
-    # Kiểm tra điều kiện chuyển bước AI (ZCB-10): Tin không theo F1/F2/F3 và thiếu trường cốt lõi
-    needs_ai_zcb10 = (
-        all(ln.source_format == "tu_do" for ln in validated_lines)
-        and all(not ln.truck_plate and not ln.container_no for ln in validated_lines)
-    )
-
-    if needs_ai_zcb10 and allow_ai_fallback and settings.AI_ENABLED and settings.AI_API_KEY:
-        ai_lines = AIFallbackExtractor.extract_with_ai(clean_text, reference_time=ref_time)
-        if ai_lines:
-            validated_lines = ContainerValidator.validate_all(ai_lines)
-            used_ai = True
-            model_name = f"ai-fallback:{settings.AI_PROVIDER}:{settings.AI_MODEL_NAME}"
-
-    # 3. Đối chiếu danh mục Khách hàng / Alias / Kho / Kế hoạch
-    any_u_wh = False
-    any_u_cust = False
-    any_amb = False
-    for line in validated_lines:
-        _, _, u_wh, u_cust, amb = ExtractionHandler._enrich_from_catalog_and_plans(db, line)
-        any_u_wh = any_u_wh or u_wh
-        any_u_cust = any_u_cust or u_cust
-        any_amb = any_amb or amb
-
-    taxonomy = MessageTaxonomyAnalyzer.analyze(
-        raw_text=clean_text,
-        intent=intent,
-        lines=validated_lines,
-        unmatched_warehouse=any_u_wh,
-        unmatched_customer=any_u_cust,
-        ambiguous_route_match=any_amb,
-    )
-
-    all_warnings: list[str] = []
-    validation_results: list[dict[str, Any]] = []
-    for ln in validated_lines:
-        all_warnings.extend(ln.warnings)
-        validation_results.append(
-            {
-                "line_no": ln.line_no,
-                "source_format": ln.source_format,
-                "truck_plate": ln.truck_plate,
-                "trailer_plate": ln.trailer_plate,
-                "driver_name": ln.driver_name,
-                "driver_phone": ln.driver_phone,
-                "container_no": ln.container_no,
-                "check_digit_valid": ln.check_digit_valid,
-                "seal_no": ln.seal_no,
-                "validation_status": ln.validation_status,
-                "warnings": ln.warnings,
-            }
-        )
-
-    has_error = any(
-        ln.validation_status in (ValidationStatus.INVALID.value, ValidationStatus.NEEDS_REVIEW.value)
-        for ln in validated_lines
-    )
-    reply_text = OutboundTemplateBuilder.build_carrier_warning_reply(validated_lines) if has_error else ""
-
-    return {
-        "ok": True,
-        "intent": intent.value,
-        "processing_status": (
-            MessageStatus.NEEDS_REVIEW.value if has_error else MessageStatus.PROCESSED.value
-        ),
-        "source_format": validated_lines[0].source_format if validated_lines else "tu_do",
-        "used_ai": used_ai,
-        "route_to_ai_zcb10": needs_ai_zcb10,
-        "model_name": model_name,
-        "canonical_records": [ln.to_canonical_record() for ln in validated_lines],
-        "validation_results": validation_results,
-        "warnings": all_warnings,
-        "reply_to_carrier": reply_text or None,
-        "taxonomy": taxonomy,
     }
 
 
@@ -750,7 +626,7 @@ def get_message_detail(
 
     zg = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == msg.group_id))
     grp_name = zg.name if zg and zg.name else None
-    serialized = serialize_message(msg, grp_name)
+    serialized = serialize_message(msg, grp_name, db=db)
     runs_out = [
         {
             "id": str(r.id),
@@ -795,17 +671,24 @@ def get_message_detail(
             .distinct()
         )
         out_rows = list(db.scalars(stmt_out).all())
+        fallback_eta = next((c.eta for c in serialized.containers if c.eta), None)
         for om in out_rows:
             zg = om.target_group
+            content_str = om.content or ""
+            if fallback_eta and "- Giờ đến dự kiến: Chưa có" in content_str:
+                content_str = content_str.replace(
+                    "- Giờ đến dự kiến: Chưa có",
+                    f"- Giờ đến dự kiến: {format_arrival_time_display(fallback_eta)}",
+                )
             outbound_messages_out.append({
                 "id": str(om.id),
                 "target_group_id": str(om.target_group_id),
                 "target_zalo_group_id": zg.zalo_group_id if zg else None,
-                "target_group_name": zg.name if zg else f"Nhóm #{om.target_group_id}",
+                "target_group_name": zg.name if zg and zg.name else "Nhóm khách hàng",
                 "order_type": om.order_type,
                 "message_kind": om.message_kind or "initial",
                 "attempt_count": om.attempt_count or 0,
-                "content": om.content,
+                "content": content_str,
                 "status": om.status,
                 "zalo_message_id": om.zalo_message_id,
                 "sent_at": om.sent_at.isoformat() if om.sent_at else None,
@@ -904,6 +787,15 @@ def approve_message_by_dhvt(
             .distinct()
         )
         for out_msg in db.scalars(stmt_out).all():
+            if out_msg.content and "- Giờ đến dự kiến: Chưa có" in out_msg.content:
+                for cj in msg.container_jobs:
+                    resolved_eta = resolve_job_expected_time(db, cj)
+                    if resolved_eta:
+                        out_msg.content = out_msg.content.replace(
+                            "- Giờ đến dự kiến: Chưa có",
+                            f"- Giờ đến dự kiến: {format_arrival_time_display(resolved_eta)}",
+                        )
+                        break
             target_grp = out_msg.target_group
             target_gid = target_grp.zalo_group_id if target_grp else None
 
@@ -1054,265 +946,4 @@ def reject_message_by_dhvt(
         "message_id": message_id,
         "processing_status": msg.processing_status,
         "cancelled_outbounds": cancelled_outbounds,
-    }
-
-
-@router.post("/test-parse")
-def test_parse_message_api(
-    payload: TestParseRequest = Body(...),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """API Kiểm Thử Nhanh Module Đọc Hiểu & Định Tuyến (F1, F2, F3, Bảng 6.2, ZCB-10).
-
-    Cho phép truyền bất kỳ văn bản tin nhắn nào vào để kiểm tra ngay lập tức:
-    - Định dạng nhận diện (`F1`, `F2`, `F3`, `tu_do`)
-    - Bản ghi chuẩn 15 trường (`canonical_records`)
-    - Kết quả kiểm tra từng trường theo Bảng 6.2 (`validation_results`, `warnings`)
-    - Tin nhắn nhắc lỗi nhà xe (`reply_to_carrier`)
-    - Cờ `used_ai` và `route_to_ai_zcb10`
-    """
-    return execute_single_parse_test(
-        db=db,
-        raw_text=payload.text,
-        timestamp_str=payload.timestamp,
-        allow_ai_fallback=payload.allow_ai_fallback,
-    )
-
-
-@router.get("/test-suite/dat-module")
-@router.post("/test-suite/dat-module")
-def run_dat_module_test_suite(
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """API Chạy Tự Động Bộ Kiểm Thử Module Đọc Hiểu & Định Tuyến (`TC-01` -> `TC-08` và `TC-16`).
-
-    Kiểm tra toàn bộ yêu cầu của module Đọc hiểu và định tuyến:
-    - Bộ đọc F1 (`TC-01`, `TC-02`, `TC-03`): tách biển số, tài xế, SĐT, cont, chì.
-    - Bộ đọc F2 (`TC-04`) và F3 (`TC-05`) theo nhãn, xử lý các chỗ khó ở mục 2.
-    - Chuẩn hóa và kiểm tra từng trường theo Bảng 6.2 (`TC-06` sai ISO 6346, `TC-07` SĐT 9 số,
-      `TC-08` biển rơ-moóc `15R01234` ở vị trí đầu kéo), trả về danh sách lỗi (`warnings` + `reply_to_carrier`).
-    - Bộ lọc tin xã giao (`TC-16`): bỏ qua, không gọi AI.
-    - Khẳng định 100% các ca `TC-01` -> `TC-08` và `TC-16` chạy đúng mà **không cần gọi AI (`used_ai = False`)**.
-    """
-    test_cases: list[dict[str, Any]] = [
-        {
-            "tc_id": "TC-01",
-            "title": "F1 chuẩn nhà xe miền Bắc (tách biển số, tài xế, SĐT, cont, chì)",
-            "input_text": "1 xe 15C17066/ Phạm Văn Huynh đt:  0986713346 / VSIU2621051 chì 23333878",
-            "timestamp": "2026-10-09T07:30:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F1"
-                and len(r["canonical_records"]) == 1
-                and r["canonical_records"][0]["plate"] == "15C17066"
-                and r["canonical_records"][0]["driver_name"] == "Phạm Văn Huynh"
-                and r["canonical_records"][0]["driver_phone"] == "0986713346"
-                and r["canonical_records"][0]["cont_no"] == "VSIU2621051"
-                and r["canonical_records"][0]["seal_no"] == "23333878"
-                and r["validation_results"][0]["check_digit_valid"] is True
-                and r["warnings"] == []
-            ),
-        },
-        {
-            "tc_id": "TC-02",
-            "title": "F1 SĐT dính liền tên tài xế, không có chữ 'đt:', chữ 'h' thường trong biển số",
-            "input_text": "2 Xe 15h00642 / Đoàn Văn Biên 0984457785/ VSIU2321938 chì 23333310",
-            "timestamp": "2026-10-09T07:30:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F1"
-                and len(r["canonical_records"]) == 1
-                and r["canonical_records"][0]["plate"] == "15H00642"
-                and r["canonical_records"][0]["driver_name"] == "Đoàn Văn Biên"
-                and r["canonical_records"][0]["driver_phone"] == "0984457785"
-                and r["canonical_records"][0]["cont_no"] == "VSIU2321938"
-                and r["canonical_records"][0]["seal_no"] == "23333310"
-                and r["validation_results"][0]["check_digit_valid"] is True
-                and r["warnings"] == []
-            ),
-        },
-        {
-            "tc_id": "TC-03",
-            "title": "F1 có dấu hai chấm sau chữ 'xe:' (3 xe: 15H06722/...)",
-            "input_text": "3 xe: 15H06722/ Đào Đức Thoại đt:  0364461978/ VSIU2323000 chì 23333330",
-            "timestamp": "2026-10-09T07:30:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F1"
-                and len(r["canonical_records"]) == 1
-                and r["canonical_records"][0]["plate"] == "15H06722"
-                and r["canonical_records"][0]["driver_name"] == "Đào Đức Thoại"
-                and r["canonical_records"][0]["driver_phone"] == "0364461978"
-                and r["canonical_records"][0]["cont_no"] == "VSIU2323000"
-                and r["canonical_records"][0]["seal_no"] == "23333330"
-                and r["validation_results"][0]["check_digit_valid"] is True
-                and r["warnings"] == []
-            ),
-        },
-        {
-            "tc_id": "TC-04",
-            "title": "F2 form ĐHVT HCM (dấu chấm trước ngày, nhãn kép Đóng/Trả, 1x20, alias Nhựa Long An, seal trống, 8h)",
-            "input_text": (
-                "Đầu ĐHVT HCM đang gửi nội dung xe trả hàng:\n"
-                "1.  Ngày: .9/10/2026 : Đóng , Trả hàng: Tra 1x20 Nhựa Long An\n"
-                "- Tên lái xe: Nguyên Thanh Phong\n"
-                "- Sđt: 0931142873\n"
-                "-  Số xe: 50H-04915\n"
-                "- Số cont : VSIU2620327\n"
-                "-  Số seal:\n"
-                "- Thời gian xe đến kho: 8h"
-            ),
-            "timestamp": "2026-10-08T18:00:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F2"
-                and len(r["canonical_records"]) == 1
-                and r["canonical_records"][0]["plan_date"] == "2026-10-09"
-                and r["canonical_records"][0]["order_type"] == "tra"
-                and r["canonical_records"][0]["customer_raw"] == "Nhựa Long An"
-                and r["canonical_records"][0]["customer_id"] is not None
-                and r["canonical_records"][0]["match_source"] == "customer_alias"
-                and r["canonical_records"][0]["plate"] == "50H04915"
-                and r["canonical_records"][0]["driver_name"] == "Nguyên Thanh Phong"
-                and r["canonical_records"][0]["driver_phone"] == "0931142873"
-                and r["canonical_records"][0]["cont_no"] == "VSIU2620327"
-                and r["canonical_records"][0]["cont_size"] == "20"
-                and r["canonical_records"][0]["seal_no"] is None
-                and r["canonical_records"][0]["eta"] == "08:00"
-                and r["warnings"] == []
-            ),
-        },
-        {
-            "tc_id": "TC-05",
-            "title": "F3 cú pháp mẫu VSICO (có dòng Lệnh, SĐT, Điểm đóng/trả, Số chì trống)",
-            "input_text": (
-                "Khách hàng: Nhựa Á Đông\n"
-                "Lệnh: Trả\n"
-                "Biển số xe: 50H-04915\n"
-                "Tên lái xe: Nguyễn Thanh Phong\n"
-                "SĐT: 0931142873\n"
-                "Số cont: VSIU2620327\n"
-                "Số chì:\n"
-                "Điểm đóng/trả: Kho Nhựa Á Đông – Long An\n"
-                "Thời gian dự kiến đến kho: 08:00"
-            ),
-            "timestamp": "2026-10-09T07:00:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F3"
-                and len(r["canonical_records"]) == 1
-                and r["canonical_records"][0]["plan_date"] == "2026-10-09"
-                and r["canonical_records"][0]["order_type"] == "tra"
-                and r["canonical_records"][0]["customer_raw"] == "Nhựa Á Đông"
-                and r["canonical_records"][0]["location_raw"] == "Kho Nhựa Á Đông – Long An"
-                and r["canonical_records"][0]["plate"] == "50H04915"
-                and r["canonical_records"][0]["driver_name"] == "Nguyễn Thanh Phong"
-                and r["canonical_records"][0]["driver_phone"] == "0931142873"
-                and r["canonical_records"][0]["cont_no"] == "VSIU2620327"
-                and r["canonical_records"][0]["seal_no"] is None
-                and r["canonical_records"][0]["eta"] == "08:00"
-                and r["warnings"] == []
-            ),
-        },
-        {
-            "tc_id": "TC-06",
-            "title": "Kiểm tra Bảng 6.2: Số container sai chữ số kiểm tra cuối theo ISO 6346 (VSIU2323001)",
-            "input_text": "1 xe 15C17066/ Phạm Văn Huynh đt: 0986713346 / VSIU2323001 chì 23333878",
-            "timestamp": "2026-10-09T07:30:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F1"
-                and r["canonical_records"][0]["cont_no"] == "VSIU2323001"
-                and r["validation_results"][0]["check_digit_valid"] is False
-                and any(w.startswith("ISO6346_CHECK_DIGIT_MISMATCH") for w in r["warnings"])
-                and r["reply_to_carrier"] is not None
-                and "VSIU2323000" in r["reply_to_carrier"]
-            ),
-        },
-        {
-            "tc_id": "TC-07",
-            "title": "Kiểm tra Bảng 6.2: SĐT tài xế thiếu chữ số (9 số: 098457785)",
-            "input_text": "1 xe 15C17066/ Phạm Văn Huynh đt: 098457785 / VSIU2621051 chì 23333878",
-            "timestamp": "2026-10-09T07:30:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F1"
-                and r["canonical_records"][0]["driver_name"] == "Phạm Văn Huynh"
-                and r["canonical_records"][0]["driver_phone"] == "098457785"
-                and "INVALID_DRIVER_PHONE" in r["warnings"]
-                and r["reply_to_carrier"] is not None
-            ),
-        },
-        {
-            "tc_id": "TC-08",
-            "title": "Kiểm tra Bảng 6.2: Biển số rơ-moóc (15R01234) đặt ở vị trí biển số xe đầu kéo",
-            "input_text": "1 xe 15R01234/ Phạm Văn Huynh đt: 0986713346 / VSIU2621051 chì 23333878",
-            "timestamp": "2026-10-09T07:30:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["source_format"] == "F1"
-                and r["canonical_records"][0]["plate"] is None
-                and r["validation_results"][0]["trailer_plate"] == "15R-012.34"
-                and "MISSING_TRUCK_PLATE" in r["warnings"]
-                and any(w.startswith("TRAILER_PLATE_IN_TRUCK_POSITION") for w in r["warnings"])
-                and r["reply_to_carrier"] is not None
-            ),
-        },
-        {
-            "tc_id": "TC-16",
-            "title": "Bộ lọc 2 tầng: Tin nhắn xã giao ('ok anh, để em báo tài') -> Bỏ qua, không gọi AI",
-            "input_text": "ok anh, để em báo tài",
-            "timestamp": "2026-10-09T07:30:00",
-            "verify": lambda r: (
-                r["used_ai"] is False
-                and r["processing_status"] == "ignored_chat"
-                and r["canonical_records"] == []
-                and r["reply_to_carrier"] is None
-            ),
-        },
-    ]
-
-    results_out: list[dict[str, Any]] = []
-    passed_count = 0
-    ai_calls_count = 0
-
-    for tc in test_cases:
-        res = execute_single_parse_test(
-            db=db,
-            raw_text=tc["input_text"],
-            timestamp_str=tc["timestamp"],
-            allow_ai_fallback=False,
-        )
-        passed = bool(tc["verify"](res))
-        if passed:
-            passed_count += 1
-        if res["used_ai"]:
-            ai_calls_count += 1
-        results_out.append(
-            {
-                "tc_id": tc["tc_id"],
-                "title": tc["title"],
-                "passed": passed,
-                "used_ai": res["used_ai"],
-                "source_format": res["source_format"],
-                "processing_status": res["processing_status"],
-                "input_text": tc["input_text"],
-                "canonical_records": res["canonical_records"],
-                "warnings": res["warnings"],
-                "reply_to_carrier": res["reply_to_carrier"],
-            }
-        )
-
-    return {
-        "ok": passed_count == len(test_cases),
-        "module_owner": "Đạt – Module Đọc hiểu và định tuyến",
-        "total_cases": len(test_cases),
-        "passed_cases": passed_count,
-        "failed_cases": len(test_cases) - passed_count,
-        "ai_calls_count": ai_calls_count,
-        "summary": (
-            f"PASS {passed_count}/{len(test_cases)} test cases (TC-01 -> TC-08, TC-16), "
-            f"số lần gọi AI = {ai_calls_count} (đạt chuẩn 100% Rule-based không cần gọi AI)."
-        ),
-        "results": results_out,
     }

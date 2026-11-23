@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, Edit3, Loader2 } from "lucide-react";
 import { QUICK_LOGIN_PRESETS } from "../presets";
 import { QuickLoginPreset } from "../types";
-import { login } from "../api";
+import { getPostLoginRedirectPath, login } from "../api";
 
 interface QuickLoginPanelProps {
   onFillPreset: (username: string, password: string) => void;
@@ -33,7 +33,7 @@ export default function QuickLoginPanel({ onFillPreset, onSuccess }: QuickLoginP
         if (onSuccess) {
           onSuccess();
         } else {
-          router.push("/");
+          router.push(getPostLoginRedirectPath());
           router.refresh();
         }
       }

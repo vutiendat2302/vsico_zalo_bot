@@ -19,8 +19,8 @@ from typing import Any, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from src.domain.rules import clean_container
-from src.infrastructure.models import Carrier, Customer, TransportPlan, Warehouse
+from src.domain.rules import clean_container, clean_phone, clean_plate
+from src.infrastructure.models import Carrier, Customer, Driver, TransportPlan, Warehouse
 from src.infrastructure.snowflake import snowflake
 from src.infrastructure.tms_client import TmsApiClient
 from src.observability.logging import get_logger
@@ -115,6 +115,7 @@ def sync_transport_plans_from_tms(
     replace_existing: bool = False,
     clear_all_before_sync: bool = False,
     client: Optional[TmsApiClient] = None,
+    auto_commit: bool = True,
 ) -> dict[str, Any]:
     """Kéo kế hoạch vận chuyển theo ngày & miền từ TMS và đồng bộ vào `transport_plans`.
 
@@ -146,6 +147,33 @@ def sync_transport_plans_from_tms(
     ).all():
         if tms_cid is not None:
             carrier_map[int(tms_cid)] = (cid, cshort or cname)
+
+    driver_phone_by_tms_id: dict[int, str] = {
+        int(d_tms_id): str(d_phone)
+        for d_tms_id, d_phone in db.execute(select(Driver.tms_driver_id, Driver.phone)).all()
+        if d_tms_id is not None and d_phone
+    }
+
+    confirmed_by_key: dict[tuple[str, Any], dict[str, Any]] = {}
+    if hasattr(tms_client, "fetch_confirmed_dispatches"):
+        try:
+            for disp in tms_client.fetch_confirmed_dispatches(plan_date.isoformat()):
+                if not isinstance(disp, dict):
+                    continue
+                ro = disp.get("return_order")
+                if isinstance(ro, dict):
+                    if ro.get("id") is not None:
+                        confirmed_by_key[("tra", int(ro["id"]))] = disp
+                    if ro.get("order_code"):
+                        confirmed_by_key[("tra_code", str(ro["order_code"]).strip().upper())] = disp
+                lo = disp.get("loading_order")
+                if isinstance(lo, dict):
+                    if lo.get("id") is not None:
+                        confirmed_by_key[("dong", int(lo["id"]))] = disp
+                    if lo.get("order_code"):
+                        confirmed_by_key[("dong_code", str(lo["order_code"]).strip().upper())] = disp
+        except Exception as exc:
+            logger.warning("Không thể kéo chi tiết điều phối /dispatch/confirmed ngày %s: %s", plan_date, exc)
 
     deleted_count = 0
     if clear_all_before_sync:
@@ -205,14 +233,32 @@ def sync_transport_plans_from_tms(
                 wh_tms_id = order.get("warehouse_id")
                 wh_id = warehouse_map.get(str(wh_tms_id)) if wh_tms_id is not None else None
 
-                tms_cid = order.get("carrier_id")
+                order_code_str = (order.get("order_code") or "").strip().upper()
+                disp = (
+                    confirmed_by_key.get((otype, tms_oid))
+                    or (confirmed_by_key.get((f"{otype}_code", order_code_str)) if order_code_str else None)
+                )
+
+                tms_cid = order.get("carrier_id") or (disp.get("carrier_id") if disp else None)
                 local_cid: Optional[int] = None
                 mapped_carrier_name: Optional[str] = None
                 if tms_cid is not None and int(tms_cid) in carrier_map:
                     local_cid, mapped_carrier_name = carrier_map[int(tms_cid)]
+                elif disp and disp.get("carrier_name"):
+                    mapped_carrier_name = str(disp["carrier_name"]).strip() or None
 
-                raw_cont = order.get("container_no")
+                disp_sub = (
+                    disp.get("return_order" if otype == "tra" else "loading_order")
+                    if isinstance(disp, dict)
+                    else None
+                )
+                raw_cont = order.get("container_no") or (
+                    disp_sub.get("container_no") if isinstance(disp_sub, dict) else None
+                )
                 clean_cont = clean_container(str(raw_cont)) if raw_cont else None
+                raw_seal = order.get("container_seal") or (
+                    disp_sub.get("container_seal") if isinstance(disp_sub, dict) else None
+                )
                 raw_size = order.get("container_size")
                 size_str = str(raw_size).strip() if raw_size is not None else None
 
@@ -249,7 +295,7 @@ def sync_transport_plans_from_tms(
                 plan_obj.cargo_io_type = io_type
                 plan_obj.order_type = otype
                 plan_obj.container_no = clean_cont
-                plan_obj.seal_no = (order.get("container_seal") or "").strip() or None
+                plan_obj.seal_no = str(raw_seal).strip() or None if raw_seal else None
                 plan_obj.container_size = size_str
                 plan_obj.container_type = (order.get("container_type") or "").strip() or None
                 plan_obj.container_grade = _format_grade(order)
@@ -259,7 +305,16 @@ def sync_transport_plans_from_tms(
                 plan_obj.container_status_message = c_status_msg
                 plan_obj.dispatch_state = order.get("dispatch_state")
                 plan_obj.cargo_weight = _to_decimal(order.get("gross_weight"))
-                plan_obj.required_time = (order.get("required_time") or "").strip() or None
+                raw_req_time = (
+                    order.get("required_time")
+                    or (disp_sub.get("required_time") if isinstance(disp_sub, dict) else None)
+                    or (
+                        points[0].get("required_time")
+                        if isinstance(points, list) and points and isinstance(points[0], dict)
+                        else None
+                    )
+                )
+                plan_obj.required_time = str(raw_req_time).strip() or None if raw_req_time else None
                 plan_obj.customer_name = cust_name
                 plan_obj.customer_id = cust_id
                 plan_obj.warehouse_id = wh_id
@@ -283,10 +338,38 @@ def sync_transport_plans_from_tms(
 
                 if local_cid is not None:
                     plan_obj.carrier_id = local_cid
+                if mapped_carrier_name:
                     plan_obj.fleet_partner = mapped_carrier_name
                     plan_obj.carrier_name = mapped_carrier_name
 
-    db.commit()
+                if disp:
+                    disp_plate = (
+                        disp.get("truck_no")
+                        or ((disp.get("vehicle") or {}).get("truck_no") if isinstance(disp.get("vehicle"), dict) else None)
+                    )
+                    if disp_plate and str(disp_plate).strip():
+                        plan_obj.planned_truck_plate = clean_plate(str(disp_plate)) or str(disp_plate).strip().upper()
+                    disp_mooc = (
+                        disp.get("ro_mooc_no")
+                        or ((disp.get("carrier_mooc") or {}).get("truck_no") if isinstance(disp.get("carrier_mooc"), dict) else None)
+                    )
+                    if disp_mooc and str(disp_mooc).strip():
+                        plan_obj.planned_trailer_plate = clean_plate(str(disp_mooc)) or str(disp_mooc).strip().upper()
+                    disp_driver_name = (disp.get("driver_name") or "").strip() or None
+                    if disp_driver_name:
+                        plan_obj.driver_name = disp_driver_name
+                    disp_driver_id = disp.get("driver_id")
+                    disp_driver_phone = (
+                        disp.get("driver_phone")
+                        or (driver_phone_by_tms_id.get(int(disp_driver_id)) if disp_driver_id is not None else None)
+                    )
+                    if disp_driver_phone and str(disp_driver_phone).strip():
+                        plan_obj.driver_phone = clean_phone(str(disp_driver_phone)) or str(disp_driver_phone).strip()
+
+    if auto_commit:
+        db.commit()
+    else:
+        db.flush()
     logger.info(
         "Đồng bộ kế hoạch TMS ngày %s (region=%s): inserted=%s, updated=%s, deleted=%s",
         plan_date.isoformat(),

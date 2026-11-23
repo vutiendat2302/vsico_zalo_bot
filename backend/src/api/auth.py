@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from src.api.schemas import ApiResponse, LoginData, LoginRequest, LoginResponse, UserOut
+from src.config.settings import settings
 from src.infrastructure.database import get_db
 from src.infrastructure.models import User
 from src.infrastructure.security import (
@@ -105,13 +106,14 @@ def login(
         "role": user_out.role,
     }
     access_token = create_access_token(token_data)
+    cookie_max_age = max(3600, int(getattr(settings, "JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 10080) or 10080) * 60)
 
-    # Thiết lập Cookie an toàn phía client
+    # Thiết lập Cookie an toàn phía client khớp thời hạn JWT
     response.set_cookie(
         key="vsico_token",
         value=access_token,
         httponly=False,
-        max_age=60 * 60 * 24 * 7,
+        max_age=cookie_max_age,
         samesite="lax",
     )
 
@@ -125,6 +127,49 @@ def login(
         ok=True,
         status_code=status.HTTP_200_OK,
         message="Đăng nhập thành công",
+        access_token=access_token,
+        token_type="bearer",
+        user=user_out,
+        data=login_data,
+    )
+
+
+@router.post(
+    "/refresh",
+    response_model=LoginResponse,
+    summary="Gia hạn JWT Access Token hiện tại",
+    description="Cấp lại JWT Access Token mới khi phiên đăng nhập hiện tại vẫn còn hiệu lực.",
+)
+def refresh_token(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+) -> LoginResponse:
+    """Làm mới JWT Access Token để phiên làm việc Web không bị gián đoạn giữa ca trực."""
+    user_out = user_to_out(current_user)
+    access_token = create_access_token(
+        {
+            "sub": str(current_user.id),
+            "username": current_user.username,
+            "role": user_out.role,
+        }
+    )
+    cookie_max_age = max(3600, int(getattr(settings, "JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 10080) or 10080) * 60)
+    response.set_cookie(
+        key="vsico_token",
+        value=access_token,
+        httponly=False,
+        max_age=cookie_max_age,
+        samesite="lax",
+    )
+    login_data = LoginData(
+        access_token=access_token,
+        token_type="bearer",
+        user=user_out,
+    )
+    return LoginResponse(
+        ok=True,
+        status_code=status.HTTP_200_OK,
+        message="Gia hạn phiên đăng nhập thành công",
         access_token=access_token,
         token_type="bearer",
         user=user_out,

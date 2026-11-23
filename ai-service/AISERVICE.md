@@ -1,4 +1,4 @@
-# Đặc tả Kỹ thuật Phân hệ AI & OCR Microservice (`ai-service` v1.0.0)
+# Đặc tả Kỹ thuật Phân hệ AI & OCR Microservice (`ai-service` v1.5.0)
 
 `ai-service` là dịch vụ trí tuệ nhân tạo và nhận dạng quang học (OCR) độc lập, **không lưu trạng thái (Stateless)**, được xây dựng bằng **Python 3.12+**, **FastAPI**, **Pydantic v2**, **PaddleOCR**, **RapidFuzz** và **Google GenAI SDK (`gemini-3.5-flash` / `gemini-3.5-flash-lite`)**.
 

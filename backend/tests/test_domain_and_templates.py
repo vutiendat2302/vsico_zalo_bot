@@ -60,6 +60,7 @@ def test_template_builder_supports_uppercase_load_and_return_orders() -> None:
         line = ExtractedContainerLine(
             line_no=1,
             truck_plate="50H-049.15",
+            trailer_plate="15R-181.29",
             driver_name="Trần Bình",
             driver_phone="0912345678",
             container_no=cont,
@@ -73,6 +74,13 @@ def test_template_builder_supports_uppercase_load_and_return_orders() -> None:
         )
         ok, missing = OutboundTemplateBuilder.check_core_fields_completeness(line)
         assert ok is True, f"Không mong đợi thiếu trường cho {order_type}: {missing}"
+        # Khi thiếu biển số rơ-moóc -> bắt buộc báo thiếu rơ-moóc ngay
+        from dataclasses import replace
+
+        line_no_trailer = replace(line, trailer_plate=None)
+        ok_no_tr, missing_no_tr = OutboundTemplateBuilder.check_core_fields_completeness(line_no_trailer)
+        assert ok_no_tr is False
+        assert "Biển số rơ-moóc" in missing_no_tr
         rendered = OutboundTemplateBuilder.build_customer_notification(line)
         assert expected_header in rendered
         assert cont in rendered
@@ -82,6 +90,7 @@ def test_template_builder_supports_uppercase_load_and_return_orders() -> None:
 
     upd = OutboundTemplateBuilder.build_update_notification(
         line=ExtractedContainerLine(
+            plan_date="2026-11-17",
             truck_plate="15C-999.99",
             driver_name="Lê Hùng",
             driver_phone="0988777666",
@@ -94,4 +103,52 @@ def test_template_builder_supports_uppercase_load_and_return_orders() -> None:
         changes_list=["- Biển số xe: 50H-049.15 -> 15C-999.99"],
     )
     assert "THÔNG BÁO CẬP NHẬT THÔNG TIN XE" in upd
+    assert "Kế hoạch ngày: 17/11/2026" in upd
     assert "15C-999.99" in upd
+
+    # Kiểm tra thông báo đóng hàng & hủy chuyến hiển thị đúng ngày kế hoạch
+    load_with_date = OutboundTemplateBuilder.build_customer_notification(
+        line=ExtractedContainerLine(
+            plan_date="2026-11-18",
+            truck_plate="29C-445.41",
+            trailer_plate="15R-181.29",
+            driver_name="Nguyễn Văn Hải",
+            driver_phone="0983092922",
+            container_no=cont,
+            container_size="40",
+            seal_no="SEAL12345",
+            order_type=OrderType.LOAD.value,
+            customer_hint="Khách Logitem",
+            warehouse_hint="Kho VSICO",
+        )
+    )
+    assert "Kế hoạch ngày: 18/11/2026" in load_with_date
+    assert "- Biển số rơ-moóc: 15R-181.29" in load_with_date
+
+    cancel_with_date = OutboundTemplateBuilder.build_cancel_notification(
+        line=ExtractedContainerLine(
+            plan_date="2026-11-17",
+            truck_plate="29C-445.41",
+            container_no=cont,
+            container_size="40",
+            order_type=OrderType.RETURN.value,
+            customer_hint="Khách Logitem",
+        ),
+        reason="Đổi lịch",
+    )
+    assert "Kế hoạch ngày: 17/11/2026" in cancel_with_date
+
+
+def test_trip_parser_supports_backslash_delimiter_with_trailer_plate() -> None:
+    """Kiểm tra bóc tách tin nhắn dùng dấu phân cách '\\' có cả đầu kéo, rơ-moóc và tài xế."""
+    from src.parsing.trip_parser import TripParser
+
+    msg = r"Xe 15C06695 \ 15R12345 \ Vũ Văn Hưởng \ 0964271792 \ GAOU7806046 \ Kho N&H Long Biên"
+    lines = TripParser.parse_message(msg)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.truck_plate == "15C-066.95"
+    assert line.trailer_plate == "15R-123.45"
+    assert line.driver_name == "Vũ Văn Hưởng"
+    assert line.driver_phone == "0964271792"
+    assert line.container_no == "GAOU7806046"

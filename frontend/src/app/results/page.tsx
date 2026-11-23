@@ -2,26 +2,24 @@
 
 /**
  * Trang Kết quả gửi thông báo điều xe ra nhóm Zalo khách hàng.
+ * Chỉ lưu các kết quả đã duyệt hoặc kết quả đạt của phần tự động gửi, chỉ cho phép xem chi tiết.
  * Tuân thủ bảng màu 3 tông đồng bộ với Trang tổng quan (trắng/xám, đen chữ, tím nhấn),
- * không dùng icon trang trí, không giải thích dài, tải dữ liệu thật từ Backend API.
+ * không dùng icon trang trí, tải dữ liệu thật từ Backend API.
  */
 
 import React, { useCallback, useEffect, useState } from "react";
 import {
   OutboundMessageItem,
   OutboundSummary,
-  approveOutboundMessage,
-  cancelOutboundMessage,
   getOutboundMessages,
   getOutboundSummary,
-  resendOutboundMessage,
 } from "@/lib/api";
 
 interface StatusPresentation {
   label: string;
   dotClass: string;
   textClass: string;
-  key: "SENT" | "PENDING_APPROVAL" | "PENDING_SEND" | "SENDING" | "CANCELLED" | "FAILED" | "IGNORED_DUPLICATE";
+  key: "SENT" | "PENDING_SEND" | "SENDING";
 }
 
 function resolveStatusMeta(rawStatus: string): StatusPresentation {
@@ -29,22 +27,17 @@ function resolveStatusMeta(rawStatus: string): StatusPresentation {
   if (norm === "SENT" || norm === "DA_GUI") {
     return { key: "SENT", label: "Đã gửi", dotClass: "bg-emerald-600", textClass: "text-slate-900" };
   }
-  if (norm === "PENDING_APPROVAL" || norm === "CHO_DUYET") {
-    return { key: "PENDING_APPROVAL", label: "Chờ duyệt", dotClass: "bg-purple-700", textClass: "text-purple-700" };
-  }
-  if (norm === "PENDING_SEND") {
-    return { key: "PENDING_SEND", label: "Chờ gửi", dotClass: "bg-purple-500", textClass: "text-slate-900" };
-  }
   if (norm === "SENDING") {
     return { key: "SENDING", label: "Đang gửi", dotClass: "bg-amber-500", textClass: "text-slate-900" };
   }
-  if (norm === "CANCELLED" || norm === "HUY") {
-    return { key: "CANCELLED", label: "Bị hủy", dotClass: "bg-slate-400", textClass: "text-slate-600" };
+  return { key: "PENDING_SEND", label: "Chờ gửi", dotClass: "bg-purple-600", textClass: "text-slate-900" };
+}
+
+function resolveApprovalSourceLabel(m: OutboundMessageItem): string {
+  if (m.approval_source === "approved" || (m.approved_by && m.approved_by !== "auto_system")) {
+    return "Đã duyệt";
   }
-  if (norm === "FAILED" || norm === "THAT_BAI") {
-    return { key: "FAILED", label: "Thất bại", dotClass: "bg-rose-600", textClass: "text-rose-700" };
-  }
-  return { key: "IGNORED_DUPLICATE", label: "Trùng lặp", dotClass: "bg-slate-400", textClass: "text-slate-500" };
+  return "Tự động gửi";
 }
 
 function formatShortTime(isoStr?: string): string {
@@ -80,28 +73,28 @@ export default function MessageResultsPage() {
     total: 0,
     da_gui: 0,
     cho_duyet: 0,
+    cho_gui: 0,
     huy: 0,
     that_bai: 0,
+    ket_qua_dat: 0,
+    da_duyet: 0,
+    tu_dong_dat: 0,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
   const [totalCount, setTotalCount] = useState(0);
 
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [sourceModeFilter, setSourceModeFilter] = useState<string>("");
   const [orderTypeFilter, setOrderTypeFilter] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [fromTime, setFromTime] = useState<string>("");
   const [toTime, setToTime] = useState<string>("");
 
   const [selectedMessage, setSelectedMessage] = useState<OutboundMessageItem | null>(null);
-  const [editContent, setEditContent] = useState<string>("");
-  const [cancelTarget, setCancelTarget] = useState<OutboundMessageItem | null>(null);
-  const [cancelReason, setCancelReason] = useState<string>("Điều độ hủy lệnh");
 
   const loadData = useCallback(
     async (
@@ -109,6 +102,7 @@ export default function MessageResultsPage() {
       size = pageSize,
       filters?: {
         status?: string;
+        source_mode?: string;
         order_type?: string;
         search?: string;
         from_time?: string;
@@ -116,6 +110,7 @@ export default function MessageResultsPage() {
       }
     ) => {
       const fStatus = filters?.status !== undefined ? filters.status : statusFilter;
+      const fSource = filters?.source_mode !== undefined ? filters.source_mode : sourceModeFilter;
       const fOrder = filters?.order_type !== undefined ? filters.order_type : orderTypeFilter;
       const fSearch = filters?.search !== undefined ? filters.search : searchQuery;
       const fFrom = filters?.from_time !== undefined ? filters.from_time : fromTime;
@@ -127,7 +122,9 @@ export default function MessageResultsPage() {
         const [sumRes, listRes] = await Promise.all([
           getOutboundSummary(),
           getOutboundMessages({
+            results_only: true,
             status: fStatus || undefined,
+            source_mode: fSource || undefined,
             order_type: fOrder || undefined,
             search: fSearch.trim() || undefined,
             from_time: fFrom || undefined,
@@ -145,17 +142,12 @@ export default function MessageResultsPage() {
         setLoading(false);
       }
     },
-    [currentPage, pageSize, statusFilter, orderTypeFilter, searchQuery, fromTime, toTime]
+    [currentPage, pageSize, statusFilter, sourceModeFilter, orderTypeFilter, searchQuery, fromTime, toTime]
   );
 
   useEffect(() => {
     loadData(currentPage, pageSize);
-  }, [currentPage, pageSize, statusFilter, orderTypeFilter]);
-
-  const handleStatusChange = (nextStatus: string) => {
-    setStatusFilter((prev) => (prev === nextStatus && nextStatus !== "" ? "" : nextStatus));
-    setCurrentPage(1);
-  };
+  }, [currentPage, pageSize, statusFilter, sourceModeFilter, orderTypeFilter]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -165,6 +157,7 @@ export default function MessageResultsPage() {
 
   const handleClearFilters = () => {
     setStatusFilter("");
+    setSourceModeFilter("");
     setOrderTypeFilter("");
     setSearchQuery("");
     setFromTime("");
@@ -172,6 +165,7 @@ export default function MessageResultsPage() {
     setCurrentPage(1);
     loadData(1, pageSize, {
       status: "",
+      source_mode: "",
       order_type: "",
       search: "",
       from_time: "",
@@ -179,64 +173,19 @@ export default function MessageResultsPage() {
     });
   };
 
-  const handleApprove = async (id: string, customContent?: string) => {
-    try {
-      setActionLoadingId(id);
-      setActionError(null);
-      await approveOutboundMessage(id, "Điều độ viên", customContent);
-      setSelectedMessage(null);
-      await loadData(currentPage, pageSize);
-    } catch (err: any) {
-      setActionError(err.message || "Lỗi khi duyệt gửi tin.");
-    } finally {
-      setActionLoadingId(null);
-    }
-  };
-
-  const handleConfirmCancel = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!cancelTarget) return;
-    try {
-      setActionLoadingId(cancelTarget.id);
-      setActionError(null);
-      await cancelOutboundMessage(cancelTarget.id, cancelReason.trim() || "Điều độ hủy lệnh");
-      setCancelTarget(null);
-      setSelectedMessage(null);
-      await loadData(currentPage, pageSize);
-    } catch (err: any) {
-      setActionError(err.message || "Lỗi khi hủy tin.");
-    } finally {
-      setActionLoadingId(null);
-    }
-  };
-
-  const handleResend = async (id: string) => {
-    try {
-      setActionLoadingId(id);
-      setActionError(null);
-      await resendOutboundMessage(id);
-      await loadData(currentPage, pageSize);
-    } catch (err: any) {
-      setActionError(err.message || "Lỗi khi gửi lại tin.");
-    } finally {
-      setActionLoadingId(null);
-    }
-  };
-
-  const openDetailModal = (m: OutboundMessageItem) => {
-    setSelectedMessage(m);
-    setEditContent(m.content || "");
-  };
-
   const hasActiveFilters = Boolean(
-    statusFilter || orderTypeFilter || searchQuery.trim() || fromTime || toTime
+    statusFilter || sourceModeFilter || orderTypeFilter || searchQuery.trim() || fromTime || toTime
   );
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const totalResultsCount = summary.ket_qua_dat ?? summary.da_gui + (summary.cho_gui ?? 0);
+  const approvedCount = summary.da_duyet ?? 0;
+  const autoCount = summary.tu_dong_dat ?? 0;
+  const pendingSendCount = summary.cho_gui ?? 0;
 
   return (
-    <div className="space-y-5 text-sm">
+    <div className="h-full min-h-0 flex flex-col gap-3 text-sm">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+      <div className="shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <h1 className="text-xl font-bold text-slate-900">Kết quả gửi</h1>
         <button
           type="button"
@@ -249,17 +198,40 @@ export default function MessageResultsPage() {
       </div>
 
       {/* 4 KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="shrink-0 grid grid-cols-2 lg:grid-cols-4 gap-3">
         <button
           type="button"
-          onClick={() => handleStatusChange("SENT")}
+          onClick={() => {
+            setStatusFilter("");
+            setSourceModeFilter("");
+            setCurrentPage(1);
+          }}
+          className={`text-left p-4 rounded-sm border transition ${
+            !statusFilter && !sourceModeFilter
+              ? "bg-purple-50 border-purple-700"
+              : "bg-white border-slate-200 hover:border-purple-300"
+          }`}
+        >
+          <div className="text-xs font-medium text-slate-500">Tổng kết quả đạt</div>
+          <div className="text-2xl font-bold text-slate-900 mt-2 tabular-nums">
+            {totalResultsCount}
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setStatusFilter((prev) => (prev === "SENT" ? "" : "SENT"));
+            setSourceModeFilter("");
+            setCurrentPage(1);
+          }}
           className={`text-left p-4 rounded-sm border transition ${
             statusFilter === "SENT"
               ? "bg-purple-50 border-purple-700"
               : "bg-white border-slate-200 hover:border-purple-300"
           }`}
         >
-          <div className="text-xs font-medium text-slate-500">Đã gửi</div>
+          <div className="text-xs font-medium text-slate-500">Đã gửi thành công</div>
           <div className="text-2xl font-bold text-slate-900 mt-2 tabular-nums">
             {summary.da_gui}
           </div>
@@ -267,68 +239,107 @@ export default function MessageResultsPage() {
 
         <button
           type="button"
-          onClick={() => handleStatusChange("PENDING_APPROVAL")}
+          onClick={() => {
+            setStatusFilter("");
+            setSourceModeFilter((prev) => (prev === "approved" ? "" : "approved"));
+            setCurrentPage(1);
+          }}
           className={`text-left p-4 rounded-sm border transition ${
-            statusFilter === "PENDING_APPROVAL"
+            sourceModeFilter === "approved"
               ? "bg-purple-50 border-purple-700"
               : "bg-white border-slate-200 hover:border-purple-300"
           }`}
         >
-          <div className="text-xs font-medium text-slate-500">Chờ duyệt</div>
+          <div className="text-xs font-medium text-slate-500">Đã duyệt</div>
           <div className="text-2xl font-bold text-purple-700 mt-2 tabular-nums">
-            {summary.cho_duyet}
+            {approvedCount}
           </div>
         </button>
 
         <button
           type="button"
-          onClick={() => handleStatusChange("CANCELLED")}
+          onClick={() => {
+            setStatusFilter("");
+            setSourceModeFilter((prev) => (prev === "auto" ? "" : "auto"));
+            setCurrentPage(1);
+          }}
           className={`text-left p-4 rounded-sm border transition ${
-            statusFilter === "CANCELLED"
+            sourceModeFilter === "auto"
               ? "bg-purple-50 border-purple-700"
               : "bg-white border-slate-200 hover:border-purple-300"
           }`}
         >
-          <div className="text-xs font-medium text-slate-500">Bị hủy</div>
+          <div className="text-xs font-medium text-slate-500">Tự động gửi</div>
           <div className="text-2xl font-bold text-slate-900 mt-2 tabular-nums">
-            {summary.huy}
-          </div>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => handleStatusChange("FAILED")}
-          className={`text-left p-4 rounded-sm border transition ${
-            statusFilter === "FAILED"
-              ? "bg-purple-50 border-purple-700"
-              : "bg-white border-slate-200 hover:border-purple-300"
-          }`}
-        >
-          <div className="text-xs font-medium text-slate-500">Thất bại</div>
-          <div className="text-2xl font-bold text-slate-900 mt-2 tabular-nums">
-            {summary.that_bai}
+            {autoCount}
           </div>
         </button>
       </div>
 
       {/* Tabs lọc nhanh */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="shrink-0 flex flex-wrap items-center gap-2">
         {[
-          { id: "", label: `Tất cả (${summary.total})` },
-          { id: "SENT", label: `Đã gửi (${summary.da_gui})` },
-          { id: "PENDING_APPROVAL", label: `Chờ duyệt (${summary.cho_duyet})` },
-          { id: "CANCELLED", label: `Bị hủy (${summary.huy})` },
-          { id: "FAILED", label: `Thất bại (${summary.that_bai})` },
+          {
+            id: "all",
+            active: !statusFilter && !sourceModeFilter,
+            label: `Tất cả (${totalResultsCount})`,
+            onClick: () => {
+              setStatusFilter("");
+              setSourceModeFilter("");
+              setCurrentPage(1);
+            },
+          },
+          {
+            id: "sent",
+            active: statusFilter === "SENT" && !sourceModeFilter,
+            label: `Đã gửi (${summary.da_gui})`,
+            onClick: () => {
+              setStatusFilter("SENT");
+              setSourceModeFilter("");
+              setCurrentPage(1);
+            },
+          },
+          {
+            id: "approved",
+            active: sourceModeFilter === "approved",
+            label: `Đã duyệt (${approvedCount})`,
+            onClick: () => {
+              setStatusFilter("");
+              setSourceModeFilter("approved");
+              setCurrentPage(1);
+            },
+          },
+          {
+            id: "auto",
+            active: sourceModeFilter === "auto",
+            label: `Tự động gửi (${autoCount})`,
+            onClick: () => {
+              setStatusFilter("");
+              setSourceModeFilter("auto");
+              setCurrentPage(1);
+            },
+          },
+          ...(pendingSendCount > 0
+            ? [
+                {
+                  id: "pending_send",
+                  active: statusFilter === "PENDING_SEND",
+                  label: `Chờ gửi (${pendingSendCount})`,
+                  onClick: () => {
+                    setStatusFilter("PENDING_SEND");
+                    setSourceModeFilter("");
+                    setCurrentPage(1);
+                  },
+                },
+              ]
+            : []),
         ].map((tab) => (
           <button
             key={tab.id}
             type="button"
-            onClick={() => {
-              setStatusFilter(tab.id);
-              setCurrentPage(1);
-            }}
+            onClick={tab.onClick}
             className={`px-3 py-1.5 rounded-sm text-xs font-medium border transition tabular-nums ${
-              statusFilter === tab.id
+              tab.active
                 ? "bg-purple-700 text-white border-purple-700"
                 : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
             }`}
@@ -341,7 +352,7 @@ export default function MessageResultsPage() {
       {/* Thanh tìm kiếm & bộ lọc */}
       <form
         onSubmit={handleSearchSubmit}
-        className="bg-white border border-slate-200 p-3.5 rounded-sm grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs items-end"
+        className="shrink-0 bg-white border border-slate-200 p-3.5 rounded-sm grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs items-end"
       >
         <div className="lg:col-span-2">
           <label className="block text-slate-600 mb-1 font-medium">Tìm kiếm</label>
@@ -362,11 +373,13 @@ export default function MessageResultsPage() {
               setOrderTypeFilter(e.target.value);
               setCurrentPage(1);
             }}
-            className="w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-purple-700"
+            className={`w-full bg-white border border-slate-300 rounded-sm px-2.5 py-1.5 focus:outline-none focus:border-purple-700 ${
+              orderTypeFilter ? "text-xs text-slate-900" : "text-xs text-slate-400"
+            }`}
           >
-            <option value="">Tất cả</option>
-            <option value="dong">Đóng hàng</option>
-            <option value="tra">Trả hàng</option>
+            <option value="" className="text-xs text-slate-400">Chọn loại lệnh</option>
+            <option value="dong" className="text-xs text-slate-900">Đóng hàng</option>
+            <option value="tra" className="text-xs text-slate-900">Trả hàng</option>
           </select>
         </div>
 
@@ -408,54 +421,47 @@ export default function MessageResultsPage() {
         </div>
       </form>
 
-      {(error || actionError) && (
-        <div className="p-3 bg-white border border-rose-300 rounded-sm text-rose-700 text-xs">
-          {error || actionError}
+      {error && (
+        <div className="shrink-0 p-3 bg-white border border-rose-300 rounded-sm text-rose-700 text-xs">
+          {error}
         </div>
       )}
 
       {/* Bảng dữ liệu chính */}
-      <div className="bg-white border border-slate-200 rounded-sm overflow-hidden">
-        <div className="overflow-x-auto">
+      <div className="flex-1 min-h-0 bg-white border border-slate-200 rounded-sm overflow-hidden flex flex-col">
+        <div className="flex-1 min-h-[220px] overflow-auto">
           <table className="w-full text-left text-xs text-slate-700">
-            <thead className="bg-slate-50 text-slate-600 uppercase text-[11px] border-b border-slate-200">
+            <thead className="bg-slate-50 sticky top-0 z-10 text-slate-600 uppercase text-[11px] border-b border-slate-200">
               <tr>
-                <th className="py-2.5 px-3 w-16">Mã</th>
+                <th className="py-2.5 px-3 w-14">STT</th>
                 <th className="py-2.5 px-3 w-24">Lệnh</th>
-                <th className="py-2.5 px-3 w-28">Trạng thái</th>
                 <th className="py-2.5 px-3 min-w-[300px]">Thông tin chính</th>
                 <th className="py-2.5 px-3 w-44">Nhóm nhận</th>
                 <th className="py-2.5 px-3 w-28">Thời gian</th>
-                <th className="py-2.5 px-3 text-right w-40">Thao tác</th>
+                <th className="py-2.5 px-3 text-right w-24">Thao tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
               {loading && messages.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-slate-500">
+                  <td colSpan={6} className="py-10 text-center text-slate-500">
                     Đang tải dữ liệu...
                   </td>
                 </tr>
               ) : messages.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-slate-500">
+                  <td colSpan={6} className="py-10 text-center text-slate-500">
                     Không có dữ liệu phù hợp.
                   </td>
                 </tr>
               ) : (
-                messages.map((m) => {
-                  const st = resolveStatusMeta(m.status);
-                  const isPending = st.key === "PENDING_APPROVAL";
-                  const isSent = st.key === "SENT";
-                  const isCancelled = st.key === "CANCELLED";
-                  const isFailed = st.key === "FAILED";
-                  const isBusy = actionLoadingId === m.id;
+                messages.map((m, idx) => {
                   const firstCont = m.containers?.[0];
 
                   return (
                     <tr key={m.id} className="hover:bg-slate-50 transition">
-                      <td className="py-2.5 px-3 font-mono text-slate-600 font-medium whitespace-nowrap tabular-nums">
-                        #{m.id}
+                      <td className="py-2.5 px-3 font-mono text-slate-500 whitespace-nowrap tabular-nums">
+                        {(currentPage - 1) * pageSize + idx + 1}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap">
                         <span className="font-medium text-slate-900">
@@ -466,12 +472,6 @@ export default function MessageResultsPage() {
                             Cập nhật
                           </span>
                         )}
-                      </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap">
-                        <span className={`inline-flex items-center gap-1.5 font-medium ${st.textClass}`}>
-                          <span className={`w-2 h-2 rounded-full ${st.dotClass}`} />
-                          <span>{st.label}</span>
-                        </span>
                       </td>
                       <td className="py-2.5 px-3 max-w-lg">
                         {firstCont && (firstCont.container_no || firstCont.truck_plate || firstCont.driver_name) ? (
@@ -508,55 +508,20 @@ export default function MessageResultsPage() {
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap text-slate-600 font-mono tabular-nums">
                         <div>{formatShortTime(m.sent_at || m.created_at)}</div>
-                        {m.approved_by && (
+                        {m.approved_by && m.approved_by !== "auto_system" && (
                           <div className="text-[11px] text-slate-500 font-sans truncate max-w-[100px]">
                             {m.approved_by}
                           </div>
                         )}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap text-right">
-                        <div className="inline-flex items-center gap-1.5">
-                          {isPending && (
-                            <button
-                              type="button"
-                              onClick={() => handleApprove(m.id)}
-                              disabled={isBusy}
-                              className="px-2.5 py-1 bg-purple-700 hover:bg-purple-800 text-white rounded-sm text-xs font-medium transition disabled:opacity-50"
-                            >
-                              Duyệt
-                            </button>
-                          )}
-                          {(isFailed || isCancelled) && (
-                            <button
-                              type="button"
-                              onClick={() => handleResend(m.id)}
-                              disabled={isBusy}
-                              className="px-2.5 py-1 bg-purple-700 hover:bg-purple-800 text-white rounded-sm text-xs font-medium transition disabled:opacity-50"
-                            >
-                              Gửi lại
-                            </button>
-                          )}
-                          {(isPending || isSent) && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCancelTarget(m);
-                                setCancelReason("Điều độ hủy lệnh");
-                              }}
-                              disabled={isBusy}
-                              className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-sm text-xs font-medium transition disabled:opacity-50"
-                            >
-                              Hủy
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => openDetailModal(m)}
-                            className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-sm text-xs font-medium transition"
-                          >
-                            Xem
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedMessage(m)}
+                          className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-sm text-xs font-medium transition"
+                        >
+                          Xem
+                        </button>
                       </td>
                     </tr>
                   );
@@ -568,7 +533,7 @@ export default function MessageResultsPage() {
 
         {/* Phân trang */}
         {totalCount > 0 && (
-          <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs">
+          <div className="shrink-0 px-4 py-2.5 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs">
             <div className="text-slate-600 tabular-nums">
               {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalCount)} / {totalCount}
             </div>
@@ -610,14 +575,16 @@ export default function MessageResultsPage() {
         )}
       </div>
 
-      {/* Modal Chi tiết & Duyệt sửa nội dung */}
+      {/* Modal Chi tiết (chỉ xem) */}
       {selectedMessage && (
         <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white border border-slate-200 rounded-sm max-w-2xl w-full p-5 text-xs text-slate-700 max-h-[90vh] overflow-y-auto space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center gap-3">
-                <h3 className="text-base font-bold text-slate-900 font-mono">
-                  #{selectedMessage.id}
+                <h3 className="text-base font-bold text-slate-900">
+                  {selectedMessage.containers?.[0]?.container_no
+                    ? `Thông báo gửi — Cont ${selectedMessage.containers[0].container_no}`
+                    : selectedMessage.target_group_name || "Chi tiết thông báo gửi"}
                 </h3>
                 {(() => {
                   const st = resolveStatusMeta(selectedMessage.status);
@@ -638,11 +605,20 @@ export default function MessageResultsPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-sm border border-slate-200">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-slate-50 p-3 rounded-sm border border-slate-200">
               <div>
                 <div className="text-slate-500">Loại lệnh</div>
                 <div className="text-slate-900 font-medium mt-0.5">
                   {formatOrderLabel(selectedMessage.order_type)}
+                </div>
+              </div>
+              <div>
+                <div className="text-slate-500">Nguồn kết quả</div>
+                <div className="text-slate-900 font-medium mt-0.5">
+                  {resolveApprovalSourceLabel(selectedMessage)}
+                  {selectedMessage.approved_by && selectedMessage.approved_by !== "auto_system"
+                    ? ` (${selectedMessage.approved_by})`
+                    : ""}
                 </div>
               </div>
               <div>
@@ -676,6 +652,7 @@ export default function MessageResultsPage() {
                       <span className="font-sans">{c.driver_name || "—"}</span>
                       <span>{c.driver_phone || "—"}</span>
                       {c.seal_no && <span>Seal: {c.seal_no}</span>}
+                      {c.eta && <span>Giờ dự kiến: {c.eta}</span>}
                     </div>
                   ))}
                 </div>
@@ -684,37 +661,12 @@ export default function MessageResultsPage() {
 
             <div className="space-y-1.5">
               <div className="font-semibold text-slate-900">Nội dung gửi khách hàng</div>
-              {resolveStatusMeta(selectedMessage.status).key === "PENDING_APPROVAL" ? (
-                <textarea
-                  rows={5}
-                  value={editContent}
-                  onChange={(e) => setEditContent(e.target.value)}
-                  className="w-full p-3 bg-white border border-slate-300 rounded-sm text-slate-900 font-mono leading-relaxed focus:outline-none focus:border-purple-700"
-                />
-              ) : (
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-sm text-slate-900 font-mono whitespace-pre-wrap leading-relaxed">
-                  {selectedMessage.content}
-                </div>
-              )}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-sm text-slate-900 font-mono whitespace-pre-wrap leading-relaxed">
+                {selectedMessage.content}
+              </div>
             </div>
 
-            {selectedMessage.last_error && (
-              <div className="p-3 bg-slate-50 border border-rose-300 rounded-sm text-rose-700">
-                {selectedMessage.last_error}
-              </div>
-            )}
-
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
-              {resolveStatusMeta(selectedMessage.status).key === "PENDING_APPROVAL" && (
-                <button
-                  type="button"
-                  onClick={() => handleApprove(selectedMessage.id, editContent)}
-                  disabled={actionLoadingId === selectedMessage.id}
-                  className="px-4 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-sm font-medium transition disabled:opacity-50"
-                >
-                  Duyệt gửi
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => setSelectedMessage(null)}
@@ -724,46 +676,6 @@ export default function MessageResultsPage() {
               </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Modal xác nhận hủy */}
-      {cancelTarget && (
-        <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4">
-          <form
-            onSubmit={handleConfirmCancel}
-            className="bg-white border border-slate-200 rounded-sm max-w-md w-full p-5 text-xs text-slate-700 space-y-4"
-          >
-            <h3 className="text-sm font-bold text-slate-900">
-              Hủy tin #{cancelTarget.id}
-            </h3>
-            <div>
-              <label className="block text-slate-600 mb-1 font-medium">Lý do hủy</label>
-              <input
-                type="text"
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                className="w-full bg-white border border-slate-300 rounded-sm px-3 py-2 text-slate-900 focus:outline-none focus:border-purple-700"
-                required
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setCancelTarget(null)}
-                className="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-sm font-medium"
-              >
-                Đóng
-              </button>
-              <button
-                type="submit"
-                disabled={actionLoadingId === cancelTarget.id}
-                className="px-3.5 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-sm font-medium transition disabled:opacity-50"
-              >
-                Xác nhận hủy
-              </button>
-            </div>
-          </form>
         </div>
       )}
     </div>

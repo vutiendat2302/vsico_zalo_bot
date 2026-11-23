@@ -12,11 +12,11 @@ Tuân thủ nghiêm ngặt nguyên tắc Template Isolation (Mục 1.6 - AGENTS.
 
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 from src.domain.models import ExtractedContainerLine
-from src.domain.rules import compute_iso6346_check_digit
+from src.domain.rules import clean_plate, compute_iso6346_check_digit, is_valid_phone_list
 
 
 def format_license_plate_display(clean_plate: Optional[str]) -> str:
@@ -41,6 +41,25 @@ def format_masked_phone(phone: Optional[str]) -> str:
     if not phone:
         return ""
     return str(phone).strip()
+
+
+def format_plan_date_display(plan_date_val: Any) -> str:
+    """Định dạng ngày kế hoạch vận chuyển sang chuẩn DD/MM/YYYY."""
+    if not plan_date_val:
+        return ""
+    if isinstance(plan_date_val, datetime):
+        return plan_date_val.strftime("%d/%m/%Y")
+    if isinstance(plan_date_val, date):
+        return plan_date_val.strftime("%d/%m/%Y")
+    s = str(plan_date_val).strip()
+    if not s:
+        return ""
+    if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", s):
+        return s
+    try:
+        return date.fromisoformat(s[:10]).strftime("%d/%m/%Y")
+    except ValueError:
+        return s
 
 
 def format_arrival_time_display(eta_val: Any) -> str:
@@ -111,10 +130,10 @@ class TemplateEngine:
         if loai_clean == "tra":
             return (
                 "VSICO - THÔNG BÁO XE TRẢ HÀNG\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
                 "- Số chì: {so_chi}\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Lái xe: {tai_xe} - SĐT: {sdt}\n"
                 "- Điểm trả: {diem_tra}\n"
                 "- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}\n"
@@ -122,13 +141,13 @@ class TemplateEngine:
         elif loai_clean == "capnhat":
             return (
                 "VSICO - THÔNG BÁO CẬP NHẬT THÔNG TIN XE\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "Cập nhật thông tin xe cho cont {so_cont}:\n"
                 "Các thông tin thay đổi:\n{thay_doi}\n\n"
                 "Thông tin xe hiện tại:\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
                 "- Số chì: {so_chi}\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Lái xe: {tai_xe} - SĐT: {sdt}\n"
                 "- Điểm đến: {diem_den}\n"
                 "- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}\n"
@@ -136,20 +155,20 @@ class TemplateEngine:
         elif loai_clean == "huy":
             return (
                 "VSICO - THÔNG BÁO HỦY CHUYẾN\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "Chuyến xe đã được xác nhận hủy:\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Điểm đến: {diem_den}\n"
                 "- Lý do: {ly_do}{dong_ghi_chu}\n"
             )
         else:
             return (
                 "VSICO - THÔNG BÁO XE ĐÓNG HÀNG\n"
-                "Khách hàng: {ten_khach_hang}\n\n"
+                "Khách hàng: {ten_khach_hang}{dong_ke_hoach_ngay}\n\n"
                 "- Số cont: {so_cont} ({kich_thuoc})\n"
                 "- Số chì: {so_chi}\n"
-                "- Biển số xe: {bien_so}\n"
+                "- Biển số xe: {bien_so}{dong_mooc}\n"
                 "- Lái xe: {tai_xe} - SĐT: {sdt}\n"
                 "- Điểm đóng: {diem_dong}\n"
                 "- Giờ đến dự kiến: {gio_den}{dong_ghi_chu}\n"
@@ -164,17 +183,26 @@ class TemplateEngine:
         """Điền dữ liệu thực tế vào mẫu thông báo."""
         tpl = self.get_template(loai, customer_id)
         bien_so_fmt = format_license_plate_display(context.get("bien_so") or context.get("truck_plate"))
+        mooc_fmt = format_license_plate_display(context.get("ro_mooc") or context.get("mooc") or context.get("trailer_plate"))
+        dong_mooc = f"\n- Biển số rơ-moóc: {mooc_fmt}" if mooc_fmt else ""
         sdt_fmt = str(context.get("sdt") or context.get("driver_phone") or "").strip()
         gio_den_fmt = format_arrival_time_display(context.get("gio_den") or context.get("eta"))
+        ke_hoach_ngay_fmt = format_plan_date_display(context.get("ke_hoach_ngay") or context.get("plan_date"))
+        dong_ke_hoach_ngay = f"\nKế hoạch ngày: {ke_hoach_ngay_fmt}" if ke_hoach_ngay_fmt else ""
 
         note = context.get("ghi_chu") or context.get("note")
         dong_ghi_chu = f"\n- Ghi chú: {note}" if note else ""
 
         mapping = {
             "ten_khach_hang": context.get("ten_khach_hang") or context.get("customer_name") or "Quý khách hàng",
+            "ke_hoach_ngay": ke_hoach_ngay_fmt,
+            "dong_ke_hoach_ngay": dong_ke_hoach_ngay,
             "so_cont": context.get("so_cont") or context.get("container_no") or "",
             "so_chi": context.get("so_chi") or context.get("seal_no") or "Chưa có",
             "bien_so": bien_so_fmt,
+            "ro_mooc": mooc_fmt,
+            "mooc": mooc_fmt,
+            "dong_mooc": dong_mooc,
             "tai_xe": context.get("tai_xe") or context.get("driver_name") or "",
             "sdt": sdt_fmt,
             "diem_tra": context.get("diem_tra") or context.get("warehouse_name") or context.get("location") or "Theo kế hoạch",
@@ -198,58 +226,58 @@ class OutboundTemplateBuilder:
 
     @classmethod
     def check_core_fields_completeness(cls, line: ExtractedContainerLine) -> tuple[bool, list[str]]:
-        """Kiểm tra xem dòng dữ liệu có đáp ứng đủ 8 trường cốt lõi theo quy định:
-        1. Khách hàng
-        2. Lệnh (đóng hoặc trả)
-        3. Xe (biển số)
-        4. Tài xế (tên)
-        5. SĐT (10 số bắt đầu bằng 0)
-        6. Cont (số container và check digit hợp lệ)
-        7. Size (kích thước cont: 20, 40, 45...)
-        8. Chì (số chì / seal)
-        (Giờ dự kiến và Ghi chú là tùy chọn - có thể null).
+        """Kiểm tra 5 trường bắt buộc đối với nhà xe:
+        1. Biển số xe đầu kéo (đủ 5 chữ số chuẩn hoặc khớp danh mục)
+        2. Biển số rơ-moóc (đủ 5 chữ số chuẩn hoặc khớp danh mục)
+        3. Số container (đúng định dạng và số kiểm tra ISO 6346)
+        4. Tên tài xế (ít nhất 2 ký tự)
+        5. SĐT tài xế (đúng 10 số bắt đầu bằng 0)
+        Các trường khác (Khách hàng, Kho, Loại lệnh, Số chì, Kích thước, Giờ dự kiến...) là tùy chọn:
+        có thì bắt và cập nhật, không có vẫn hợp lệ.
 
         Returns:
             tuple[bool, list[str]]: (is_complete, danh_sach_truong_thieu_hoac_sai)
         """
         missing: list[str] = []
-        has_warehouse = bool(line.warehouse_hint or line.warehouse_code_or_id)
 
-        # 1. Khách hàng (nếu đã đủ điểm đóng/trả + xe + cont + chì thì không chặn gửi khi thiếu tên khách)
-        if not has_warehouse and not line.customer_hint and not line.customer_code_or_id:
-            missing.append("Khách hàng")
-
-        # 2. Lệnh (đóng/trả) - hỗ trợ cả LOAD/RETURN và dong/tra; không chặn nếu đã có điểm đóng/trả
-        norm_order = TemplateEngine._normalize_template_kind(line.order_type)
-        if not has_warehouse and norm_order not in ("tra", "dong"):
-            missing.append("Loại lệnh (LOAD/RETURN)")
-
-        # 3. Xe (biển số)
-        if not line.truck_plate and not line.plate_compact:
+        # 1. Xe (biển số đầu kéo đủ 5 chữ số chuẩn XXA-123.45 hoặc khớp danh mục)
+        raw_truck = line.truck_plate or line.plate_compact
+        norm_truck = clean_plate(raw_truck) if raw_truck else None
+        if not norm_truck:
             missing.append("Biển số xe")
+        elif (
+            not re.match(r"^\d{2}[A-Z]{1,2}-\d{3}\.\d{2}$", norm_truck)
+            and line.field_evidences.get("truck_plate") not in ("carrier_vehicle_catalog", "carrier_vehicle_suffix")
+        ):
+            missing.append("Biển số xe (phải đủ 5 chữ số)")
 
-        # 4. Tài xế (tên)
+        # 2. Rơ-moóc (bắt buộc: phải đủ 5 chữ số chuẩn XXR/RM-123.45 hoặc khớp danh mục)
+        if not line.trailer_plate:
+            missing.append("Biển số rơ-moóc")
+        else:
+            norm_trailer = clean_plate(line.trailer_plate) or line.trailer_plate
+            if (
+                not re.match(r"^\d{2}[A-Z]?R[M]?-\d{3}\.\d{2}$", norm_trailer)
+                and line.field_evidences.get("trailer_plate")
+                not in ("carrier_trailer_catalog", "carrier_trailer_suffix", "carrier_trailer_catalog_reclassified")
+            ):
+                missing.append("Biển số rơ-moóc (phải đủ 5 chữ số)")
+
+        # 3. Tên tài xế
         if not line.driver_name or len(line.driver_name.strip()) < 2:
             missing.append("Tên tài xế")
 
-        # 5. SĐT tài xế
+        # 4. SĐT tài xế (hỗ trợ 1 hoặc nhiều SĐT dạng '09..1 | 09..2')
         if not line.driver_phone:
             missing.append("SĐT tài xế")
-        elif "*" not in line.driver_phone and not re.match(r"^0\d{9}$", line.driver_phone):
+        elif not is_valid_phone_list(line.driver_phone):
             missing.append("SĐT tài xế (phải đúng 10 số bắt đầu bằng 0)")
 
-        # 6. Số container
+        # 5. Số container
         if not line.container_no:
             missing.append("Số container")
         elif line.check_digit_valid is False or any(w.startswith("ISO6346_CHECK_DIGIT_MISMATCH") for w in line.warnings):
-            missing.append("Số container (sai số kiểm tra ISO 6346)")
-
-        # 7. Kích thước container (size): tùy chọn — nhiều nhà xe không ghi hoặc lấy từ TransportPlan
-        # (nếu có thì chuẩn hóa ở canonical_cont_size; không chặn gửi nếu thiếu size).
-
-        # 8. Số chì (seal)
-        if not line.seal_no or len(str(line.seal_no).strip()) < 2:
-            missing.append("Số chì (seal)")
+            missing.append("Số container (sai số kiểm tra cuối)")
 
         is_complete = (len(missing) == 0)
         return is_complete, missing
@@ -261,6 +289,7 @@ class OutboundTemplateBuilder:
         customer_name: Optional[str] = None,
         warehouse_name: Optional[str] = None,
         customer_id: Optional[str] = None,
+        plan_date: Optional[Any] = None,
     ) -> str:
         """Tạo nội dung thông báo gửi nhóm khách hàng theo mẫu chuẩn."""
         engine = TemplateEngine()
@@ -268,10 +297,12 @@ class OutboundTemplateBuilder:
 
         ctx = {
             "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
+            "ke_hoach_ngay": plan_date or line.plan_date,
             "so_cont": line.container_no,
             "kich_thuoc": line.canonical_cont_size or line.container_size or "40DC",
-            "so_chi": line.seal_no,
+            "so_chi": line.seal_no or "Chưa có",
             "bien_so": line.truck_plate or line.plate_compact,
+            "ro_mooc": line.trailer_plate,
             "tai_xe": line.driver_name,
             "sdt": line.driver_phone,
             "diem_tra": warehouse_name or line.warehouse_hint or "Kho khách hàng",
@@ -289,16 +320,19 @@ class OutboundTemplateBuilder:
         customer_name: Optional[str] = None,
         warehouse_name: Optional[str] = None,
         customer_id: Optional[str] = None,
+        plan_date: Optional[Any] = None,
     ) -> str:
         """Tạo nội dung thông báo CẬP NHẬT thông tin xe gửi khách hàng khi có thay đổi."""
         engine = TemplateEngine()
         changes_str = "\n".join(changes_list) if changes_list else "- Cập nhật thông tin điều vận"
         ctx = {
             "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
+            "ke_hoach_ngay": plan_date or line.plan_date,
             "so_cont": line.container_no,
             "kich_thuoc": line.canonical_cont_size or line.container_size or "40DC",
             "so_chi": line.seal_no or "Chưa có",
             "bien_so": line.truck_plate or line.plate_compact,
+            "ro_mooc": line.trailer_plate,
             "tai_xe": line.driver_name,
             "sdt": line.driver_phone,
             "diem_den": warehouse_name or line.warehouse_hint or "Kho khách hàng",
@@ -318,14 +352,17 @@ class OutboundTemplateBuilder:
         customer_name: Optional[str] = None,
         warehouse_name: Optional[str] = None,
         customer_id: Optional[str] = None,
+        plan_date: Optional[Any] = None,
     ) -> str:
         """Tạo nội dung thông báo HỦY CHUYẾN gửi khách hàng sau khi ĐHVT xác nhận."""
         engine = TemplateEngine()
         ctx = {
             "ten_khach_hang": customer_name or line.customer_hint or "Quý khách hàng",
+            "ke_hoach_ngay": plan_date or line.plan_date,
             "so_cont": line.container_no,
             "kich_thuoc": line.canonical_cont_size or line.container_size or "40DC",
             "bien_so": line.truck_plate or line.plate_compact,
+            "ro_mooc": line.trailer_plate,
             "diem_den": warehouse_name or line.warehouse_hint or "Kho khách hàng",
             "ly_do": reason,
             "ghi_chu": line.note,
@@ -389,82 +426,197 @@ class OutboundTemplateBuilder:
 
     @classmethod
     def build_carrier_warning_reply(cls, lines: list[ExtractedContainerLine]) -> str:
-        """Tạo nội dung phản hồi nhắc nhà xe khi dữ liệu xe/container bị thiếu hoặc sai chuẩn.
+        """Tạo phản hồi thân thiện, chuẩn hóa nhắc nhà xe khi thông tin xe/container bị thiếu hoặc chưa chính xác.
+
+        Tuyệt đối không hiển thị Regex, check digit, gợi ý đoán số đúng, mã lỗi nội bộ hay chi tiết DB;
+        chỉ trình bày theo công thức: Vấn đề + Thông tin cần kiểm tra + Hướng xử lý.
 
         Args:
             lines (list[ExtractedContainerLine]): Danh sách các dòng xe/container trong tin nhắn.
 
         Returns:
-            str: Chuỗi thông báo nhắc nhà xe kiểm tra lại, hoặc chuỗi rỗng nếu tất cả đều hợp lệ.
+            str: Chuỗi thông báo thân thiện gửi nhà xe, hoặc chuỗi rỗng nếu tất cả đều hợp lệ.
         """
-        issue_messages: list[str] = []
+        per_line_categories: list[tuple[ExtractedContainerLine, list[str]]] = []
 
         for line in lines:
-            reasons: list[str] = []
-
-            # Khi chưa có số container hoặc sai check-digit thì chưa đối chiếu được kế hoạch (khách/lệnh/chì lấy từ plan),
-            # chỉ nhắc nhà xe đúng các thông tin điều xe trực tiếp đang thiếu/sai để tránh gây nhiễu.
-            is_missing_or_bad_cont = (not line.container_no) or (line.check_digit_valid is False)
+            categories: list[str] = []
+            warnings = list(line.warnings or [])
             is_comp, missing = cls.check_core_fields_completeness(line)
-            if not is_comp:
-                plan_derived = {"Khách hàng", "Loại lệnh (LOAD/RETURN)", "Số chì (seal)"}
-                for m in missing:
-                    if is_missing_or_bad_cont and m in plan_derived:
-                        continue
-                    if m == "Số container":
-                        reasons.append("thiếu số container")
-                    else:
-                        reasons.append(f"thiếu/sai {m.lower()}")
 
-            # Bổ sung các cảnh báo chi tiết nếu có
-            if line.warnings:
-                for warn in line.warnings:
-                    if warn == "MISSING_TRUCK_PLATE" and "thiếu/sai biển số xe" not in reasons:
-                        if line.trailer_plate:
-                            reasons.append(
-                                f"thiếu biển số xe đầu kéo ('{line.trailer_plate}' là biển số rơ-moóc)"
-                            )
-                        else:
-                            reasons.append("thiếu biển số xe đầu kéo")
-                    elif warn == "INVALID_DRIVER_PHONE" and not any("sđt" in r for r in reasons):
-                        reasons.append(
-                            f"SĐT tài xế '{line.driver_phone}' không hợp lệ (cần đúng 10 chữ số bắt đầu bằng số 0)"
-                        )
-                    elif warn.startswith("ISO6346_CHECK_DIGIT_MISMATCH"):
-                        expected = compute_iso6346_check_digit(line.container_no or "")
-                        suggested = (
-                            f"{line.container_no[:-1]}{expected}"
-                            if line.container_no and expected is not None
-                            else ""
-                        )
-                        reasons.append(
-                            f"số container '{line.container_no}' sai số kiểm tra cuối"
-                            + (f" (gợi ý đúng: {suggested})" if suggested else "")
-                        )
+            # 1. Phân loại lỗi số container
+            has_cont_invalid = (
+                line.check_digit_valid is False
+                or any(
+                    w.startswith("ISO6346_CHECK_DIGIT_MISMATCH") or w == "INVALID_CONTAINER_FORMAT"
+                    for w in warnings
+                )
+            )
+            has_cont_missing = (
+                not has_cont_invalid
+                and (
+                    not line.container_no
+                    or "Số container" in missing
+                    or any(w in ("MISSING_CONTAINER_NO", "PENDING_CONTAINER_NO") for w in warnings)
+                )
+            )
+            if has_cont_invalid:
+                categories.append("INVALID_CONTAINER")
+            elif has_cont_missing:
+                categories.append("MISSING_CONTAINER")
 
-            if reasons:
-                # Khử trùng lặp lý do
-                unique_reasons = []
-                for r in reasons:
-                    if r not in unique_reasons:
-                        unique_reasons.append(r)
-                prefix = f"Xe {line.truck_plate or f'dòng #{line.line_no}'}"
-                if line.container_no:
-                    prefix += f" (cont {line.container_no})"
-                issue_messages.append(f"- {prefix}: {', '.join(unique_reasons)}.")
+            # 2. Phân loại lỗi biển số xe đầu kéo
+            has_truck_invalid = any(
+                w == "INVALID_TRUCK_PLATE_FORMAT" or w.startswith("TRAILER_PLATE_IN_TRUCK_POSITION")
+                for w in warnings
+            ) or any("Biển số xe" in m and line.truck_plate for m in missing)
+            has_truck_missing = (
+                not has_truck_invalid
+                and (
+                    not line.truck_plate
+                    or "Biển số xe" in missing
+                    or "MISSING_TRUCK_PLATE" in warnings
+                )
+            )
+            if has_truck_invalid:
+                categories.append("INVALID_TRUCK_PLATE")
+            elif has_truck_missing:
+                categories.append("MISSING_TRUCK_PLATE")
 
-        if not issue_messages:
+            # 3. Phân loại lỗi biển số rơ-moóc
+            has_trailer_invalid = "INVALID_TRAILER_PLATE_FORMAT" in warnings or any(
+                "rơ-moóc" in m.lower() and line.trailer_plate for m in missing
+            )
+            has_trailer_missing = (
+                not has_trailer_invalid
+                and (
+                    not line.trailer_plate
+                    or "Biển số rơ-moóc" in missing
+                    or "MISSING_TRAILER_PLATE" in warnings
+                )
+            )
+            if has_trailer_invalid:
+                categories.append("INVALID_TRAILER_PLATE")
+            elif has_trailer_missing:
+                categories.append("MISSING_TRAILER_PLATE")
+
+            # 4. Phân loại lỗi số điện thoại tài xế
+            has_phone_invalid = "INVALID_DRIVER_PHONE" in warnings or any(
+                "sđt" in m.lower() and line.driver_phone for m in missing
+            )
+            if has_phone_invalid:
+                categories.append("INVALID_PHONE")
+
+            # 5. Phân loại lỗi thiếu thông tin tài xế (tên hoặc SĐT trống)
+            has_driver_missing = (
+                not line.driver_name
+                or (not line.driver_phone and not has_phone_invalid)
+                or "Tên lái xe" in missing
+                or ("SĐT lái xe" in missing and not has_phone_invalid)
+                or "MISSING_DRIVER_NAME" in warnings
+                or ("MISSING_DRIVER_PHONE" in warnings and not has_phone_invalid)
+            )
+            if has_driver_missing:
+                categories.append("MISSING_DRIVER")
+
+            if categories:
+                per_line_categories.append((line, categories))
+
+        if not per_line_categories:
             return ""
 
-        header = "[VSICO Bot] Anh/chị vui lòng kiểm tra và bổ sung lại các thông tin còn thiếu/sai sau:\n"
-        return header + "\n".join(issue_messages)
+        single_templates: dict[str, tuple[str, str]] = {
+            "MISSING_CONTAINER": ("📝", "Anh/chị vui lòng bổ sung số container giúp hệ thống nhé."),
+            "INVALID_CONTAINER": ("🔎", "Số container có thể chưa chính xác. Anh/chị vui lòng kiểm tra lại nhé."),
+            "INVALID_TRUCK_PLATE": ("🔎", "Biển số xe đầu kéo chưa hợp lệ. Anh/chị vui lòng kiểm tra lại giúp hệ thống nhé."),
+            "MISSING_TRUCK_PLATE": ("📝", "Anh/chị vui lòng bổ sung biển số xe đầu kéo giúp hệ thống nhé."),
+            "INVALID_TRAILER_PLATE": ("🔎", "Biển số rơ-moóc chưa hợp lệ. Anh/chị vui lòng kiểm tra lại giúp hệ thống nhé."),
+            "MISSING_TRAILER_PLATE": ("📝", "Anh/chị vui lòng bổ sung biển số rơ-moóc giúp hệ thống nhé."),
+            "MISSING_DRIVER": ("📝", "Anh/chị bổ sung giúp hệ thống đầy đủ tên và SĐT tài xế nhé."),
+            "INVALID_PHONE": ("🔎", "Số điện thoại tài xế có thể chưa chính xác. Anh/chị vui lòng kiểm tra lại nhé."),
+        }
+        field_labels: dict[str, str] = {
+            "MISSING_CONTAINER": "số container",
+            "INVALID_CONTAINER": "số container",
+            "INVALID_TRUCK_PLATE": "biển số xe đầu kéo",
+            "MISSING_TRUCK_PLATE": "biển số xe đầu kéo",
+            "INVALID_TRAILER_PLATE": "biển số rơ-moóc",
+            "MISSING_TRAILER_PLATE": "biển số rơ-moóc",
+            "MISSING_DRIVER": "thông tin tài xế",
+            "INVALID_PHONE": "số điện thoại tài xế",
+        }
+
+        if len(per_line_categories) == 1:
+            line, cats = per_line_categories[0]
+            if len(cats) == 1:
+                icon, msg = single_templates[cats[0]]
+                return f"[VSICO] - {icon} {msg}"
+            labels = list(dict.fromkeys(field_labels[c] for c in cats))
+            is_only_missing = all(c.startswith("MISSING_") for c in cats)
+            icon = "📝" if is_only_missing else "🔎"
+            title = "Cần bổ sung thông tin chuyến xe" if is_only_missing else "Cần kiểm tra lại thông tin chuyến xe"
+            ref = line.container_no or line.truck_plate
+            ref_line = f"\n\n📦 Chuyến xe: {ref}" if ref else ""
+            bullet_lines = "\n".join(f"• {lbl.capitalize()}." for lbl in labels)
+            return (
+                f"[VSICO] - {icon} {title}{ref_line}\n\n"
+                f"Hệ thống cần anh/chị rà soát hoặc bổ sung:\n{bullet_lines}\n\n"
+                "Anh/chị kiểm tra và gửi lại giúp hệ thống nhé."
+            )
+
+        # Nhiều chuyến xe cùng có lỗi trong 1 tin nhắn -> gom gọn thành 1 thông báo duy nhất
+        detail_lines: list[str] = []
+        for idx, (line, cats) in enumerate(per_line_categories, start=1):
+            labels = list(dict.fromkeys(field_labels[c] for c in cats))
+            ref = line.container_no or line.truck_plate or f"chuyến thứ {line.line_no}"
+            detail_lines.append(f"{idx}. 📦 {ref}: cần kiểm tra {', '.join(labels)}.")
+        return (
+            f"[VSICO] - 🔎 Có {len(per_line_categories)} chuyến xe cần bổ sung hoặc kiểm tra lại\n\n"
+            + "\n".join(detail_lines)
+            + "\n\nAnh/chị rà soát và gửi bổ sung giúp hệ thống nhé."
+        )
 
     @classmethod
     def build_clarify_container_reply(cls) -> str:
-        """Tạo câu hỏi phản hồi nhà xe khi tin yêu cầu sửa/đổi xe bị thiếu số container."""
+        """Tạo câu hỏi phản hồi thân thiện khi hệ thống chưa xác định được chuyến xe cần cập nhật."""
         return (
-            "[VSICO Bot] Anh/chị vui lòng cho biết Số Container cần cập nhật thông tin "
-            "(ví dụ: MSCU1234567) để hệ thống đối chiếu và cập nhật chính xác."
+            "[VSICO] - 🔍 Chưa xác định được chuyến xe cần cập nhật\n\n"
+            "Anh/chị vui lòng gửi kèm số container hoặc mã lệnh (RO/LO) để hệ thống đối chiếu chính xác nhé."
+        )
+
+    @classmethod
+    def build_unknown_container_carrier_warning(cls, container_no: Optional[str] = None) -> str:
+        """Tạo cảnh báo thân thiện gửi nhà xe khi số container không tồn tại trong kế hoạch vận chuyển."""
+        if container_no:
+            return (
+                "[VSICO] - 🔎 Cần kiểm tra lại số container\n\n"
+                f"📦 Container: {container_no}\n\n"
+                "Số container này hiện chưa có trong kế hoạch vận chuyển của nhà xe. "
+                "Anh/chị vui lòng kiểm tra lại số container hoặc chờ ĐHVT đối chiếu nhé."
+            )
+        return cls.build_clarify_container_reply()
+
+    @classmethod
+    def build_combined_lo_confirm_reply(
+        cls,
+        *,
+        container_no: str,
+        ro_order_code: Optional[str],
+        lo_order_code: Optional[str],
+        truck_plate: Optional[str],
+        lo_warehouse: Optional[str] = None,
+    ) -> str:
+        """Tạo tin nhắn hỏi xác nhận/duyệt lệnh đóng kết hợp gửi nhà xe sau khi lệnh trả đã tự động cập nhật."""
+        ro_lbl = ro_order_code or "lệnh trả"
+        lo_lbl = lo_order_code or "lệnh đóng kết hợp"
+        wh_line = f"\n• Kho đóng: {lo_warehouse}" if lo_warehouse else ""
+        plate_part = f"xe {truck_plate} " if truck_plate else ""
+        return (
+            "[VSICO] - ⚠️ Xác nhận cập nhật lệnh đóng kết hợp\n\n"
+            f"📦 Container: {container_no}\n"
+            f"• Đã cập nhật {plate_part}cho lệnh trả {ro_lbl}.\n"
+            f"• Container này có lệnh đóng kết hợp {lo_lbl}.{wh_line}\n\n"
+            f"👉 Anh/chị nhắn 'ok' (hoặc gửi số chì mới) để hệ thống cập nhật tiếp cho {lo_lbl} nhé."
         )
 
     @classmethod
@@ -474,8 +626,10 @@ class OutboundTemplateBuilder:
         changes_list: list[str],
     ) -> str:
         """Tạo tin xác nhận gửi lại nhà xe sau khi đã cập nhật thông tin điều xe mới."""
-        changes_str = "; ".join(ch.lstrip("- ").strip() for ch in changes_list) if changes_list else "thông tin điều xe"
+        changes_str = ", ".join(ch.lstrip("- ").strip() for ch in changes_list) if changes_list else "thông tin điều xe"
         return (
-            f"[VSICO Bot] Đã ghi nhận cập nhật cho cont {container_no} ({changes_str}) "
-            f"và chuyển thông báo tới khách hàng/ĐHVT."
+            "[VSICO] - ✅ Đã ghi nhận cập nhật chuyến xe\n\n"
+            f"📦 Container: {container_no}\n"
+            f"• Nội dung cập nhật: {changes_str}\n\n"
+            "Hệ thống đã đồng bộ kế hoạch và chuyển thông báo tới ĐHVT / khách hàng."
         )

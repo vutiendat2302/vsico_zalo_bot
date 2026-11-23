@@ -23,7 +23,7 @@ def test_sandbox_simulate_zero_db_persistence_and_context_flow(
 
     cont = _valid_cont("TEMU", "445566")
 
-    # Bước 1: Tin báo thiếu chì -> sinh BotReply ảo + virtual_jobs_next (allow_ai_fallback=False)
+    # Bước 1: Tin báo thiếu rơ-moóc -> sinh BotReply ảo + virtual_jobs_next (allow_ai_fallback=False)
     r1 = api_client.post(
         "/api/sandbox/simulate",
         json={
@@ -39,11 +39,11 @@ def test_sandbox_simulate_zero_db_persistence_and_context_flow(
     assert d1["preview_outputs"]["bot_reply"] is not None
     assert len(d1["virtual_jobs_next"]) == 1
 
-    # Bước 2: Quote lại cảnh báo Bot và bổ sung số chì -> ghép thành công với virtual_job
+    # Bước 2: Quote lại cảnh báo Bot và bổ sung rơ-moóc + số chì -> ghép thành công với virtual_job
     r2 = api_client.post(
         "/api/sandbox/simulate",
         json={
-            "text": "Bổ sung số chì HL778899",
+            "text": "Bổ sung mooc 15R-181.29 số chì HL778899",
             "quote_message": d1["preview_outputs"]["bot_reply"],
             "context_messages": [d1["effective_text"]],
             "virtual_jobs": d1["virtual_jobs_next"],
@@ -90,7 +90,7 @@ def test_sandbox_update_missing_cont_and_casual_chat(api_client: TestClient) -> 
     )
     assert r_upd.status_code == 200
     assert r_upd.json()["context_resolution"]["clarify_missing_container"] is True
-    assert "Số Container" in (r_upd.json()["preview_outputs"]["bot_reply"] or "")
+    assert "chưa xác định được chuyến xe" in (r_upd.json()["preview_outputs"]["bot_reply"] or "").lower()
 
     r_chat = api_client.post(
         "/api/sandbox/simulate",

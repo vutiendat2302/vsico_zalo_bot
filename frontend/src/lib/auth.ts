@@ -4,6 +4,53 @@ export const AUTH_COOKIE_NAME = "vsico_session";
 export const TOKEN_COOKIE_NAME = "vsico_token";
 
 /**
+ * Trích xuất thời điểm hết hạn `exp` (Unix timestamp giây) từ phần payload của JWT.
+ */
+export function getJwtExpirationEpoch(token?: string | null): number | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const jsonStr = atob(padded);
+    const payload = JSON.parse(jsonStr) as { exp?: unknown };
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kiểm tra JWT đã hết hạn (hoặc sắp hết hạn trong `skewSeconds` giây) hay chưa.
+ */
+export function isJwtExpired(token?: string | null, skewSeconds = 0): boolean {
+  const exp = getJwtExpirationEpoch(token);
+  if (exp === null) return true;
+  return Date.now() / 1000 >= exp - skewSeconds;
+}
+
+/**
+ * Lấy số giây hiệu lực còn lại của JWT hiện tại (trả về 0 nếu hết hạn/không hợp lệ).
+ */
+export function getJwtRemainingSeconds(token?: string | null): number {
+  const exp = getJwtExpirationEpoch(token);
+  if (exp === null) return 0;
+  return Math.max(0, Math.floor(exp - Date.now() / 1000));
+}
+
+/**
+ * Dọn cookie phiên lỗi thời và chuyển hướng người dùng về trang đăng nhập khi API trả 401.
+ */
+export function redirectToLoginOnUnauthorized(): void {
+  clearClientSession();
+  if (typeof window === "undefined") return;
+  if (window.location.pathname === "/login") return;
+  const from = `${window.location.pathname}${window.location.search}`;
+  window.location.replace(`/login?from=${encodeURIComponent(from)}`);
+}
+
+/**
  * Đọc thông tin người dùng từ cookie phiên làm việc tại client.
  */
 export function getClientSession(): AuthUser | null {

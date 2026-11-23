@@ -1,0 +1,503 @@
+{
+  "info": {
+    "_postman_id": "vsico-zalo-bot-nlp-ux-v2",
+    "name": "VSICO Zalo Bot - Proxy Sandbox, NLP PhoBERT & Zalo UX v2",
+    "description": "Bo API kiem thu toan trinh tren server qua Proxy / Sandbox Dry-Run (tuyet doi khong gui tin nhan that qua Zalo OA): Auth JWT, Health Watchdog, NLP 3 tang (Precision Regex + vinai/phobert-base-v2 + Danh muc TMS), Reviews/ShortLink, Results, Plans/Trailers va Webhook Dry-Run.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8000" },
+    { "key": "webhookSecret", "value": "" },
+    { "key": "adminUsername", "value": "admin" },
+    { "key": "adminPassword", "value": "" },
+    { "key": "authToken", "value": "" },
+    { "key": "proxyCarrierGroupId", "value": "test_proxy_nhaxe_01" },
+    { "key": "proxyDhvtGroupId", "value": "test_proxy_dhvt_01" },
+    { "key": "proxyDhvtSenderId", "value": "test_proxy_dhvt_user" }
+  ],
+  "item": [
+    {
+      "name": "0. System Health & Auth (JWT)",
+      "item": [
+        {
+          "name": "System Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Zalo OA Health Status (Snapshot - Khong phat sinh canh bao)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/health/zalo-oa",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "health", "zalo-oa"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Auth Login - Lay JWT authToken",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{adminUsername}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK va tra access_token', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const res = pm.response.json();",
+                  "  pm.expect(res.ok).to.be.true;",
+                  "  pm.expect(res.access_token).to.be.a('string');",
+                  "  pm.environment.set('authToken', res.access_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. NLP PhoBERT & Precision Regex (Sandbox Proxy)",
+      "item": [
+        {
+          "name": "NLP Analyze - Bao xe 5 truong + Da SDT + NBSP",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Xe 29C\\u00a0447.12 mooc 29RM-048.02 cont MSCU6635324 lai xe Tinh Van Duan 0987369401 / 0912345678\",\n  \"include_plan_resolution\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sandbox/nlp-analyze",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "sandbox", "nlp-analyze"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Chay trong so that vinai/phobert-base-v2', () => {",
+                  "  pm.expect(res.tier2_phobert_nlp.backend_mode).to.eql('phobert_transformers_local');",
+                  "  pm.expect(res.tier2_phobert_nlp.model_name).to.eql('vinai/phobert-base-v2');",
+                  "});",
+                  "pm.test('Bat du 2 SDT phan tach bang dau gach dung', () => {",
+                  "  pm.expect(res.records[0].driver_phone).to.eql('0987369401 | 0912345678');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NLP Analyze - Kiem tra Precision Regex (chan duoi thua & tach mooc)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Xe 15H-012.34 20 tan, mooc 15R-181.29, ma hang 12 345 678, cont TCNU1234561 tai xe Le Van Minh +84 912 345 678\",\n  \"include_plan_resolution\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sandbox/nlp-analyze",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "sandbox", "nlp-analyze"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Tach dung dau keo va mooc', () => {",
+                  "  pm.expect(res.tier1_regex.regex_hits.tractor_plates[0]).to.include('15H');",
+                  "  pm.expect(res.tier1_regex.regex_hits.trailer_plates[0]).to.include('15R');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NLP Analyze - Kiem tra thong bao loi than thien [VSICO] - ... (sai check digit)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Xe 29C-447.12 mooc 29RM-048.02 cont MSCU6635320 tai xe Tran Binh 0912345678\",\n  \"include_plan_resolution\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sandbox/nlp-analyze",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "sandbox", "nlp-analyze"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Canh bao than thien [VSICO] - ..., khong lo check digit/regex', () => {",
+                  "  const w = (res.carrier_warning_preview || '');",
+                  "  pm.expect(w).to.include('[VSICO] -');",
+                  "  pm.expect(w.toLowerCase()).to.include('chưa chính xác');",
+                  "  pm.expect(w.toLowerCase()).to.not.include('check digit');",
+                  "  pm.expect(w.toLowerCase()).to.not.include('gợi ý');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NLP Analyze - Lenh ket hop (RO + LO cung so container)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Tra xong dong ket hop cont SELU4202340 xe 29C-447.12 mooc 29RM-048.02 tai xe Tinh Van Duan 0987369401\",\n  \"include_plan_resolution\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sandbox/nlp-analyze",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "sandbox", "nlp-analyze"]
+            }
+          }
+        },
+        {
+          "name": "NLP Analyze - Tin nhan xa giao (Gatekeeper chan, PhoBERT UNKNOWN)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Chao buoi sang ca nha chuc mot ngay lam viec vui ve\",\n  \"include_plan_resolution\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sandbox/nlp-analyze",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "sandbox", "nlp-analyze"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Proxy Dry-Run - Mo phong Nha xe & DHVT (0 gui Zalo OA that)",
+      "item": [
+        {
+          "name": "Sandbox Simulate - Nha xe bao xe thieu truong (Dry-Run 0 DB / 0 Zalo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Xe 29C-447.12 mooc 29RM-048.02 cont MSCU6635324\",\n  \"carrier_hint\": \"VSICO\",\n  \"allow_ai_fallback\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sandbox/simulate",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "sandbox", "simulate"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook Proxy Dry-Run - Nha xe gui danh thiep (test_proxy + is_test=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Webhook-Secret", "value": "{{webhookSecret}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"msg_id\": \"pm_proxy_contact_{{$timestamp}}_{{$randomInt}}\",\n  \"group_id\": \"{{proxyCarrierGroupId}}\",\n  \"sender_id\": \"test_proxy_driver_01\",\n  \"sender_name\": \"Nha xe Proxy Test\",\n  \"message_type\": \"contact\",\n  \"message_text\": \"Xe 29C-447.12 mooc 29RM-048.02 cont MSCU6635324\",\n  \"contact\": {\n    \"display_name\": \"Nguyen Van Tai\",\n    \"phone\": \"0934567890\"\n  },\n  \"is_test\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["webhook"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook Proxy Dry-Run - DHVT thong ke ke hoach ngay (test_proxy + is_test=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Webhook-Secret", "value": "{{webhookSecret}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"msg_id\": \"pm_proxy_dhvt_stats_{{$timestamp}}_{{$randomInt}}\",\n  \"group_id\": \"{{proxyDhvtGroupId}}\",\n  \"sender_id\": \"{{proxyDhvtSenderId}}\",\n  \"sender_name\": \"DHVT Proxy Test\",\n  \"message_text\": \"thống kê kế hoạch ngày 17/11\",\n  \"is_test\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["webhook"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook Proxy Dry-Run - DHVT chi tiet lenh tinh Hung Yen (test_proxy + is_test=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Webhook-Secret", "value": "{{webhookSecret}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"msg_id\": \"pm_proxy_dhvt_prov_{{$timestamp}}_{{$randomInt}}\",\n  \"group_id\": \"{{proxyDhvtGroupId}}\",\n  \"sender_id\": \"{{proxyDhvtSenderId}}\",\n  \"sender_name\": \"DHVT Proxy Test\",\n  \"message_text\": \"chi tiết lệnh tỉnh Hưng Yên ngày 17/11\",\n  \"is_test\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["webhook"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Reviews, Short Link, Results & Plans (Protected)",
+      "item": [
+        {
+          "name": "Reviews - Danh sach ca cho duyet (ready_only=true)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reviews?status=PENDING&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reviews"],
+              "query": [
+                { "key": "status", "value": "PENDING" },
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK va tra danh sach reviews', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const res = pm.response.json();",
+                  "  pm.expect(res.ok).to.be.true;",
+                  "  pm.expect(res.reviews).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reviews - Tu choi short_token gia mao (tra mang rong)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reviews?short_token=tampered1234567",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reviews"],
+              "query": [
+                { "key": "short_token", "value": "tampered1234567" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Token gia mao khong lo du lieu', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().reviews).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Outbound Results - Ket qua gui dat chuan",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/outbound/messages?results_only=true&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "outbound", "messages"],
+              "query": [
+                { "key": "results_only", "value": "true" },
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Plans & Trailers - Danh sach ke hoach & Ro-mooc",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master/trailers?limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "master", "trailers"],
+              "query": [
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

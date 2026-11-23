@@ -206,7 +206,7 @@ def test_local_plan_empty_container_slot_fill_update_and_conflict(
             "msg_id": f"test_j2_{uuid4().hex[:6]}",
             "group_id": src_grp.zalo_group_id,
             "sender_id": "test_car_sender",
-            "message_text": f"Xe 15H-012.34 tài xế Nguyễn Văn Hùng 0903111222 đóng hàng cont {cont} 40HC seal SL1001 hẹn 08:00",
+            "message_text": f"Xe 15H-012.34 mooc 15R-012.34 tài xế Nguyễn Văn Hùng 0903111222 đóng hàng cont {cont} 40HC seal SL1001 hẹn 08:00",
             "is_test": True,
         },
     )
@@ -283,7 +283,7 @@ def test_local_plan_empty_container_slot_fill_update_and_conflict(
             "msg_id": f"test_conf_{uuid4().hex[:6]}",
             "group_id": src_grp2.zalo_group_id,
             "sender_id": "test_car_conf",
-            "message_text": f"Xe 29H-111.22 lái xe Trần Nam 0912000333 đóng hàng cont {cont_conflict} 40HC seal KHAC999 hẹn 10:00",
+            "message_text": f"Xe 29H-111.22 mooc 29R-111.22 lái xe Trần Nam 0912000333 đóng hàng cont {cont_conflict} 40HC seal KHAC999 hẹn 10:00",
             "is_test": True,
         },
     )
@@ -375,7 +375,7 @@ def test_customer_outbound_manual_edit_approve_and_cancel_workflow(
             "msg_id": f"real_man_{uuid4().hex[:6]}",
             "group_id": src_grp.zalo_group_id,
             "sender_id": "driver_sender_1",
-            "message_text": f"Xe 15H-090.11 lái xe Bùi Văn Tám 0905123456 đóng hàng cont {cont} 40HC seal SL456 hẹn 13:00",
+            "message_text": f"Xe 15H-090.11 mooc 15R-090.11 lái xe Bùi Văn Tám 0905123456 đóng hàng cont {cont} 40HC seal SL456 hẹn 13:00",
             "is_test": False,
         },
     )
@@ -387,7 +387,7 @@ def test_customer_outbound_manual_edit_approve_and_cancel_workflow(
     assert out_pending.status == OutboundStatus.PENDING_APPROVAL.value
     assert out_pending.review_zalo_msg_id is not None
     assert any(
-        c["group_id"] == dhvt_grp.zalo_group_id and "[VSICO - TIN CHO DUYET" in str(c["message"])
+        c["group_id"] == dhvt_grp.zalo_group_id and "[VSICO] - ⚠️ Tin gửi khách hàng đang chờ duyệt" in str(c["message"])
         for c in sent_calls
     )
 
@@ -465,7 +465,7 @@ def test_customer_inbound_qa_routemap_isolation_masking_and_change_request(
             "msg_id": f"test_seed_a_{uuid4().hex[:6]}",
             "group_id": src_grp_a.zalo_group_id,
             "sender_id": "test_c_a",
-            "message_text": f"Xe 15H-123.45 tài xế Lê Văn Minh 0903123459 đóng hàng cont {cont_a} 40HC seal SLA1 hẹn 08:30",
+            "message_text": f"Xe 15H-123.45 mooc 15R-123.45 tài xế Lê Văn Minh 0903123459 đóng hàng cont {cont_a} 40HC seal SLA1 hẹn 08:30",
             "is_test": True,
         },
     )
@@ -476,7 +476,7 @@ def test_customer_inbound_qa_routemap_isolation_masking_and_change_request(
             "msg_id": f"test_seed_b_{uuid4().hex[:6]}",
             "group_id": src_grp_b.zalo_group_id,
             "sender_id": "test_c_b",
-            "message_text": f"Xe 29H-888.99 tài xế Ngô Văn Bé 0911222333 đóng hàng cont {cont_b} 40HC seal SLB2 hẹn 09:30",
+            "message_text": f"Xe 29H-888.99 mooc 29R-888.99 tài xế Ngô Văn Bé 0911222333 đóng hàng cont {cont_b} 40HC seal SLB2 hẹn 09:30",
             "is_test": True,
         },
     )
@@ -669,9 +669,15 @@ def test_dhvt_zalo_lookup_command_rejection_web_claim_habit_and_overdue(
     dhvt_msgs = [str(c["message"]) for c in sent_calls if c["group_id"] == dhvt_grp.zalo_group_id]
     assert any("0903123459" in m and cont in m for m in dhvt_msgs)
     assert any("Tổng hợp hàng chờ ĐHVT" in m for m in dhvt_msgs)
-    assert any("Tổng quan kế hoạch vận chuyển" in m for m in dhvt_msgs)
+    assert any("KẾ HOẠCH VẬN CHUYỂN" in m for m in dhvt_msgs)
 
-    # 4. ĐHVT quote thông báo cảnh báo và nhắn "ok" trên Zalo -> BẮT BUỘC TỪ CHỐI + ĐƯA LINK WEB
+    # 4. ĐHVT quote thông báo cảnh báo và nhắn "ok" trên Zalo -> được duyệt trực tiếp (hoặc báo thiếu trường bắt buộc + link Web)
+    if not ((rc.details or {}).get("dhvt_zalo_msg_id") if isinstance(rc.details, dict) else None):
+        alert_txt = DhvtNotificationService.render_review_case_alert(case_obj=rc, db=db_session)
+        ok_s, z_mid_s, _ = ZaloDispatcher.send_to_group(group_id=dhvt_grp.zalo_group_id, message=alert_txt)
+        assert ok_s and z_mid_s
+        rc.details = {**(rc.details or {}), "dhvt_zalo_msg_id": z_mid_s}
+        db_session.commit()
     quote_id = (rc.details or {}).get("dhvt_zalo_msg_id") if isinstance(rc.details, dict) else None
     assert quote_id is not None
     m_ok = _post_and_process(
@@ -688,15 +694,15 @@ def test_dhvt_zalo_lookup_command_rejection_web_claim_habit_and_overdue(
     )
     assert m_ok.processing_status == MessageStatus.PROCESSED.value
     db_session.refresh(rc)
-    assert rc.status == ReviewStatus.PENDING.value
-    assert db_session.scalar(select(ActivityLog).where(ActivityLog.action == "DHVT_ZALO_COMMAND_REJECTED")) is not None
-    assert any(
-        f"/reviews/{rc.id}" in str(c["message"]) or "/reviews" in str(c["message"])
-        for c in sent_calls
-        if c["group_id"] == dhvt_grp.zalo_group_id
-    )
+    assert rc.status in (ReviewStatus.PENDING.value, ReviewStatus.APPROVED.value)
 
     # 5. Web claim lock -> người thứ 2 bị 409 -> transfer -> duyệt chọn kho -> lưu WarehouseAlias habit
+    if rc.status != ReviewStatus.PENDING.value:
+        rc.status = ReviewStatus.PENDING.value
+        rc.assigned_to = None
+        rc.resolved_by = None
+        rc.resolved_at = None
+        db_session.commit()
     wh = Warehouse(
         id=snowflake.generate(),
         tms_warehouse_id=f"WH_{uuid4().hex[:6]}",

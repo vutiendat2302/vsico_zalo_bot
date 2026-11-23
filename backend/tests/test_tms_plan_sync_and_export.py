@@ -1,10 +1,13 @@
 """Kiểm thử đồng bộ kế hoạch TMS theo ngày, API giao diện điều hành và xuất Excel chuẩn ketnoi.xlsx."""
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from src.api.app import app
-from src.infrastructure.models import TransportPlan
+from src.handlers.tms_auto_sync import TmsAutoSyncScheduler
+from src.infrastructure.models import Carrier, Customer, TransportPlan, User, Warehouse
 from src.infrastructure.security import get_current_user
 from src.infrastructure.snowflake import snowflake
 from src.infrastructure.tms_client import TmsApiClient
@@ -202,3 +205,356 @@ def test_plan_exporter_empty_and_group_default():
     assert len(records) == 1
     assert records[0]["group_id"] == "b0301d81c0ee29b070ff"
     assert records[0]["order_type"] == "tra"
+
+
+def test_tms_client_proactive_and_401_relogin(monkeypatch):
+    """Kiểm tra TmsApiClient chủ động đăng nhập lại khi token quá tuổi hoặc gặp HTTP 401."""
+    client = TmsApiClient(
+        base_url="https://mock-tms.local/api",
+        username="tms_user",
+        password="tms_password",
+    )
+    login_calls = 0
+
+    def _fake_login() -> str:
+        nonlocal login_calls
+        login_calls += 1
+        client._token = f"tok-{login_calls}"
+        client.token_obtained_at = datetime.now(timezone.utc)
+        return client._token
+
+    monkeypatch.setattr(client, "login", _fake_login)
+
+    # 1. Token quá tuổi -> tự re-login chủ động trước khi gọi request
+    client._token = "stale-tok"
+    client.token_obtained_at = datetime.now(timezone.utc) - timedelta(hours=5)
+    assert client.ensure_fresh_token() == "tok-1"
+    assert login_calls == 1
+
+    # 2. Gặp HTTP 401 -> tự re-login lại một lần rồi retry thành công
+    attempt_tokens: list[str] = []
+
+    class _FakeResp:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = str(payload)
+
+        def json(self):
+            return self._payload
+
+    class _FakeHttpxClient:
+        def __init__(self, timeout: int):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request(self, _method, _url, params=None, json=None, headers=None):
+            attempt_tokens.append(headers["Authorization"])
+            if len(attempt_tokens) == 1:
+                return _FakeResp(401, {"status": "error", "message": "Token expired"})
+            return _FakeResp(200, {"status": "ok", "data": []})
+
+    monkeypatch.setattr("src.infrastructure.tms_client.httpx.Client", _FakeHttpxClient)
+    res = client._request_json("GET", "/transport-plan")
+    assert res["status"] == "ok"
+    assert login_calls == 2
+    assert attempt_tokens == ["Bearer tok-1", "Bearer tok-2"]
+
+
+def test_tms_auto_sync_scheduler_and_status_endpoints(db_session, api_client, monkeypatch):
+    """Kiểm tra TmsAutoSyncScheduler chủ động kéo danh mục + kế hoạch và endpoint trạng thái."""
+    target_date = date(2099, 12, 31)
+
+    class _FakeTmsClient(TmsApiClient):
+        def __init__(self):
+            super().__init__(
+                base_url="https://mock-tms.local/api",
+                username="tms_user",
+                password="tms_password",
+            )
+            self._token = "fake-tok"
+            self.token_obtained_at = datetime.now(timezone.utc)
+            self.forwarder_id = 1
+
+        def ensure_fresh_token(self, *, force_refresh: bool = False) -> str:
+            return "fake-tok"
+
+        def fetch_carriers(self, per_page: int = 100, active_only: bool = True):
+            return [{"id": 77, "code": "NX77", "name": "Nhà xe Tự Động", "short_name": "Tự Động", "status": 1}]
+
+        def fetch_customers(self):
+            return [{"id": "55", "name": "UNILEVER", "short_name": "UNILEVER"}]
+
+        def fetch_warehouses(self, per_page: int = 100, active_only: bool = True):
+            return [
+                {
+                    "id": "88",
+                    "name": "KHO UNILEVER VSIP BẮC NINH",
+                    "address": "KCN VSIP, Bắc Ninh",
+                    "status": 1,
+                    "forwarder_relations": [{"forwarder_id": 1, "customer_id": "55"}],
+                }
+            ]
+
+        def fetch_trailers(self, per_page: int = 100, active_only: bool = True):
+            return []
+
+        def fetch_confirmed_dispatches(self, plan_date: str):
+            return []
+
+        def fetch_transport_plan_by_date(self, plan_date: str, region: int = 1):
+            if plan_date == target_date.isoformat() and region == 1:
+                return _sample_tms_payload()
+            return {"data": []}
+
+    class _NoCloseSession:
+        """Wrapper ngăn scheduler đóng session fixture kiểm thử."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            return self._inner
+
+        def __exit__(self, *_args):
+            return False
+
+    scheduler = TmsAutoSyncScheduler(
+        session_factory=lambda: _NoCloseSession(db_session),
+        client_factory=_FakeTmsClient,
+    )
+    scheduler.track_date(target_date, 1)
+    summary = scheduler.run_once(force_master=True)
+
+    assert summary["error"] is None
+    assert summary["master_synced"] is True
+    assert summary["total_synced"] == 3
+
+    carrier = db_session.scalar(select(Carrier).where(Carrier.tms_carrier_id == 77))
+    cust = db_session.scalar(select(Customer).where(Customer.tms_customer_id == "55"))
+    wh = db_session.scalar(select(Warehouse).where(Warehouse.tms_warehouse_id == "88"))
+    assert carrier is not None and carrier.name == "Nhà xe Tự Động"
+    assert cust is not None and cust.name == "UNILEVER"
+    assert wh is not None and wh.customer_id == cust.id
+
+    st = scheduler.status()
+    assert st["total_runs"] == 1
+    assert st["last_success_at"] is not None
+    assert st["last_error"] is None
+
+    res_status = api_client.get("/api/plans/tms-sync-status")
+    assert res_status.status_code == 200
+    assert res_status.json()["ok"] is True
+
+
+def test_auth_refresh_renews_active_session_token(db_session, api_client):
+    """Kiểm tra POST /api/auth/refresh cấp lại JWT Access Token mới cho người dùng đang hoạt động."""
+    user = User(
+        id=snowflake.generate(),
+        username="dhvt_refresh_test",
+        full_name="ĐHVT Test Refresh",
+        role="DHVT",
+        email="dhvt_refresh@vsico.com.vn",
+        password_hash="hashed",
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        res = api_client.post("/api/auth/refresh")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert isinstance(body["access_token"], str) and len(body["access_token"]) > 20
+    assert body["user"]["username"] == "dhvt_refresh_test"
+    assert "vsico_token=" in (res.headers.get("set-cookie") or "")
+
+
+def test_sync_plan_to_tms_automatically_pulls_updated_plan(db_session, monkeypatch):
+    """Sau khi đẩy cập nhật lên TMS thành công, hệ thống phải tự động kéo đồng bộ lại bảng transport_plans."""
+    from src.config.settings import settings
+    from src.handlers.plan_sync_service import sync_plan_to_tms
+    from src.infrastructure.models import ActivityLog
+
+    target_date = date(2099, 12, 31)
+    plan = TransportPlan(
+        id=snowflake.generate(),
+        tms_order_id=990003,
+        order_code="LO9003",
+        plan_date=target_date,
+        region=1,
+        order_type="dong",
+        cargo_io_type="X",
+        planned_truck_plate="15H-008.14",
+        driver_name="Nguyễn Văn A",
+        driver_phone="0986123456",
+        dispatch_state=0,
+        tms_sync_status="PENDING",
+    )
+    db_session.add(plan)
+    db_session.commit()
+
+    class _FakeReadAfterWriteClient:
+        def push_dispatch_assignment(self, payload, *, idempotency_key=None, correlation_id=None):
+            return 200, {"status": "ok", "message": "updated"}
+
+        def fetch_transport_plan_by_date(self, plan_date: str, region: int = 1):
+            sample = _sample_tms_payload()
+            sample["data"][0]["loading_orders"][0]["dispatch_state"] = 1
+            sample["data"][0]["loading_orders"][0]["booking_no_code"] = "BK991100-AFTER-WRITE"
+            return sample
+
+    monkeypatch.setattr(settings, "TMS_SYNC_ENABLED", True)
+    monkeypatch.setattr(settings, "TMS_WRITE_ENABLED", True)
+
+    status = sync_plan_to_tms(
+        db_session,
+        plan,
+        client=_FakeReadAfterWriteClient(),
+        changed_fields={"planned_truck_plate": "15H-008.14"},
+    )
+    db_session.commit()
+    db_session.refresh(plan)
+
+    assert status == "SYNCED"
+    assert plan.tms_sync_status == "SYNCED"
+    assert plan.dispatch_state == 1
+    assert plan.booking_no == "BK991100-AFTER-WRITE"
+    assert plan.planned_truck_plate == "15H-008.14"
+
+    refresh_log = db_session.scalar(
+        select(ActivityLog).where(
+            ActivityLog.action == "TMS_POST_WRITE_PLAN_REFRESHED",
+            ActivityLog.entity_id == str(plan.id),
+        )
+    )
+    assert refresh_log is not None
+
+
+def test_trailers_sync_and_master_filters(db_session, api_client, monkeypatch):
+    """Kiểm tra đồng bộ rơ-moóc từ TMS và API GET /api/master/trailers với tìm kiếm/bộ lọc."""
+    from src.handlers.tms_auto_sync import sync_trailers_from_tms
+    from src.infrastructure.models import Trailer
+
+    carrier = Carrier(
+        id=snowflake.generate(),
+        tms_carrier_id=999434,
+        code="CAR_TEST_999434",
+        name="CÔNG TY TEST RƠ MOÓC",
+        short_name="TESTMOOC",
+        normalized_name="testmooc",
+        is_active=True,
+    )
+    db_session.add(carrier)
+    db_session.commit()
+
+    sample_rows = [
+        {
+            "id": 999029,
+            "carrier_id": 999434,
+            "license_plate": "15R99129",
+            "type": 2,
+            "model": "CIMC 40FT",
+            "note": "Moóc sàn test",
+            "status": 1,
+        },
+        {
+            "id": 999030,
+            "carrier_id": 999434,
+            "license_plate": "29R-99187",
+            "type": 1,
+            "model": "Thaco 40FT",
+            "note": "Moóc xương test",
+            "status": 0,
+        },
+    ]
+
+    monkeypatch.setattr(TmsApiClient, "fetch_trailers", lambda self, per_page=100, active_only=False: sample_rows)
+    stats = sync_trailers_from_tms(db_session, TmsApiClient())
+    db_session.commit()
+    assert stats == {"fetched": 2, "created": 2, "updated": 0}
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, role="ADMIN")
+    try:
+        r_all = api_client.get(f"/api/master/trailers?carrier_id={carrier.id}")
+        assert r_all.status_code == 200
+        body_all = r_all.json()
+        assert body_all["total"] == 2
+        assert "CIMC 40FT" in body_all["filter_options"]["models"]
+        assert "Thaco 40FT" in body_all["filter_options"]["models"]
+
+        # Tìm theo biển số không dấu gạch ngang
+        r_search = api_client.get("/api/master/trailers?search=29R99187")
+        assert r_search.status_code == 200
+        assert r_search.json()["total"] == 1
+        assert r_search.json()["items"][0]["license_plate"] == "29R-99187"
+
+        # Lọc theo mooc_type, model, carrier_id và is_active
+        r_filtered = api_client.get(
+            f"/api/master/trailers?mooc_type=2&model=CIMC+40FT&carrier_id={carrier.id}&is_active=true"
+        )
+        assert r_filtered.status_code == 200
+        assert r_filtered.json()["total"] == 1
+        assert r_filtered.json()["items"][0]["tms_mooc_id"] == "999029"
+
+        # Đồng bộ thủ công qua API POST /api/master/trailers/sync (upsert không nhân đôi)
+        r_sync = api_client.post("/api/master/trailers/sync")
+        assert r_sync.status_code == 200
+        assert r_sync.json()["updated"] == 2
+        assert db_session.query(Trailer).filter(Trailer.carrier_id == carrier.id).count() == 2
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        db_session.query(Trailer).filter(Trailer.tms_mooc_id.in_([999029, 999030])).delete(synchronize_session=False)
+        db_session.query(Carrier).filter(Carrier.id == carrier.id).delete(synchronize_session=False)
+        db_session.commit()
+
+
+def test_sync_tms_fills_combined_loading_container_from_confirmed_dispatch(db_session):
+    """Đồng bộ kế hoạch tự lấy bổ sung container_no của lệnh đóng từ /dispatch/confirmed khi /transport-plan để trống."""
+    from src.handlers.tms_plan_sync_service import sync_transport_plans_from_tms
+
+    class _FakeCombinedClient:
+        def fetch_transport_plan_by_date(self, plan_date: str, region: int = 1):
+            return _sample_tms_payload()
+
+        def fetch_confirmed_dispatches(self, plan_date: str):
+            return [
+                {
+                    "id": 17436,
+                    "carrier_id": 434,
+                    "carrier_name": "VSICO",
+                    "truck_no": "29C46732",
+                    "driver_id": 639,
+                    "driver_name": "Nguyễn Viết Phú",
+                    "loading_order": {
+                        "id": 990003,
+                        "order_code": "LO9003",
+                        "container_no": "TMSU4000770",
+                    },
+                }
+            ]
+
+    res = sync_transport_plans_from_tms(
+        db_session,
+        plan_date=date(2099, 12, 31),
+        region=1,
+        client=_FakeCombinedClient(),
+        auto_commit=False,
+    )
+    assert res["total_synced"] >= 3
+    lo_plan = db_session.scalar(select(TransportPlan).where(TransportPlan.tms_order_id == 990003))
+    assert lo_plan is not None
+    assert lo_plan.container_no == "TMSU4000770"
+    assert lo_plan.planned_truck_plate == "29C-467.32"
+    assert lo_plan.driver_name == "Nguyễn Viết Phú"

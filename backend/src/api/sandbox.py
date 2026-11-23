@@ -812,3 +812,142 @@ def simulate_message_pipeline(
     finally:
         # Đảm bảo tuyệt đối không có bất kỳ thay đổi nào được commit xuống MySQL
         db.rollback()
+
+
+class NlpAnalyzeRequest(BaseModel):
+    """Schema yêu cầu kiểm thử chi tiết bộ bóc tách Regex + PhoBERT (`vinai/phobert-base-v2`) + Kế hoạch."""
+
+    text: str = Field(..., min_length=1, description="Nội dung tin nhắn Zalo cần phân tích NLP")
+    carrier_id: int | None = Field(default=None, description="ID nhà xe (tùy chọn) để đối chiếu kế hoạch & danh mục TMS")
+    plan_date: str | None = Field(default=None, description="Ngày kế hoạch YYYY-MM-DD (tùy chọn)")
+    include_plan_resolution: bool = Field(default=True, description="Chạy đối chiếu kế hoạch 6 nhánh RO/LO/Kết hợp")
+
+
+@router.post("/nlp-analyze")
+def analyze_nlp_pipeline(
+    req: NlpAnalyzeRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Kiểm thử toàn bộ chuỗi Tầng 1 (Precision Regex) -> Tầng 2 (`vinai/phobert-base-v2` + TMS Catalog) -> Đối chiếu kế hoạch (không ghi DB)."""
+    from dataclasses import asdict
+    from datetime import date as date_cls
+
+    from src.domain.patterns import CONT_REGEX, PHONE_PATTERN, PLATE_REGEX, TRAILER_PLATE_REGEX
+    from src.handlers.carrier_flow_service import CarrierContext, CarrierFlowService
+    from src.handlers.plan_resolution_engine import PlanResolutionEngine
+    from src.handlers.plan_sync_service import resolve_trailer_from_catalog
+    from src.messaging.segmenter import MessageSegmenter, normalize_segment_text
+    from src.parsing.local_nlp_extractor import PhoBertLocalNlpEngine, enrich_local, message_dates
+
+    t0 = time.perf_counter()
+    raw_text = req.text.strip()
+    norm_text = normalize_segment_text(raw_text)
+
+    # 1. Tầng 1: Gatekeeper + Precision Regex + Segmenter + TripParser
+    junk_status, junk_reason, signals = IntentClassifier.classify_junk(raw_text)
+    intent = IntentClassifier.classify(raw_text)
+    segments = MessageSegmenter.segment(raw_text)
+    parsed_lines = TripParser.parse_message(raw_text)
+    validated_lines = ContainerValidator.validate_all(parsed_lines)
+
+    regex_hits = {
+        "tractor_plates": [m.group(0) for m in PLATE_REGEX.finditer(norm_text)],
+        "trailer_plates": [m.group(0) for m in TRAILER_PLATE_REGEX.finditer(norm_text)],
+        "containers": [m.group(0) for m in CONT_REGEX.finditer(norm_text)],
+        "phones": [m.group(0) for m in PHONE_PATTERN.finditer(norm_text)],
+    }
+
+    # 2. Tầng 2: PhoBERT (`vinai/phobert-base-v2`) + Danh mục TMS
+    phobert_engine = PhoBertLocalNlpEngine.get_instance()
+    phobert_res = phobert_engine.analyze(raw_text)
+    enriched_lines = enrich_local(
+        db=db,
+        lines=validated_lines,
+        carrier_id=req.carrier_id,
+        raw_text=raw_text,
+        reference=datetime.now(),
+        include_phobert=True,
+    )
+    for ln in enriched_lines:
+        ln.carrier_id = req.carrier_id
+        resolve_trailer_from_catalog(db, ln, req.carrier_id)
+    enriched_lines = ContainerValidator.validate_all(enriched_lines)
+
+    # 3. Kiểm tra ngưỡng kích hoạt Tầng 3 LLM & đối chiếu kế hoạch RO/LO/Kết hợp
+    would_trigger_llm = AIFallbackExtractor.should_trigger_ai(enriched_lines, intent=intent)
+    carrier_warning = OutboundTemplateBuilder.build_carrier_warning_reply(enriched_lines)
+
+    plan_resolutions: list[dict[str, Any]] = []
+    if req.include_plan_resolution:
+        dates = [req.plan_date] if req.plan_date else message_dates(raw_text, datetime.now())
+        date_objs: list[date_cls] = []
+        for d_str in dates:
+            try:
+                date_objs.append(date_cls.fromisoformat(d_str))
+            except ValueError:
+                pass
+        scoped_plans: list[TransportPlan] = []
+        if date_objs:
+            stmt = select(TransportPlan).where(TransportPlan.plan_date.in_(date_objs))
+            if req.carrier_id is not None:
+                stmt = stmt.where(
+                    (TransportPlan.carrier_id == req.carrier_id) | (TransportPlan.carrier_id.is_(None))
+                )
+            scoped_plans = list(db.scalars(stmt.limit(200)).all())
+
+        ctx_probe = CarrierContext(numeric_carrier_id=req.carrier_id)
+        for ln in enriched_lines:
+            ro_p, lo_p, ro_has_info = CarrierFlowService.detect_combined_ro_lo_pair(db, ln, ctx_probe)
+            res_obj = PlanResolutionEngine.resolve(ln, scoped_plans, req.carrier_id, dates, shadow=False)
+            plan_resolutions.append(
+                {
+                    "line_no": ln.line_no,
+                    "container_no": ln.container_no,
+                    "is_combined_ro_lo": bool(ro_p and lo_p),
+                    "ro_order_code": ro_p.order_code if ro_p else None,
+                    "lo_order_code": lo_p.order_code if lo_p else None,
+                    "ro_has_tms_vehicle_info": ro_has_info,
+                    "resolution": asdict(res_obj),
+                }
+            )
+
+    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+    return {
+        "ok": True,
+        "latency_ms": latency_ms,
+        "tier1_regex": {
+            "junk_status": junk_status,
+            "junk_reason": junk_reason,
+            "intent": intent.value,
+            "signals": signals,
+            "regex_hits": regex_hits,
+            "segment_count": len(segments),
+            "segments": segments,
+        },
+        "tier2_phobert_nlp": {
+            "backend_mode": phobert_res.backend_mode,
+            "model_name": phobert_engine.model_name,
+            "segmented_text": phobert_res.segmented_text,
+            "intent_label": phobert_res.intent_label,
+            "intent_confidence": phobert_res.intent_confidence,
+            "min_confidence_threshold": phobert_engine.INTENT_MIN_CONFIDENCE,
+            "order_type_hint": phobert_res.order_type_hint,
+            "is_combined_trip": phobert_res.is_combined_trip,
+            "spans": [asdict(s) for s in phobert_res.spans],
+        },
+        "tier3_llm_trigger": would_trigger_llm,
+        "records": [
+            {
+                **ln.to_canonical_record(),
+                "line_no": ln.line_no,
+                "validation_status": ln.validation_status,
+                "check_digit_valid": ln.check_digit_valid,
+                "confidence": round(float(ln.confidence), 3),
+                "warnings": ln.warnings,
+                "field_evidences": ln.field_evidences,
+            }
+            for ln in enriched_lines
+        ],
+        "carrier_warning_preview": carrier_warning,
+        "plan_resolutions": plan_resolutions,
+    }

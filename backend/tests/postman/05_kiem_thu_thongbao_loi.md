@@ -21,15 +21,21 @@ flowchart TD
     L --> M["reply_to_carrier: null (Không gửi nhắc nhở)"]
 ```
 
-### Quy tắc thông báo lỗi:
-1. **Chỉ nhắc khi có lỗi thực tế**: Nếu tin nhắn đầy đủ 8 trường chuẩn (*Khách hàng, Lệnh, Xe, Tài xế, SĐT, Cont, Size, Chì*), trường `reply_to_carrier` là `null`.
-2. **Liệt kê cụ thể từng lỗi**:
-   - Thiếu chì: `thiếu/sai số chì / seal`.
-   - Thiếu kích thước cont: `thiếu/sai kích thước container (size)`.
-   - Nhầm biển số moóc: `thiếu biển số xe đầu kéo ('15R-...' là biển số rơ-moóc)`.
-   - Sai số kiểm tra ISO 6346: `số container sai số kiểm tra cuối (gợi ý đúng: VSIU...)`.
-   - Sai SĐT: `SĐT tài xế không hợp lệ (cần đúng 10 chữ số bắt đầu bằng số 0)`.
-3. **Thời hạn bổ sung**: Hệ thống cấp thời hạn 30 phút (`fix_deadline`) để nhà xe gửi tin bổ sung trước khi ĐHVT xử lý thủ công.
+### Quy tắc thông báo lỗi thân thiện cho Nhà xe (Cập nhật v2):
+Công thức chuẩn hóa mọi phản hồi lỗi gửi nhà xe: **Vấn đề + Thông tin cần kiểm tra + Hướng xử lý**. Hệ thống tuyệt đối không hiển thị Regex, thuật toán check digit ISO 6346, mã lỗi nội bộ, chi tiết database hay suy đoán giá trị đúng trong tin nhắn gửi nhà xe (chi tiết kỹ thuật chỉ ghi vào log nội bộ và ca duyệt cho ĐHVT).
+
+1. **5 trường bắt buộc**: Biển số xe đầu kéo, Biển số rơ-moóc, Số container (đúng chuẩn ISO 6346), Tên tài xế, SĐT tài xế (hỗ trợ đa SĐT phân tách bằng ` | `). Nếu đủ 5 trường hợp lệ, `reply_to_carrier` là `null`.
+2. **Câu trả lời chuẩn hóa theo tình huống**:
+   - Thiếu số container: `Anh/chị vui lòng bổ sung số container giúp hệ thống nhé.`
+   - Container sai định dạng hoặc sai chữ số kiểm tra: `Số container có thể chưa chính xác. Anh/chị vui lòng kiểm tra lại nhé.`
+   - Sai hoặc thiếu biển số xe đầu kéo: `Biển số xe chưa hợp lệ. Anh/chị vui lòng kiểm tra lại giúp hệ thống.`
+   - Thiếu biển số rơ-moóc: `Anh/chị vui lòng bổ sung biển số rơ-moóc giúp hệ thống nhé.`
+   - Thiếu thông tin tài xế: `Anh/chị bổ sung giúp hệ thống thông tin tài xế nhé.`
+   - Sai số điện thoại tài xế: `Số điện thoại tài xế có thể chưa chính xác. Anh/chị vui lòng kiểm tra lại.`
+   - Không xác định được chuyến cần cập nhật: `Hệ thống chưa xác định được chuyến xe cần cập nhật. Anh/chị vui lòng cung cấp thêm thông tin nhé.`
+   - Nhiều lỗi cùng lúc: `Một số thông tin trong tin nhắn cần được kiểm tra lại. Anh/chị vui lòng rà soát (...) và gửi bổ sung giúp hệ thống nhé.`
+   - Container hợp lệ nhưng không có trong kế hoạch: Vừa cảnh báo nhẹ nhàng về nhóm nhà xe vừa tạo ca `SHIPPING_NOT_FOUND` báo về nhóm ĐHVT kèm tên nhóm nguồn.
+3. **Gom tin rời rạc 60 giây & Thời hạn bổ sung**: Với nhóm nhà xe thật, Bot tự động gom các tin rời rạc trong cửa sổ 60 giây (hỗ trợ kèm Danh thiếp Zalo) trước khi nhắc thiếu; sau khi nhắc thiếu, cấp thời hạn 30 phút (`fix_deadline`) để nhà xe bổ sung.
 
 ---
 

@@ -32,6 +32,7 @@ from src.api.schemas import (
     TransportPlanSyncResponse,
     TransportPlanUpdate,
 )
+from src.handlers.tms_auto_sync import tms_auto_sync
 from src.handlers.tms_plan_sync_service import (
     DEFAULT_PLAN_GROUP_ID,
     sync_transport_plans_from_tms,
@@ -105,6 +106,7 @@ def get_transport_plans(
         )
 
     if p_date:
+        tms_auto_sync.track_date(p_date, 1)
         stmt = stmt.where(TransportPlan.plan_date == p_date)
     if container_no:
         clean_c = container_no.strip().upper()
@@ -142,10 +144,12 @@ def get_transport_plans(
                 func.lower(TransportPlan.forwarder_name).like(search_kw),
                 func.lower(TransportPlan.driver_name).like(search_kw),
                 func.lower(TransportPlan.planned_truck_plate).like(search_kw),
+                func.lower(TransportPlan.planned_trailer_plate).like(search_kw),
                 func.lower(TransportPlan.delivery_address).like(search_kw),
                 func.lower(TransportPlan.route_name).like(search_kw),
                 func.lower(TransportPlan.fleet_partner).like(search_kw),
                 func.replace(func.replace(func.replace(TransportPlan.planned_truck_plate, "-", ""), ".", ""), " ", "").like(clean_alnum),
+                func.replace(func.replace(func.replace(TransportPlan.planned_trailer_plate, "-", ""), ".", ""), " ", "").like(clean_alnum),
             )
         )
 
@@ -265,6 +269,7 @@ def sync_plans_from_tms(
         )
 
     effective_gid = (group_id or "").strip() or DEFAULT_PLAN_GROUP_ID
+    tms_auto_sync.track_date(p_date, region)
     try:
         stats = sync_transport_plans_from_tms(
             db=db,
@@ -273,6 +278,7 @@ def sync_plans_from_tms(
             default_group_id=effective_gid,
             replace_existing=replace_existing,
             clear_all_before_sync=clear_all_before_sync,
+            client=tms_auto_sync.get_client(),
         )
     except TmsApiError as exc:
         logger.error("Lỗi gọi TMS /transport-plan: %s", exc)
@@ -299,6 +305,26 @@ def sync_plans_from_tms(
         ),
         **stats,
     )
+
+
+@router.get("/tms-sync-status", response_model=dict[str, Any])
+def get_tms_auto_sync_status() -> dict[str, Any]:
+    """Lấy trạng thái hoạt động của dịch vụ tự động đồng bộ TMS theo chu kỳ nền."""
+    return {
+        "ok": True,
+        **tms_auto_sync.status(),
+    }
+
+
+@router.post("/tms-sync-now", response_model=dict[str, Any])
+def trigger_tms_auto_sync_now() -> dict[str, Any]:
+    """Kích hoạt ngay một chu kỳ đồng bộ chủ động từ TMS (kế hoạch + danh mục nếu tới hạn)."""
+    summary = tms_auto_sync.trigger_now()
+    return {
+        "ok": not bool(summary.get("error")),
+        "summary": summary,
+        "status": tms_auto_sync.status(),
+    }
 
 
 @router.get("/{plan_id}", response_model=TransportPlanOut)
@@ -360,6 +386,7 @@ def create_transport_plan(
         estimated_drop_time=payload.estimated_drop_time,
         fleet_partner=payload.fleet_partner,
         planned_truck_plate=payload.planned_truck_plate,
+        planned_trailer_plate=clean_plate(payload.planned_trailer_plate) if payload.planned_trailer_plate else None,
         driver_name=payload.driver_name,
         driver_phone=payload.driver_phone,
         delivery_address=payload.delivery_address,
@@ -402,6 +429,8 @@ def update_transport_plan(
     for field, val in update_data.items():
         if field == "container_no" and val:
             setattr(plan, field, str(val).strip().upper())
+        elif field == "planned_trailer_plate" and val:
+            setattr(plan, field, clean_plate(str(val)))
         elif field == "delivery_address":
             setattr(plan, "delivery_address", val)
             setattr(plan, "address", val)
@@ -789,6 +818,8 @@ def update_plan_vehicle(
         raise HTTPException(422, "Nhà xe không tồn tại.")
     if values.get("planned_truck_plate"):
         values["planned_truck_plate"] = clean_plate(values["planned_truck_plate"])
+    if values.get("planned_trailer_plate"):
+        values["planned_trailer_plate"] = clean_plate(values["planned_trailer_plate"])
     if values.get("container_no"):
         values["container_no"] = clean_container(values["container_no"])
         if not validate_iso6346(values["container_no"]):

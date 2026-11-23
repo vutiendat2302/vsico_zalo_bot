@@ -16,7 +16,9 @@ import {
 } from "@/lib/api";
 import {
   MasterTransportPlansResponse,
+  TmsAutoSyncStatus,
   getMasterTransportPlans,
+  getTmsAutoSyncStatus,
 } from "@/features/master/api";
 import { MasterSearchInput, MasterSelectFilter } from "@/features/master/components/MasterShell";
 import {
@@ -24,6 +26,7 @@ import {
   formatContainerSizeBadge,
   formatDeliveryTerm,
 } from "@/features/plans/components/PlanDetailModal";
+import { formatSyncTime, todayVnIso } from "@/lib/utils";
 
 function shiftIsoDate(iso: string, deltaDays: number): string {
   const parts = iso.split("-").map(Number);
@@ -63,7 +66,7 @@ const WARNING_ROWS = [
 ] as const;
 
 export default function MasterTransportPlansPage() {
-  const [planDate, setPlanDate] = useState("2026-11-09");
+  const [planDate, setPlanDate] = useState<string>(() => todayVnIso());
   const [region, setRegion] = useState<number>(1);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
@@ -76,6 +79,7 @@ export default function MasterTransportPlansPage() {
   const [viewMode, setViewMode] = useState<"province" | "list">("province");
 
   const [data, setData] = useState<MasterTransportPlansResponse | null>(null);
+  const [autoSyncStatus, setAutoSyncStatus] = useState<TmsAutoSyncStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -132,12 +136,32 @@ export default function MasterTransportPlansPage() {
     fetchData();
   }, [fetchData]);
 
+  const refreshSyncStatus = useCallback(async () => {
+    try {
+      const st = await getTmsAutoSyncStatus();
+      setAutoSyncStatus(st);
+    } catch {
+      // Không chặn hiển thị bảng kế hoạch nếu endpoint trạng thái tạm thời lỗi
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSyncStatus();
+    const timer = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        fetchData();
+        refreshSyncStatus();
+      }
+    }, 60 * 1000);
+    return () => clearInterval(timer);
+  }, [fetchData, refreshSyncStatus]);
+
   const handleSyncFromTms = async () => {
     setSyncing(true);
     try {
       const res = await syncTransportPlansFromTms({ plan_date: planDate, region });
       toast.success(res.message);
-      await fetchData();
+      await Promise.all([fetchData(), refreshSyncStatus()]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Lỗi đồng bộ kế hoạch từ TMS");
     } finally {
@@ -227,6 +251,13 @@ export default function MasterTransportPlansPage() {
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
+            <button
+              type="button"
+              onClick={() => setPlanDate(todayVnIso())}
+              className="px-2 py-1 text-xs font-medium bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-sm"
+            >
+              Hôm nay
+            </button>
           </div>
 
           <div className="flex items-center space-x-2 text-xs">
@@ -245,6 +276,16 @@ export default function MasterTransportPlansPage() {
         </div>
 
         <div className="flex items-center space-x-2">
+          {autoSyncStatus && (
+            <span
+              className="text-[11px] text-slate-500 hidden sm:inline tabular-nums"
+              title={autoSyncStatus.last_error || "Tự động đồng bộ nền từ TMS"}
+            >
+              {autoSyncStatus.enabled
+                ? `Tự động ${autoSyncStatus.interval_minutes}p · ${formatSyncTime(autoSyncStatus.last_success_at)}`
+                : "Tự động tắt"}
+            </span>
+          )}
           <button
             type="button"
             onClick={handleSyncFromTms}
@@ -458,9 +499,9 @@ export default function MasterTransportPlansPage() {
             Không có kế hoạch vận chuyển phù hợp.
           </div>
         ) : viewMode === "province" ? (
-          <div className="overflow-x-auto">
+          <div className="max-h-[55vh] overflow-auto">
             <table className="w-full text-left border-collapse text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium">
                   <th className="px-4 py-2.5">Tỉnh</th>
                   <th className="px-3 py-2.5 text-center" colSpan={2}>
@@ -630,8 +671,8 @@ export default function MasterTransportPlansPage() {
                                             {formatDeliveryTerm(o.delivery_term)}
                                           </td>
                                           <td className="px-3 py-2 text-slate-700">
-                                            {o.planned_truck_plate || o.driver_name
-                                              ? `${o.planned_truck_plate || ""} ${o.driver_name || ""}`.trim()
+                                            {o.planned_truck_plate || o.planned_trailer_plate || o.driver_name
+                                              ? `${[o.planned_truck_plate, o.planned_trailer_plate].filter(Boolean).join(" / ")} ${o.driver_name || ""}`.trim()
                                               : "—"}
                                           </td>
                                         </tr>
@@ -712,8 +753,8 @@ export default function MasterTransportPlansPage() {
                                             {formatDeliveryTerm(o.delivery_term)}
                                           </td>
                                           <td className="px-3 py-2 text-slate-700">
-                                            {o.planned_truck_plate || o.driver_name
-                                              ? `${o.planned_truck_plate || ""} ${o.driver_name || ""}`.trim()
+                                            {o.planned_truck_plate || o.planned_trailer_plate || o.driver_name
+                                              ? `${[o.planned_truck_plate, o.planned_trailer_plate].filter(Boolean).join(" / ")} ${o.driver_name || ""}`.trim()
                                               : "—"}
                                           </td>
                                         </tr>
@@ -734,9 +775,9 @@ export default function MasterTransportPlansPage() {
           </div>
         ) : (
           /* Danh sách lệnh (phẳng) */
-          <div className="overflow-x-auto">
+          <div className="max-h-[55vh] overflow-auto">
             <table className="w-full text-left border-collapse text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium whitespace-nowrap">
                   <th className="px-3 py-2.5">Mã lệnh</th>
                   <th className="px-3 py-2.5">Loại</th>
@@ -799,8 +840,8 @@ export default function MasterTransportPlansPage() {
                         {o.required_time || "—"}
                       </td>
                       <td className="px-3 py-2 text-slate-700">
-                        {o.planned_truck_plate || o.driver_name
-                          ? `${o.planned_truck_plate || ""} ${o.driver_name || ""}`.trim()
+                        {o.planned_truck_plate || o.planned_trailer_plate || o.driver_name
+                          ? `${[o.planned_truck_plate, o.planned_trailer_plate].filter(Boolean).join(" / ")} ${o.driver_name || ""}`.trim()
                           : "—"}
                       </td>
                     </tr>

@@ -110,7 +110,7 @@ export default function CreateUserModal({
             <input
               type="text"
               required
-              placeholder="VD: dhvt_hanoi, le_van_b..."
+              placeholder="Ví dụ: dhvt_hanoi, le_van_b..."
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-sm focus:outline-none focus:border-purple-600 font-mono"
@@ -167,7 +167,7 @@ export default function CreateUserModal({
               </label>
               <input
                 type="email"
-                placeholder="VD: user@vsico.com.vn"
+                placeholder="Ví dụ: user@vsico.com.vn"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-sm focus:outline-none focus:border-purple-600"

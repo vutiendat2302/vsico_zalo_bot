@@ -7,6 +7,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -15,13 +16,21 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from src.domain.models import ExtractedContainerLine
-from src.domain.rules import clean_container, clean_phone, clean_plate, compact_plate
+from src.domain.rules import (
+    clean_container,
+    clean_driver_name,
+    clean_phone,
+    clean_plate,
+    compact_plate,
+    split_phones,
+)
 from src.infrastructure.models import (
     ContainerJob,
     Customer,
     CustomerAlias,
     Driver,
     MessageDraft,
+    Trailer,
     TransportPlan,
     TruckRecord,
     Vehicle,
@@ -167,36 +176,170 @@ class PhoBertAnalysis:
     order_type_hint: str | None = None
     is_combined_trip: bool = False
     spans: list[PhoBertNerSpan] = field(default_factory=list)
-    backend_mode: str = "phobert_subword_gazetteer"
+    backend_mode: str = "rule_char_ngram_fuzzy_nlp"
 
 
 class PhoBertLocalNlpEngine:
-    """Bộ xử lý PhoBERT (`vinai/phobert-base-v2`) hỗ trợ chạy offline/local và trích xuất đặc trưng."""
+    """Bộ xử lý Local NLP mặc định chạy trọng số thật `vinai/phobert-base-v2` (`phobert_transformers_local`)
+    kết hợp bộ đệm LRU embedding + vector hóa cosine similarity và ngưỡng `INTENT_MIN_CONFIDENCE`.
+    """
 
     _instance: "PhoBertLocalNlpEngine | None" = None
+    INTENT_MIN_CONFIDENCE: float = 0.65
+
+    _SKELETON_PLATE_RE = re.compile(r"\b\d{2}[a-z]{1,2}[\s.\-/]*\d{3,5}(?:\.\d{2})?\b", re.IGNORECASE)
+    _SKELETON_CONT_RE = re.compile(r"\b[a-z]{3}[ujz][\s.\-]*\d{7}\b", re.IGNORECASE)
+    _SKELETON_PHONE_RE = re.compile(r"(?:\+?84|0)[\d\s.\-*xX]{8,12}")
+    _SKELETON_CODE_RE = re.compile(r"\b(?:ro|lo|bk|bl|vs)\d{3,10}\b", re.IGNORECASE)
 
     def __init__(self) -> None:
-        """Khởi tạo PhoBERT tokenizer/model nếu có sẵn trong môi trường cục bộ."""
+        """Khởi tạo PhoBERT tokenizer/model (`vinai/phobert-base-v2`) cục bộ mặc định."""
         self.model_name = os.getenv("PHOBERT_MODEL_PATH", "vinai/phobert-base-v2")
         self._tokenizer: Any = None
         self._model: Any = None
-        self.backend_mode = "phobert_subword_gazetteer"
+        self._torch: Any = None
+        self._proto_embeddings: dict[str, list[Any]] = {}
+        self._proto_matrix: Any = None
+        self._proto_labels: list[str] = []
+        self._ner_loc_anchor: Any = None
+        self._ner_per_anchor: Any = None
+        self._embed_cache: dict[str, Any] = {}
+        self.backend_mode = "rule_char_ngram_fuzzy_nlp"
         self._try_load_local_transformers()
 
     def _try_load_local_transformers(self) -> None:
-        """Thử nạp trọng số PhoBERT đã cache trên đĩa (local_files_only=True) để không phụ thuộc mạng."""
-        if os.getenv("ENABLE_PHOBERT_TRANSFORMERS", "0") != "1":
+        """Nạp trọng số `vinai/phobert-base-v2` cục bộ hoàn toàn offline và hiệu chuẩn vector trung bình (mean-centering)."""
+        enabled_flag = os.getenv("ENABLE_PHOBERT_TRANSFORMERS", "1").strip().lower()
+        if enabled_flag in ("0", "false", "no", "off"):
             return
         try:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            import torch  # type: ignore[import-not-found]
             from transformers import AutoModel, AutoTokenizer  # type: ignore[import-not-found]
 
+            self._torch = torch
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, local_files_only=True)
             self._model = AutoModel.from_pretrained(self.model_name, local_files_only=True)
+            self._model.eval()
             self.backend_mode = "phobert_transformers_local"
+
+            # Tính vector trung bình nền (mean-centering) để khử anisotropy vốn có của RoBERTa/PhoBERT
+            background_texts = [
+                "xin chao moi nguoi hom nay troi dep qua an com chua",
+                "cam on anh chi chuc ngay moi vui ve hen gap lai",
+                "thong bao giao nhan van tai container kho bai cang bien",
+                *[p for protos in INTENT_PROTOTYPES.values() for p in protos],
+            ]
+            raw_bg = [self._encode_raw_phobert_embedding(t) for t in background_texts]
+            self._mean_emb = torch.stack(raw_bg, dim=0).mean(dim=0)
+
+            proto_tensors: list[Any] = []
+            proto_labels: list[str] = []
+            self._proto_embeddings = {}
+            for label, protos in INTENT_PROTOTYPES.items():
+                embs = [self._encode_phobert_embedding(proto) for proto in protos]
+                self._proto_embeddings[label] = embs
+                for emb in embs:
+                    proto_tensors.append(emb)
+                    proto_labels.append(label)
+            if proto_tensors:
+                self._proto_matrix = torch.stack(proto_tensors, dim=0)
+                self._proto_labels = proto_labels
+            self._ner_loc_anchor = self._encode_phobert_embedding("kho hàng khu công nghiệp cảng nhà máy giao nhận")
+            self._ner_per_anchor = self._encode_phobert_embedding("tài xế lái xe anh nguyễn văn minh")
         except Exception:
+            self._torch = None
             self._tokenizer = None
             self._model = None
-            self.backend_mode = "phobert_subword_gazetteer"
+            self._mean_emb = None
+            self._proto_embeddings = {}
+            self._proto_matrix = None
+            self._proto_labels = []
+            self._ner_loc_anchor = None
+            self._ner_per_anchor = None
+            self.backend_mode = "rule_char_ngram_fuzzy_nlp"
+
+    @classmethod
+    def _intent_skeleton(cls, text: str) -> str:
+        """Chuẩn hóa bộ khung câu tiếng Việt (thay biển số/cont/SĐT bằng từ loại chung) để tăng độ chính xác PhoBERT và cache."""
+        clean = normalized(text)
+        clean = cls._SKELETON_CONT_RE.sub(" so_cont ", clean)
+        clean = cls._SKELETON_PLATE_RE.sub(" bien_so ", clean)
+        clean = cls._SKELETON_PHONE_RE.sub(" sdt ", clean)
+        clean = cls._SKELETON_CODE_RE.sub(" ma_lenh ", clean)
+        clean = re.sub(r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b", " ngay ", clean)
+        clean = re.sub(r"\b\d{1,2}[:h]\d{0,2}\b", " gio ", clean)
+        clean = re.sub(r"\s+", " ", clean).strip()
+        return clean[:220]
+
+    def _encode_raw_phobert_embedding(self, text: str) -> Any:
+        """Tính vector mean-pooling thô từ lớp ẩn cuối của PhoBERT (chưa trừ vector nền)."""
+        torch = self._torch
+        seg = self.segment_vietnamese_compounds(text)
+        encoded = self._tokenizer(
+            seg,
+            return_tensors="pt",
+            truncation=True,
+            max_length=96,
+            padding=True,
+        )
+        with torch.no_grad():
+            out = self._model(**encoded)
+            mask = encoded["attention_mask"].unsqueeze(-1).float()
+            summed = (out.last_hidden_state * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp(min=1e-9)
+            return (summed / counts).squeeze(0)
+
+    def _encode_phobert_embedding(self, text: str) -> Any:
+        """Tính vector ngữ nghĩa PhoBERT đã khử anisotropy (trừ vector trung bình nền + chuẩn hóa L2, có cache)."""
+        seg = self.segment_vietnamese_compounds(text)
+        cached = self._embed_cache.get(seg)
+        if cached is not None:
+            return cached
+        torch = self._torch
+        raw = self._encode_raw_phobert_embedding(text)
+        mean_emb = getattr(self, "_mean_emb", None)
+        if mean_emb is not None:
+            raw = raw - mean_emb
+        vec = torch.nn.functional.normalize(raw.unsqueeze(0), p=2, dim=1).squeeze(0)
+        if len(self._embed_cache) < 32768:
+            self._embed_cache[seg] = vec
+        return vec
+
+    def _phobert_intent_scores(self, text: str) -> tuple[str, float]:
+        """Phân loại ý định trực tiếp bằng phép nhân ma trận cosine similarity trên embedding PhoBERT."""
+        skeleton = self._intent_skeleton(text)
+        if not skeleton:
+            return "UNKNOWN", 0.0
+        q_emb = self._encode_phobert_embedding(skeleton)
+        if self._proto_matrix is not None and self._proto_labels:
+            sims = self._torch.mv(self._proto_matrix, q_emb)
+            best_idx = int(self._torch.argmax(sims).item())
+            best_score = float(sims[best_idx].item())
+            best_label = self._proto_labels[best_idx]
+        else:
+            best_label = "UNKNOWN"
+            best_score = 0.0
+            for label, proto_embs in self._proto_embeddings.items():
+                for p_emb in proto_embs:
+                    sim = float(self._torch.dot(q_emb, p_emb).item())
+                    if sim > best_score:
+                        best_score = sim
+                        best_label = label
+        if best_score < self.INTENT_MIN_CONFIDENCE:
+            return "UNKNOWN", round(max(0.0, best_score), 4)
+        return best_label, round(best_score, 4)
+
+    def _phobert_span_confidence(self, span_text: str, label: str, base_conf: float) -> float:
+        """Tính độ tin cậy động cho thực thể `LOC`/`PER` dựa trên cosine similarity với vector neo PhoBERT."""
+        anchor = self._ner_loc_anchor if label == "LOC" else self._ner_per_anchor
+        if self._model is None or anchor is None:
+            return round(min(0.95, base_conf), 2)
+        emb = self._encode_phobert_embedding(span_text)
+        sim = float(self._torch.dot(emb, anchor).item())
+        blended = 0.55 * base_conf + 0.45 * max(0.0, min(1.0, sim))
+        return round(max(0.50, min(0.97, blended)), 2)
 
     @classmethod
     def get_instance(cls) -> "PhoBertLocalNlpEngine":
@@ -217,7 +360,7 @@ class PhoBertLocalNlpEngine:
 
     @staticmethod
     def subword_ngrams(text: str) -> Counter[str]:
-        """Sinh vector BPE/char-word n-gram mô phỏng không gian biểu diễn subword của PhoBERT."""
+        """Sinh vector char-word n-gram phục vụ đối sánh cục bộ khi chạy chế độ nhẹ không có PyTorch."""
         seg = PhoBertLocalNlpEngine.segment_vietnamese_compounds(text)
         tokens = seg.split()
         feats: Counter[str] = Counter()
@@ -233,7 +376,7 @@ class PhoBertLocalNlpEngine:
 
     @classmethod
     def semantic_similarity(cls, text_a: str, text_b: str) -> float:
-        """Tính độ tương đồng ngữ nghĩa kết hợp Cosine Subword PhoBERT và RapidFuzz."""
+        """Tính độ tương đồng kết hợp Cosine N-gram và RapidFuzz."""
         norm_a = normalized(text_a)
         norm_b = normalized(text_b)
         if not norm_a or not norm_b:
@@ -249,26 +392,39 @@ class PhoBertLocalNlpEngine:
         return round(0.40 * cosine + 0.35 * fuzzy_w + 0.25 * fuzzy_tset, 4)
 
     def analyze(self, raw_text: str) -> PhoBertAnalysis:
-        """Phân tích ý định điều vận, luồng kết hợp RO->LO và trích xuất các thực thể BIO."""
+        """Phân tích ý định điều vận (có ngưỡng `INTENT_MIN_CONFIDENCE`), luồng RO->LO và trích xuất thực thể với điểm tin cậy động."""
         clean = normalized(raw_text)
         segmented = self.segment_vietnamese_compounds(raw_text)
         best_intent = "UNKNOWN"
         best_score = 0.0
-        for label, prototypes in INTENT_PROTOTYPES.items():
-            for proto in prototypes:
-                score = self.semantic_similarity(clean, proto)
-                if proto in clean:
-                    score = max(score, 0.92)
-                if score > best_score:
-                    best_score = score
-                    best_intent = label
+
+        if self._model is not None and self._tokenizer is not None and self._proto_embeddings:
+            best_intent, best_score = self._phobert_intent_scores(raw_text)
+            # Kết hợp thêm tín hiệu khớp cụm từ khóa chính xác nếu có
+            for label, prototypes in INTENT_PROTOTYPES.items():
+                for proto in prototypes:
+                    if proto in clean and best_score < 0.92:
+                        best_score = 0.92
+                        best_intent = label
+        else:
+            for label, prototypes in INTENT_PROTOTYPES.items():
+                for proto in prototypes:
+                    score = self.semantic_similarity(clean, proto)
+                    if proto in clean:
+                        score = max(score, 0.92)
+                    if score > best_score:
+                        best_score = score
+                        best_intent = label
+            # Ngưỡng tin cậy tối thiểu: không gán bừa intent khi điểm tương đồng quá thấp
+            if best_score < self.INTENT_MIN_CONFIDENCE:
+                best_intent = "UNKNOWN"
 
         is_combined = bool(
             re.search(
                 r"\b(tra\s+xong\s+dong|ha\s+.*?\s+xong\s+dong|ket\s+hop|quay\s+dau\s+dong|giao\s+.*?\s+xong\s+.*?\s*dong)\b",
                 clean,
             )
-            or best_intent == "COMBINED_TRIP"
+            or (best_intent == "COMBINED_TRIP" and best_score >= self.INTENT_MIN_CONFIDENCE)
         )
         order_type_hint: str | None = None
         if is_combined:
@@ -279,39 +435,54 @@ class PhoBertLocalNlpEngine:
             order_type_hint = "RETURN"
 
         spans: list[PhoBertNerSpan] = []
-        # B-LOC / I-LOC: Kho / KCN / Nhà máy / Địa điểm
+        # B-LOC / I-LOC: Kho / KCN / Nhà máy / Địa điểm (điểm tin cậy động theo cấu trúc nhãn & độ dài ứng viên)
         loc_patterns = [
-            r"\b(?:kho|kcn|khu cong nghiep|nha may|nm|cang|icd|cum cn)\s+([a-z0-9\s\-]{2,45}?)(?=\s+(?:luc|gio|cont|xe|tai|sdt|chi|seal|ngay|mai|hom)|[,;.\n]|$)",
-            r"\b(?:dong|tra|giao|ha)\s+(?:o|tai)?\s*(?:kho|kcn|nha may)?\s*([a-z0-9\s\-]{3,35}?)(?=\s+(?:luc|gio|cont|xe|tai|sdt|chi|seal)|[,;.\n]|$)",
+            (
+                r"\b(?:kho|kcn|khu cong nghiep|nha may|nm|cang|icd|cum cn)\s+([a-z0-9\s\-]{2,45}?)(?=\s+(?:luc|gio|cont|xe|tai|sdt|chi|seal|ngay|mai|hom)|[,;.\n]|$)",
+                0.78,
+            ),
+            (
+                r"\b(?:dong|tra|giao|ha)\s+(?:o|tai)?\s*(?:kho|kcn|nha may)?\s*([a-z0-9\s\-]{3,35}?)(?=\s+(?:luc|gio|cont|xe|tai|sdt|chi|seal)|[,;.\n]|$)",
+                0.68,
+            ),
         ]
-        for pat in loc_patterns:
+        for pat, base_conf in loc_patterns:
             for m in re.finditer(pat, clean):
                 candidate_loc = m.group(1).strip()
                 if candidate_loc and candidate_loc not in ("hang", "vo", "rong", "cont", "luon", "tiep"):
+                    token_bonus = min(0.14, 0.04 * len(candidate_loc.split()))
+                    dyn_conf = self._phobert_span_confidence(
+                        candidate_loc, "LOC", min(0.95, base_conf + token_bonus)
+                    )
                     spans.append(
                         PhoBertNerSpan(
                             label="LOC",
                             text=candidate_loc,
                             normalized_text=candidate_loc,
-                            confidence=0.86,
+                            confidence=dyn_conf,
                         )
                     )
 
-        # B-PER: Tên tài xế sau nhãn "tài", "lx", "lái xe", "bác tài"
+        # B-PER: Tên tài xế sau nhãn "tài", "lx", "lái xe", "bác tài" (điểm tin cậy động kết hợp PhoBERT)
         per_match = re.search(
             r"\b(?:tai xe|lai xe|bac tai|lx|tai)\s+([a-z\s]{2,30}?)(?=\s+(?:\d|sdt|dt|cont|xe|chi|seal|kho|tra|dong|giao|ha|luc|hen)|[,;.\n]|$)",
             clean,
         )
         if per_match:
             drv_raw = per_match.group(1).strip()
-            spans.append(
-                PhoBertNerSpan(
-                    label="PER",
-                    text=drv_raw,
-                    normalized_text=drv_raw,
-                    confidence=0.88,
+            word_cnt = len(drv_raw.split())
+            if 1 <= word_cnt <= 5:
+                per_conf = self._phobert_span_confidence(
+                    drv_raw, "PER", 0.66 + min(0.24, 0.08 * word_cnt)
                 )
-            )
+                spans.append(
+                    PhoBertNerSpan(
+                        label="PER",
+                        text=drv_raw,
+                        normalized_text=drv_raw,
+                        confidence=per_conf,
+                    )
+                )
 
         return PhoBertAnalysis(
             segmented_text=segmented,
@@ -355,16 +526,21 @@ def _match_catalog_gazetteer(
 
     # 2. Khớp Booking / Mã lệnh từ câu nhắn nếu chưa có
     if not line.booking_no:
-        bk_match = re.search(r"\b(?:bk|book|booking)\s*[:#-]?\s*([A-Z0-9-]{4,24})\b", raw_text, re.I)
-        if bk_match:
-            line.booking_no = bk_match.group(1).upper()
+        compact_bk = re.search(r"\b(BK\d{4,20})\b", raw_text, re.I)
+        if compact_bk:
+            line.booking_no = compact_bk.group(1).upper()
             line.field_evidences["booking_no"] = "regex_booking"
         else:
-            for p in scoped_plans:
-                if p.booking_no and len(p.booking_no) >= 5 and normalized(p.booking_no) in norm_line:
-                    line.booking_no = p.booking_no
-                    line.field_evidences["booking_no"] = "plan_booking_gazetteer"
-                    break
+            bk_match = re.search(r"\b(?:bk|book|booking)\s*[:#-]?\s*([A-Z0-9-]{4,24})\b", raw_text, re.I)
+            if bk_match:
+                line.booking_no = bk_match.group(1).upper()
+                line.field_evidences["booking_no"] = "regex_booking"
+            else:
+                for p in scoped_plans:
+                    if p.booking_no and len(p.booking_no) >= 5 and normalized(p.booking_no) in norm_line:
+                        line.booking_no = p.booking_no
+                        line.field_evidences["booking_no"] = "plan_booking_gazetteer"
+                        break
 
     # 3. Khớp Khách hàng (Customer + CustomerAlias + Kế hoạch trong ngày) bằng RapidFuzz
     if not line.customer_code_or_id:
@@ -596,26 +772,49 @@ def enrich_local(
     quoted_text: str | None = None,
     group_id: str | None = None,
     sender_id: str | None = None,
+    include_phobert: bool = True,
 ) -> list[ExtractedContainerLine]:
-    """Làm giàu từ danh mục nhà xe + RapidFuzz + PhoBERT + giải quyết đồng tham chiếu."""
+    """Làm giàu từ toàn bộ danh mục TMS (Driver, Vehicle, Trailer, TransportPlan, Warehouse, Customer) + Local NLP."""
     dates = message_dates(raw_text, reference)
-    drivers = (
-        list(
-            db.scalars(
-                select(Driver).where(Driver.carrier_id == carrier_id, Driver.is_active.is_(True))
-            ).all()
-        )
-        if carrier_id
-        else []
+    # Ưu tiên danh mục thuộc đúng nhà xe; nếu chưa gắn carrier_id thì vẫn tận dụng danh mục TMS toàn cục (chỉ nhận khi khớp duy nhất)
+    drivers = list(
+        db.scalars(
+            select(Driver).where(
+                *(
+                    [Driver.carrier_id == carrier_id, Driver.is_active.is_(True)]
+                    if carrier_id
+                    else [Driver.is_active.is_(True)]
+                )
+            )
+        ).all()
     )
-    vehicles = (
-        list(
-            db.scalars(
-                select(Vehicle).where(Vehicle.carrier_id == carrier_id, Vehicle.is_active.is_(True))
-            ).all()
-        )
-        if carrier_id
-        else []
+    vehicles = list(
+        db.scalars(
+            select(Vehicle).where(
+                *(
+                    [Vehicle.carrier_id == carrier_id, Vehicle.is_active.is_(True)]
+                    if carrier_id
+                    else [Vehicle.is_active.is_(True)]
+                )
+            )
+        ).all()
+    )
+    trailers = list(
+        db.scalars(
+            select(Trailer).where(
+                *(
+                    [Trailer.carrier_id == carrier_id, Trailer.is_active.is_(True)]
+                    if carrier_id
+                    else [Trailer.is_active.is_(True)]
+                )
+            )
+        ).all()
+    )
+    tms_driver_syllables = frozenset(
+        tok
+        for d in drivers
+        for tok in (normalized(d.full_name).split() + (d.full_name or "").lower().split())
+        if len(tok) >= 2 and tok.isalpha()
     )
     norm_text = f"{normalized(raw_text)} {normalized(quoted_text)}"
     phobert = PhoBertLocalNlpEngine.get_instance()
@@ -626,40 +825,56 @@ def enrich_local(
         if not line.plan_date and len(dates) == 1:
             line.plan_date = dates[0]
 
-        line.field_evidences["nlp_engine"] = "rapidfuzz+catalog+phobert"
+        line.field_evidences["nlp_engine"] = pb_analysis.backend_mode
         line.field_evidences["phobert_mode"] = pb_analysis.backend_mode
         line.field_evidences["phobert_intent"] = pb_analysis.intent_label
+        line.field_evidences["phobert_intent_confidence"] = str(pb_analysis.intent_confidence)
 
-        # Nhận diện chuyến kết hợp RO -> LO và loại lệnh từ PhoBERT nếu rule-based chưa bắt được
+        # Tách lại họ tên tài xế bị gõ dính bằng từ điển âm tiết thực tế từ danh mục Driver TMS
+        if line.driver_name and len(line.driver_name.split()) == 1 and tms_driver_syllables:
+            re_split = clean_driver_name(line.driver_name, extra_syllables=tms_driver_syllables)
+            if re_split and len(re_split.split()) >= 2:
+                line.driver_name = re_split
+                line.extraction_tier = "TIER_2_LOCAL_NLP"
+                line.field_evidences["driver_name"] = "tms_syllable_splitter"
+
+        # Nhận diện chuyến kết hợp RO -> LO và loại lệnh từ Local NLP nếu rule-based chưa bắt được
         if pb_analysis.is_combined_trip:
             line.is_combined_from_return = True
-            line.field_evidences["combined_trip"] = "phobert_combined_ro_lo"
+            line.field_evidences["combined_trip"] = "local_nlp_combined_ro_lo"
         if not line.order_type and pb_analysis.order_type_hint:
             line.order_type = pb_analysis.order_type_hint
             line.inferred_order_type = True
-            line.field_evidences["order_type"] = "phobert_intent_classifier"
+            line.field_evidences["order_type"] = "local_nlp_intent_classifier"
 
-        # Áp dụng các thực thể BIO (LOC, PER) do PhoBERT trích xuất nếu dòng chưa có
-        for span in pb_analysis.spans:
-            if span.label == "LOC" and not line.warehouse_hint:
-                line.warehouse_hint = span.text
-                line.field_evidences["warehouse_hint"] = f"phobert_ner_loc:{span.confidence:.2f}"
-            elif span.label == "PER" and not line.driver_name:
-                line.driver_name = span.text
-                line.field_evidences["driver_name"] = f"phobert_ner_per:{span.confidence:.2f}"
+        # Áp dụng các thực thể (LOC, PER) từ Local NLP nếu dòng chưa có và không phải chuỗi cont/booking
+        if include_phobert:
+            for span in pb_analysis.spans:
+                if span.label == "LOC" and not line.warehouse_hint:
+                    norm_loc = normalized(span.text)
+                    if re.search(
+                        r"^(?:cont|container|bk)\b|\b[a-z]{4}\d{7}\b|\bbk\d{4,}\b|\b(?:20|40|45)\s*(?:hc|hq|dc|gp|rf)\b",
+                        norm_loc,
+                    ):
+                        continue
+                    line.warehouse_hint = span.text
+                    line.field_evidences["warehouse_hint"] = f"local_nlp_loc:{span.confidence:.2f}"
+                elif span.label == "PER" and not line.driver_name:
+                    line.driver_name = clean_driver_name(span.text, extra_syllables=tms_driver_syllables) or span.text
+                    line.field_evidences["driver_name"] = f"local_nlp_per:{span.confidence:.2f}"
 
-        # Đối sánh Tài xế từ danh mục nhà xe (exact + RapidFuzz)
-        if not line.driver_name or not line.driver_phone:
+        # Đối sánh Tài xế từ danh mục TMS (exact + đa SĐT + RapidFuzz)
+        line_phones = set(split_phones(line.driver_phone))
+        if drivers and (not line.driver_name or not line.driver_phone or len(line.driver_name.split()) < 2):
             matched_drivers: list[tuple[float, Driver]] = []
             for d in drivers:
                 d_norm = normalized(d.normalized_name or d.full_name)
                 if not d_norm:
                     continue
+                d_phones = set(split_phones(d.phone))
                 d_tokens = d_norm.split()
                 given_name = d_tokens[-1] if d_tokens else ""
-                if d_norm in norm_text or (
-                    line.driver_phone and clean_phone(d.phone) == clean_phone(line.driver_phone)
-                ):
+                if (line_phones and d_phones and (line_phones & d_phones)) or d_norm in norm_text:
                     matched_drivers.append((100.0, d))
                 elif given_name and len(given_name) >= 2 and (
                     (line.driver_name and normalized(line.driver_name) == given_name)
@@ -684,14 +899,15 @@ def enrich_local(
                         best_drv.full_name
                     ):
                         line.driver_name = best_drv.full_name
-                    line.driver_phone = line.driver_phone or clean_phone(best_drv.phone)
+                    if not line.driver_phone and best_drv.phone:
+                        line.driver_phone = clean_phone(best_drv.phone)
                     line.extraction_tier = "TIER_2_LOCAL_NLP"
-                    line.field_evidences["driver"] = "carrier_driver_catalog_rapidfuzz"
+                    line.field_evidences["driver"] = f"tms_driver_catalog:{matched_drivers[0][0] / 100.0:.2f}"
                 elif len(unique_ids) > 1 and "ambiguous_driver" not in line.unresolved_fields:
                     line.unresolved_fields.append("ambiguous_driver")
 
-        # Đối sánh Biển số xe viết tắt (4-5 số cuối) từ danh mục phương tiện nhà xe
-        if not line.truck_plate:
+        # Đối sánh Biển số xe viết tắt (4-5 số cuối) từ danh mục phương tiện TMS
+        if not line.truck_plate and vehicles:
             short = re.findall(r"\b\d{3}[.]?\d{2}\b|\b\d{4,5}\b", raw_text)
             candidates = [
                 v
@@ -709,13 +925,98 @@ def enrich_local(
             elif len(candidates) > 1 and "ambiguous_plate" not in line.unresolved_fields:
                 line.unresolved_fields.append("ambiguous_plate")
 
+        # Đối sánh Biển số rơ-moóc viết tắt (4-5 số cuối sau từ khóa mooc/rm) từ danh mục `trailers`
+        if not line.trailer_plate and trailers:
+            mooc_short = re.findall(
+                r"\b(?:mooc|rơ\s*moóc|ro\s*mooc|rm)\s*[:\-]?\s*(\d{3}[.]?\d{2}|\d{4,5})\b",
+                raw_text,
+                flags=re.IGNORECASE,
+            )
+            if mooc_short:
+                tr_cands = [
+                    t
+                    for t in trailers
+                    if any(
+                        (t.normalized_plate or "").endswith(re.sub(r"\D", "", tok))
+                        for tok in mooc_short
+                    )
+                ]
+                if len(tr_cands) == 1:
+                    line.trailer_plate = clean_plate(tr_cands[0].license_plate) or tr_cands[0].license_plate
+                    line.extraction_tier = "TIER_2_LOCAL_NLP"
+                    line.field_evidences["trailer_plate"] = "carrier_trailer_suffix"
+
+        # Đối sánh chéo theo Số Booking hoặc Số Container với bảng `transport_plans` đã đồng bộ từ TMS (khớp đúng loại lệnh)
+        matched_plans: list[TransportPlan] = []
+        if line.booking_no:
+            bk_up = line.booking_no.strip().upper()
+            bk_stmt = select(TransportPlan).where(TransportPlan.booking_no == bk_up)
+            if carrier_id is not None:
+                bk_stmt = bk_stmt.where(
+                    or_(TransportPlan.carrier_id == carrier_id, TransportPlan.carrier_id.is_(None))
+                )
+            matched_plans = list(db.scalars(bk_stmt).all())
+        if not matched_plans and line.container_no:
+            plan_stmt = select(TransportPlan).where(TransportPlan.container_no == line.container_no.strip().upper())
+            if carrier_id is not None:
+                plan_stmt = plan_stmt.where(
+                    or_(TransportPlan.carrier_id == carrier_id, TransportPlan.carrier_id.is_(None))
+                )
+            matched_plans = list(db.scalars(plan_stmt).all())
+            if line.booking_no:
+                bk_up = line.booking_no.strip().upper()
+                matched_plans = [
+                    p
+                    for p in matched_plans
+                    if p.booking_no and p.booking_no.strip().upper() == bk_up
+                ]
+        if matched_plans and line.order_type:
+            want_load = line.order_type.upper() in ("LOAD", "DONG", "XUAT")
+            matched_plans = [
+                p
+                for p in matched_plans
+                if not p.order_type
+                or ((p.order_type.lower() in ("dong", "load", "xuat")) == want_load)
+            ]
+        if len(matched_plans) == 1:
+            mp = matched_plans[0]
+            if not line.order_type and mp.order_type:
+                line.order_type = "LOAD" if mp.order_type.lower() in ("dong", "load", "xuat") else "RETURN"
+            if not line.customer_code_or_id and mp.customer_id:
+                line.customer_code_or_id = mp.customer_id
+            if not line.customer_hint and mp.customer_name:
+                line.customer_hint = mp.customer_name
+            if not line.warehouse_code_or_id and mp.warehouse_id:
+                line.warehouse_code_or_id = mp.warehouse_id
+            if not line.warehouse_hint and (mp.warehouse_name or mp.delivery_address):
+                line.warehouse_hint = mp.warehouse_name or mp.delivery_address
+            if not line.trailer_plate and mp.planned_trailer_plate:
+                line.trailer_plate = clean_plate(mp.planned_trailer_plate) or mp.planned_trailer_plate
+            line.field_evidences["transport_plan_tms"] = f"matched_plan:{mp.order_code or mp.id}"
+        elif len(matched_plans) > 1:
+            # Nhiều slot LO dùng chung mã booking: nếu đều thuộc 1 khách hàng duy nhất thì vẫn làm giàu khách hàng
+            unique_cust_ids = {p.customer_id for p in matched_plans if p.customer_id is not None}
+            if len(unique_cust_ids) == 1 and not line.customer_code_or_id:
+                cid_only = next(iter(unique_cust_ids))
+                line.customer_code_or_id = cid_only
+                cname_only = next((p.customer_name for p in matched_plans if p.customer_name), None)
+                if cname_only and not line.customer_hint:
+                    line.customer_hint = cname_only
+                line.field_evidences["transport_plan_tms"] = f"matched_booking_customer:{cid_only}"
+
         # Đối sánh Từ điển danh mục (Khách hàng, Kho, Alias, Kế hoạch) bằng RapidFuzz
         _match_catalog_gazetteer(db, line, carrier_id, raw_text, dates)
 
         # Trạng thái chờ cont / chờ chì hợp lệ cho lệnh đóng
-        if re.search(r"\b(chua co cont|cont bao sau|lay rong|doi cap cont)\b", norm_text):
+        if re.search(
+            r"\b(chua co cont|chua co so cont|cont chua co|so cont chua co|cont bao sau|lay rong|doi cap cont|chua cap cont|chua lay cont)\b",
+            norm_text,
+        ):
             line.container_status = "DEFERRED"
-        if re.search(r"\b(chua co chi|chi bao sau|seal bao sau|chua cap chi)\b", norm_text):
+        if re.search(
+            r"\b(chua co chi|chua co seal|chi chua co|seal chua co|so chi chua co|so seal chua co|chi bao sau|seal bao sau|chua cap chi|chua cap seal|chua bam chi|chua kep chi|no chi|no seal|chi bo sung sau|bo sung chi sau)\b",
+            norm_text,
+        ):
             line.seal_status = "DEFERRED"
 
         # Giải quyết đồng tham chiếu ('xe trên', 'xe này', 'cont đó', 'chỗ cũ', 'kho cũ')
@@ -737,8 +1038,23 @@ def enrich_local(
 
         if any(
             k in line.field_evidences
-            for k in ("warehouse", "customer", "booking_no", "combined_trip", "order_type")
+            for k in ("warehouse", "customer", "booking_no", "combined_trip", "order_type", "driver", "truck_plate", "transport_plan_tms")
         ):
             line.extraction_tier = "TIER_2_LOCAL_NLP"
+
+        # Tính lại độ tin cậy sau Tier 2: nếu danh mục TMS + Local NLP đã lấp đủ thực thể cốt lõi -> nâng confidence >= 0.85 để dừng tại Tier 2 (không gọi LLM thừa)
+        has_core_after_t2 = bool(
+            line.truck_plate
+            and (line.container_no or line.container_status == "DEFERRED" or line.is_container_pending)
+            and (line.driver_name or line.driver_phone)
+        )
+        if has_core_after_t2 and not line.unresolved_fields:
+            line.confidence = max(line.confidence, 0.88)
+        elif (
+            (line.truck_plate or line.container_no)
+            and any(k in line.field_evidences for k in ("driver", "truck_plate", "warehouse", "customer", "transport_plan_tms"))
+            and not line.unresolved_fields
+        ):
+            line.confidence = max(line.confidence, 0.80)
 
     return lines

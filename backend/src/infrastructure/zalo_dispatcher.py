@@ -10,6 +10,7 @@ và tài xế thông qua cầu nối HTTP `zca-js` (cổng 3000):
 
 from datetime import datetime
 import json
+import os
 import time
 from typing import Any, Optional, Tuple
 import urllib.error
@@ -22,9 +23,65 @@ from src.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
+_PROXY_TARGET_PREFIXES: tuple[str, ...] = (
+    "pytest_",
+    "test_",
+    "test_dummy_",
+    "grp_test_",
+    "dummy_",
+    "proxy_",
+)
+
 
 class ZaloDispatcher:
-    """Bộ điều phối gửi tin nhắn thời gian thực ra máy chủ Zalo."""
+    """Bộ điều phối gửi tin nhắn thời gian thực ra máy chủ Zalo (hỗ trợ chế độ Proxy-only cho kiểm thử)."""
+
+    _proxy_outbox: list[dict[str, Any]] = []
+
+    @classmethod
+    def get_proxy_outbox(cls) -> list[dict[str, Any]]:
+        """Trả danh sách các bản tin đã bị chặn và ghi vào Proxy Outbox trong bộ nhớ."""
+        return list(cls._proxy_outbox)
+
+    @classmethod
+    def clear_proxy_outbox(cls) -> None:
+        """Xóa sạch bộ đệm Proxy Outbox trước hoặc sau mỗi ca kiểm thử."""
+        cls._proxy_outbox.clear()
+
+    @classmethod
+    def _should_use_proxy(cls, target_id: str) -> bool:
+        """Kiểm tra có phải chặn gửi thật ra Zalo OA và định tuyến vào tầng Proxy nội bộ hay không."""
+        if getattr(settings, "ZALO_PROXY_ONLY", False):
+            return True
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return True
+        normalized = str(target_id or "").strip().lower()
+        return normalized.startswith(_PROXY_TARGET_PREFIXES)
+
+    @classmethod
+    def _record_proxy(
+        cls,
+        *,
+        kind: str,
+        target_id: str,
+        message: str,
+        quote_msg_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+    ) -> Tuple[bool, str, None]:
+        """Ghi nhận bản tin vào Proxy Sink trong bộ nhớ và trả mã mô phỏng, tuyệt đối không gọi oa-bridge."""
+        mock_id = f"proxy_mock_{uuid4().hex[:10]}"
+        cls._proxy_outbox.append(
+            {
+                "kind": kind,
+                "target_id": str(target_id).strip(),
+                "message": message,
+                "quote_msg_id": quote_msg_id,
+                "image_url": image_url,
+                "mock_msg_id": mock_id,
+                "recorded_at": datetime.now().isoformat(),
+            }
+        )
+        return True, mock_id, None
 
     @classmethod
     def send_to_group(
@@ -50,9 +107,14 @@ class ZaloDispatcher:
         if not group_id or not message:
             return False, None, "Thiếu group_id hoặc nội dung tin nhắn"
 
-        # Bỏ qua gọi mạng ngoài nếu là dữ liệu kiểm thử tự động
-        if str(group_id).startswith("pytest_") or str(group_id).startswith("test_dummy_"):
-            return True, f"test_mock_zalo_{uuid4().hex[:12]}", None
+        # Chặn tuyệt đối mọi cuộc gọi mạng ngoài khi đang ở chế độ Proxy / Pytest / ID test
+        if cls._should_use_proxy(group_id):
+            return cls._record_proxy(
+                kind="group_text",
+                target_id=group_id,
+                message=message,
+                quote_msg_id=quote_msg_id,
+            )
 
         url = f"{settings.ZALO_BRIDGE_URL.rstrip('/')}/api/bot/send/group"
         payload = {
@@ -93,6 +155,9 @@ class ZaloDispatcher:
                         msg_obj = res_obj.get("message") or {}
                         zalo_msg_id = str(msg_obj.get("msgId") or "") or None
                         logger.info("[ZALO_OK] Đã gửi tin nhắn tới nhóm Zalo %s (msgId: %s, lần %d)", group_id, zalo_msg_id, attempt)
+                        from src.infrastructure.zalo_watchdog import zalo_watchdog
+
+                        zalo_watchdog.record_outbound_result(True)
                         return True, zalo_msg_id, None
                     else:
                         err = resp_body.get("error") or "Lỗi từ ZCA bridge"
@@ -116,7 +181,68 @@ class ZaloDispatcher:
                 time.sleep(1.0 * attempt)
 
         logger.error("[ZALO_ERR] Thất bại sau %d lần thử gửi tin nhóm %s: %s", max_retries, group_id, last_error)
+        from src.infrastructure.zalo_watchdog import zalo_watchdog
+
+        zalo_watchdog.record_outbound_result(False, last_error)
         return False, None, last_error
+
+    @classmethod
+    def send_image_to_group(
+        cls,
+        group_id: str,
+        image_url: str,
+        caption: str = "",
+        quote_msg_id: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Gửi tin nhắn hình ảnh báo cáo PNG (kèm chú thích) vào một nhóm Zalo thông qua `oa-bridge`."""
+        if not group_id or not image_url:
+            return False, None, "Thiếu group_id hoặc image_url"
+        if cls._should_use_proxy(group_id):
+            return cls._record_proxy(
+                kind="group_image",
+                target_id=group_id,
+                message=caption or "Báo cáo hình ảnh",
+                quote_msg_id=quote_msg_id,
+                image_url=image_url,
+            )
+
+        url = f"{settings.ZALO_BRIDGE_URL.rstrip('/')}/api/bot/send/group"
+        payload: dict[str, str] = {
+            "groupId": str(group_id).strip(),
+            "message": caption or "Báo cáo hình ảnh",
+            "imageUrl": str(image_url).strip(),
+        }
+        if quote_msg_id and str(quote_msg_id).strip().isdigit():
+            payload["quoteMsgId"] = str(quote_msg_id).strip()
+
+        data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data_bytes,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "User-Agent": "VSICO-Zalo-Dispatcher/1.0",
+            },
+            method="POST",
+        )
+        from src.infrastructure.zalo_watchdog import zalo_watchdog
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp_body = json.loads(resp.read().decode("utf-8"))
+                if resp_body.get("ok"):
+                    res_obj = resp_body.get("result") or {}
+                    msg_obj = res_obj.get("message") or {}
+                    zalo_msg_id = str(msg_obj.get("msgId") or "") or None
+                    zalo_watchdog.record_outbound_result(True)
+                    return True, zalo_msg_id, None
+                err = resp_body.get("error") or "Lỗi gửi ảnh từ OA bridge"
+                zalo_watchdog.record_outbound_result(False, err)
+                return False, None, err
+        except Exception as exc:
+            zalo_watchdog.record_outbound_result(False, str(exc))
+            return False, None, str(exc)
 
     @classmethod
     def send_to_user(
@@ -140,9 +266,13 @@ class ZaloDispatcher:
         if not user_id or not message:
             return False, None, "Thiếu user_id hoặc nội dung tin nhắn"
 
-        # Bỏ qua gọi mạng ngoài nếu là dữ liệu kiểm thử tự động
-        if str(user_id).startswith("pytest_") or str(user_id).startswith("test_dummy_"):
-            return True, f"test_mock_zalo_{uuid4().hex[:12]}", None
+        # Chặn tuyệt đối gọi mạng ngoài khi đang ở chế độ Proxy / Pytest / ID test
+        if cls._should_use_proxy(user_id):
+            return cls._record_proxy(
+                kind="user_text",
+                target_id=user_id,
+                message=message,
+            )
 
         url = f"{settings.ZALO_BRIDGE_URL.rstrip('/')}/api/bot/send/user"
         payload = {

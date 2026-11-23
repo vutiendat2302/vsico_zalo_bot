@@ -20,9 +20,19 @@ import {
   UserCog,
   Warehouse,
   Contact,
+  Container,
 } from "lucide-react";
-import { getClientSession, clearClientSession } from "@/lib/auth";
+import {
+  getClientSession,
+  clearClientSession,
+  getAuthToken,
+  getJwtRemainingSeconds,
+  redirectToLoginOnUnauthorized,
+  setClientSession,
+} from "@/lib/auth";
 import { AuthUser } from "@/features/auth/types";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function Navbar() {
   const pathname = usePathname();
@@ -34,6 +44,46 @@ export default function Navbar() {
   useEffect(() => {
     setCurrentUser(getClientSession());
     setOptionsOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (pathname === "/login") return;
+
+    const checkAndRefreshToken = async () => {
+      const token = getAuthToken();
+      if (!token) return;
+      const remaining = getJwtRemainingSeconds(token);
+      if (remaining <= 0) {
+        redirectToLoginOnUnauthorized();
+        return;
+      }
+      // Chủ động gia hạn ngầm khi thời hạn JWT còn dưới 24 giờ
+      if (remaining < 24 * 3600) {
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.status === 401) {
+            redirectToLoginOnUnauthorized();
+            return;
+          }
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload?.access_token && payload?.user) {
+              setClientSession(payload.user, true, payload.access_token);
+              setCurrentUser(payload.user);
+            }
+          }
+        } catch {
+          // Bỏ qua lỗi mạng tạm thời, sẽ thử lại ở chu kỳ sau
+        }
+      }
+    };
+
+    checkAndRefreshToken();
+    const timer = setInterval(checkAndRefreshToken, 15 * 60 * 1000);
+    return () => clearInterval(timer);
   }, [pathname]);
 
   useEffect(() => {
@@ -76,6 +126,7 @@ export default function Navbar() {
     { href: "/master/carriers", label: "Nhà xe", icon: Building2 },
     { href: "/master/drivers", label: "Tài xế", icon: UserCog },
     { href: "/master/vehicles", label: "Xe đầu kéo", icon: Truck },
+    { href: "/master/trailers", label: "Rơ-moóc", icon: Container },
     { href: "/master/customers", label: "Danh sách khách hàng", icon: Contact },
     { href: "/master/warehouses", label: "Kho khách hàng", icon: Warehouse },
   ];

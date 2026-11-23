@@ -68,3 +68,17 @@ export async function login(credentials: LoginCredentials): Promise<LoginResult>
     };
   }
 }
+
+/**
+ * Lấy đường dẫn nội bộ an toàn từ query `?from=` sau khi đăng nhập thành công.
+ */
+export function getPostLoginRedirectPath(): string {
+  if (typeof window === "undefined") {
+    return "/";
+  }
+  const from = new URLSearchParams(window.location.search).get("from");
+  if (from && from.startsWith("/") && !from.startsWith("//") && !from.startsWith("/login")) {
+    return from;
+  }
+  return "/";
+}

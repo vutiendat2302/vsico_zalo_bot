@@ -82,9 +82,9 @@ export default function AdminUsersPage() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="h-full min-h-0 flex flex-col gap-3">
       {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-200 pb-4">
+      <div className="shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-200 pb-4">
         <div>
           <div className="flex items-center space-x-2">
             <div className="p-1.5 bg-purple-100 text-purple-700 rounded-sm">
@@ -129,7 +129,7 @@ export default function AdminUsersPage() {
       )}
 
       {/* Filter Bar */}
-      <div className="bg-white border border-slate-200 rounded-sm p-3 flex flex-col md:flex-row md:items-center justify-between gap-3 ">
+      <div className="shrink-0 bg-white border border-slate-200 rounded-sm p-3 flex flex-col md:flex-row md:items-center justify-between gap-3 ">
         {/* Search */}
         <div className="relative flex-1 max-w-md">
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -191,7 +191,7 @@ export default function AdminUsersPage() {
       />
 
       {/* Pagination Footer */}
-      <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
+      <div className="shrink-0 flex items-center justify-between text-xs text-slate-500 pt-1">
         <div>
           Tổng số: <span className="font-semibold text-slate-800">{total}</span> tài khoản
         </div>

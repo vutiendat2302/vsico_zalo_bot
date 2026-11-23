@@ -23,8 +23,10 @@ Thư mục này chứa toàn bộ tài liệu đặc tả kiểm thử API qua P
 | 12 | [`12_dong_bo_master_data_tms.md`](./12_dong_bo_master_data_tms.md) | **Đồng bộ Master Data TMS (`be-tms`)**: Kiểm thử endpoint kéo danh mục Nhà xe, Khách hàng, Kho, Cảng, Depot và cập nhật MySQL. | Port 8000 & TMS |
 | 13 | [`13_keo_ke_hoach_van_chuyen_tms.md`](./13_keo_ke_hoach_van_chuyen_tms.md) | **Kéo Kế Hoạch Vận Chuyển Theo Ngày & Miền Từ TMS**: Kiểm thử đồng bộ kế hoạch đóng/trả, cân đối vỏ và cảnh báo vỏ từ `be-tms`. | Port 8000 & TMS |
 | 14 | [`14_tro_ly_van_tai_phase1.md`](./14_tro_ly_van_tai_phase1.md) | **Trợ Lý Vận Tải Đa Vai Trò (Phase 1)**: Kiểm thử hội thoại trợ lý cho Khách hàng, Nhà xe và ĐHVT. | Port 8000 & 8001 |
-| 15 | [`15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md`](./15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md) | **NLP Nội Bộ (`RapidFuzz + Từ Điển Danh Mục + PhoBERT`), Đối Chiếu 6 Nhánh & Thống Kê Vùng/Tỉnh ĐHVT**: Đồng bộ nhóm thật OA Bridge, tách từ ghép PhoBERT, NER `PER`/`LOC`, đồng tham chiếu, ghép `RO -> LO` và thống kê lệnh đóng/trả theo vùng/tỉnh trên Postman. | Port 8000, 8001, 3000 |
-| 16 | [`16_kiem_thu_bo_25000_proxy_tung_sheet.md`](./16_kiem_thu_bo_25000_proxy_tung_sheet.md) | **Kiểm Thử Proxy 25.000 Kịch Bản Theo Từng Sheet, Family & Postman Sandbox**: Hướng dẫn chạy toàn bộ 25.000 test (`run_proxy_25000_eval.py`), chạy lọc từng sheet / family / `Test ID` / `--only-fail`, đọc 26 chỉ số CSV/Excel và test mẫu 1–12+ chuyến trên `POST /api/sandbox/simulate`. | CLI Proxy & Port 8000 |
+| 15 | [`15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md`](./15_kiem_thu_nlp_phobert_rapidfuzz_va_tro_ly_ai.md) | **NLP Nội Bộ (`Precision Regex + vinai/phobert-base-v2 + RapidFuzz`), API Test NLP & Duyệt Zalo ĐHVT**: Đồng bộ nhóm thật OA Bridge, kiểm thử trực tiếp 3 tầng NLP qua `POST /api/sandbox/nlp-analyze`, kiểm tra sức khỏe Zalo OA Watchdog (`GET /api/health/zalo-oa`), ghép `RO -> LO`, thống kê vùng/tỉnh kèm ảnh PNG và duyệt/sửa/hủy trực tiếp từ nhóm ĐHVT. | Port 8000, 8001, 3000 |
+| 16 | [`16_kiem_thu_bo_25000_proxy_tung_sheet.md`](./16_kiem_thu_bo_25000_proxy_tung_sheet.md) | **Kiểm Thử Proxy 25.000 Kịch Bản Theo Từng Sheet, Family & Postman Sandbox**: Hướng dẫn chạy toàn bộ 25.000 test (`run_proxy_25000_eval.py`) với trọng số thật `vinai/phobert-base-v2`, chạy lọc từng sheet / family / `Test ID` / `--only-fail`, đọc 26 chỉ số CSV/Excel và test mẫu 1–12+ chuyến trên `POST /api/sandbox/simulate`. | CLI Proxy & Port 8000 |
+| 17 | [`17_tms_dispatch_assignment.md`](./17_tms_dispatch_assignment.md) | **Tích Hợp Cập Nhật Điều Phối Sang TMS (`dispatch-assignment`)**: Kiểm thử trực tiếp API `POST /api/integrations/zalo/dispatch-assignment`, cập nhật từng phần, đa SĐT (`09..1 \| 09..2`), chuẩn hóa biển số có dấu chấm, hội thoại nhiều lượt, tách riêng LO/RO, lệnh kết hợp RO+LO và đối soát `tms_sync_logs` / `activity_logs`. | Port 8000 & TMS |
+| 18 | [`vsico_api_zalo_nlp_and_ux_v2.postman_collection.json`](./vsico_api_zalo_nlp_and_ux_v2.postman_collection.json) | **Postman Collection v2.1 Import Sẵn (NLP PhoBERT & Zalo UX v2)**: Bộ request sẵn dùng cho `POST /api/sandbox/nlp-analyze`, `GET /api/health/zalo-oa` và Webhook Nhà xe/ĐHVT. | Port 8000 |
 
 ---
 
@@ -51,6 +53,23 @@ Headers chung cho các request `POST` / `PUT` / `PATCH`:
 
 ## 3. Hướng Dẫn Thực Thi Trên Postman
 
-1. Nhập cấu hình biến môi trường vào Postman Environment.
-2. Thiết lập Method, URL, Headers và Params/Body tương ứng từng kịch bản kiểm thử trong các tài liệu từ `01_check_bot_zca.md` đến `12_dong_bo_master_data_tms.md`.
-3. Kiểm tra kết quả HTTP Status và định dạng JSON trả về đối chiếu với kết quả kỳ vọng được mô tả trong từng tài liệu.
+1. Nhập cấu hình biến môi trường vào Postman Environment (hoặc import file [`vsico_server.postman_environment.json`](./vsico_server.postman_environment.json)). Toàn bộ kịch bản test gửi về Webhook phải đính kèm `"is_test": true` (hoặc chạy trên backend có `ZALO_PROXY_ONLY=True`) để không bắn tin ra Zalo OA thật.
+2. Lưu ý cửa sổ đợi FIFO: Nhóm Nhà xe (`SOURCE`) mặc định đợi 20 giây im lặng (trần 60 giây); nếu cần ép Backend xử lý ngay lập tức trong Postman/Newman sau khi gửi `POST /webhook`, gọi `POST {{baseUrl}}/api/messages/process-fifo?force=true` (nhóm ĐHVT và Khách hàng luôn xử lý ngay).
+3. Thiết lập Method, URL, Headers và Params/Body tương ứng từng kịch bản kiểm thử trong các tài liệu từ `01_check_bot_zca.md` đến `17_tms_dispatch_assignment.md`.
+4. Kiểm tra kết quả HTTP Status và định dạng JSON trả về đối chiếu với kết quả kỳ vọng được mô tả trong từng tài liệu.
+
+---
+
+## 4. Chạy Trực Tiếp Trên Server (Postman GUI & Newman CLI)
+
+1. **Qua Postman Desktop GUI** (đã cài tại `/snap/bin/postman`):
+   - Import [`vsico_api_zalo_nlp_and_ux_v2.postman_collection.json`](./vsico_api_zalo_nlp_and_ux_v2.postman_collection.json) và [`vsico_server.postman_environment.json`](./vsico_server.postman_environment.json).
+   - Chọn Environment `VSICO Server (Local / Public API)`, điền `webhookSecret` (khớp `ZALO_SECRET_KEY` trong `.env`) và `adminPassword` vào cột **Current Value**, sau đó bấm **Run** để chạy toàn bộ Collection.
+2. **Qua Terminal bằng Newman CLI** (chế độ Dry-Run an toàn trên server):
+   ```bash
+   npx --yes newman run backend/tests/postman/vsico_api_zalo_nlp_and_ux_v2.postman_collection.json \
+     -e backend/tests/postman/vsico_server.postman_environment.json \
+     --env-var "baseUrl=http://127.0.0.1:8000" \
+     --env-var "webhookSecret=$ZALO_SECRET_KEY" \
+     --env-var "adminPassword=<MAT_KHAU_ADMIN>"
+   ```

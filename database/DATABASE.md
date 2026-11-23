@@ -98,6 +98,7 @@ erDiagram
     carriers |o--o{ zalo_info : "nhóm Zalo nhà xe"
     carriers |o--o{ transport_plans : "nhà xe phụ trách"
     carriers ||--o{ vehicles : "sở hữu đội xe"
+    carriers ||--o{ trailers : "sở hữu rơ-moóc"
     carriers ||--o{ drivers : "quản lý tài xế"
     customers ||--o{ customer_aliases : "bí danh khách hàng"
     warehouses ||--o{ warehouse_aliases : "bí danh kho (tự học / thủ công)"
@@ -334,6 +335,18 @@ erDiagram
         int vehicle_type "1=Đầu kéo, 2=Rơ-moóc"
         boolean is_active
     }
+    trailers {
+        bigint id PK "Snowflake ID"
+        bigint tms_mooc_id UK
+        bigint tms_carrier_id
+        bigint carrier_id FK
+        string license_plate "Biển số rơ-moóc"
+        string normalized_plate "Biển số chuẩn hóa"
+        int mooc_type "Loại rơ-moóc (1, 2)"
+        string model "Hãng / quy cách"
+        text note "Ghi chú"
+        boolean is_active
+    }
     drivers {
         bigint id PK "Snowflake ID"
         bigint tms_driver_id UK
@@ -367,7 +380,7 @@ erDiagram
 
 **Quy ước Khóa chính (Snowflake ID) & Khóa đồng bộ TMS:**
 
-- **Khóa chính nội bộ (`id`)**: Toàn bộ **23 bảng** trong hệ thống Bot sử dụng **Snowflake ID 64-bit (`BigInteger`)** do tầng ứng dụng sinh tự động (không dùng `AUTO_INCREMENT`), đảm bảo duy nhất toàn cục, phân tán tốt và sắp xếp tăng dần theo thời gian.
+- **Khóa chính nội bộ (`id`)**: Toàn bộ **24 bảng** trong hệ thống Bot sử dụng **Snowflake ID 64-bit (`BigInteger`)** do tầng ứng dụng sinh tự động (không dùng `AUTO_INCREMENT`), đảm bảo duy nhất toàn cục, phân tán tốt và sắp xếp tăng dần theo thời gian.
 - **Khóa đồng bộ từ TMS (`tms_*_id`)**: Lưu dưới dạng **`BigInteger` (8 bytes)** thay vì `String` để tối ưu dung lượng bộ nhớ và tốc độ tìm kiếm B-Tree Index (do trên TMS các khóa `customer_id`, `warehouse_id`, `carrier_id`, `vehicle_id`, `driver_id`, `user_id`, `dispatch_id`, `order_id` đều là số nguyên). Các mã hiển thị dạng chữ (nếu có) được tách riêng vào cột `code`.
 - **Ánh xạ tên bảng nhóm Zalo trong ORM**: Trong thiết kế nghiệp vụ bảng danh bạ nhóm Zalo được gọi là `zalo_info` (hoặc `zalo_groups` trong SQLAlchemy ORM `backend/src/infrastructure/models.py`), hỗ trợ 4 vai trò: `SOURCE` (`car`), `TARGET` (`cus`), `DHVT` (`dhvt`) và `DIRECT_CHAT` (`oa_direct` chat 1-1).
 
@@ -382,8 +395,8 @@ erDiagram
 
 ### 3.2 Schema
 
-Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân chia theo **4 nhóm chức năng chính**:
-1. **Nhóm 1 — Danh mục, Bí danh & Cấu hình định tuyến (10 bảng)**: `zalo_info` (`zalo_groups`), `users`, `carriers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`, `vehicles`, `drivers`, `route_maps`.
+Hệ thống quản lý tổng cộng **24 bảng dữ liệu** được phân chia theo **4 nhóm chức năng chính**:
+1. **Nhóm 1 — Danh mục, Bí danh & Cấu hình định tuyến (11 bảng)**: `zalo_info` (`zalo_groups`), `users`, `carriers`, `customers`, `customer_aliases`, `warehouses`, `warehouse_aliases`, `vehicles`, `trailers`, `drivers`, `route_maps`.
 2. **Nhóm 2 — Kế hoạch Vận chuyển & Đồng bộ TMS (2 bảng)**: `transport_plans`, `tms_sync_logs`.
 3. **Nhóm 3 — Tiếp nhận, Bóc tách NLP/AI & Thực thi Vận tải (5 bảng)**: `zalo_messages`, `files`, `extraction_runs`, `truck_records`, `container_jobs`.
 4. **Nhóm 4 — Hội thoại, Ca Duyệt & Kiểm toán (6 bảng)**: `message_drafts`, `bot_replies`, `outbound_messages`, `outbound_message_items`, `review_cases`, `activity_logs`.
@@ -413,6 +426,7 @@ Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân c
 | 21  | `drivers`           | Danh mục & Cấu hình  | Danh mục Tài xế (Họ tên, SĐT, CCCD, Bằng lái) đồng bộ từ TMS phục vụ từ điển NLP |
 | 22  | `customer_aliases`  | Danh mục & Cấu hình  | Từ điển tên viết tắt / bí danh của Khách hàng phục vụ RapidFuzz & PhoBERT       |
 | 23  | `warehouse_aliases` | Danh mục & Cấu hình  | Từ điển tên viết tắt / bí danh Kho (hỗ trợ tự học `LEARNED` khi ĐHVT duyệt ca)  |
+| 24  | `trailers`          | Danh mục & Cấu hình  | Danh mục Rơ-moóc (Moóc) chuẩn đồng bộ từ TMS (`GET /carrier-moocs`)              |
 
 ---
 
@@ -572,6 +586,7 @@ Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân c
 | `carrier_id`          | `BigInteger`     | **FK** (`carriers.id`), Nullable, **Index**   | `NULL`    | ID nhà xe phụ trách chuyến này (liên kết trực tiếp với `carriers.id` và khớp `zalo_info.carrier_id`)           |
 | `fleet_partner`       | `String(255)`    | Nullable                                                    | `NULL`    | Tên đội xe / đối tác vận tải trong file kế hoạch (VD: `'Tuấn Hưng'`, `'Phương Anh HP'`)                                  |
 | `planned_truck_plate` | `String(64)`     | Nullable                                                    | `NULL`    | Số xe kế hoạch dự kiến điều (VD: `'29C-445.41'`)                                                                         |
+| `planned_trailer_plate` | `String(64)`   | Nullable                                                    | `NULL`    | Biển số rơ-moóc kế hoạch (VD: `'15R-123.45'`)                                                                             |
 | `car_name`            | `String(255)`    | Nullable, **Index**                                   | `NULL`    | Tên đội xe / Nhà xe hiển thị trong file kế hoạch (VD: `'Phương Anh HP'`)                                           |
 | `number_truck`        | `String(64)`     | Nullable                                                    | `NULL`    | Biển số xe được dự kiến điều (VD: `'29C-445.41'`)                                                                   |
 | `delivery_address`    | `Text`           | Nullable                                                    | `NULL`    | Địa chỉ chi tiết điểm đóng hoặc trả hàng                                                                            |
@@ -642,7 +657,7 @@ Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân c
 | `parent_truck_record_id` | `BigInteger`    | **FK** (`truck_records.id`), Nullable                  | `NULL`    | Bản ghi xe cũ nếu đây là tin cập nhật/sửa thông tin xe                                       |
 | `truck_plate`            | `String(32)`    | Nullable, **Index**                                      | `NULL`    | Biển số xe đầu kéo đã chuẩn hóa (VD: `15C-283.94`)                                          |
 | `driver_name`            | `String(255)`   | Nullable                                                       | `NULL`    | Họ tên tài xế (đã chuẩn hóa Title Case, bỏ tiền tố "Lái xe", "bác")                       |
-| `driver_phone`           | `String(32)`    | Nullable                                                       | `NULL`    | Số điện thoại tài xế, **lưu số thật** (10 chữ số bắt đầu bằng `0`). Chỉ che (`0903xxxx59`) khi hiển thị trên Web, ghi log hoặc gửi LLM đám mây |
+| `driver_phone`           | `String(64)`    | Nullable                                                       | `NULL`    | Số điện thoại tài xế, **lưu số thật** (hỗ trợ 1 hoặc nhiều SĐT dạng `09..1 \| 09..2`). Chỉ che (`0903xxxx59`) khi hiển thị trên Web, ghi log hoặc gửi LLM đám mây |
 | `created_at`             | `DateTime(UTC)` | Not Null                                                       | `utc_now` | Thời gian ghi nhận lượt xe                                                                         |
 | `updated_at`             | `DateTime(UTC)` | Not Null                                                       | `utc_now` | Thời gian ghi nhận lượt cập nhật xe                                                              |
 
@@ -855,7 +870,7 @@ Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân c
 
 #### BẢNG 18: `message_drafts`
 
-> **Ý nghĩa**: Bản nháp gom các tin rời rạc của cùng một người gửi trong một nhóm (mỗi mảnh chỉ có một phần thông tin xe). Có hạn chờ (debounce 1 đến 3 phút); đủ trường thì chốt sớm, hết hạn thì xử lý theo trạng thái đang có.
+> **Ý nghĩa**: Bản nháp gom các tin rời rạc của cùng một người gửi trong một nhóm Nhà xe (mỗi mảnh chỉ có một phần thông tin xe). Nhóm Nhà xe đợi im lặng 20s / trần 60s ở hàng đợi FIFO trước khi xử lý, đồng thời bản nháp hết hạn định kỳ để xả các tin còn thiếu.
 
 | Tên trường         | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định  | Ý nghĩa & Quy tắc nghiệp vụ                                                                                 |
 | :----------------- | :-------------- | :------------------------------------------------------- | :-------- | :---------------------------------------------------------------------------------------------------------- |
@@ -925,7 +940,7 @@ Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân c
 | `carrier_id`      | `BigInteger`    | **FK** (`carriers.id`), Nullable, **Index**              | `NULL`    | Nhà xe quản lý tài xế                                                                                        |
 | `full_name`       | `String(128)`   | Not Null                                                 |           | Họ và tên tài xế hiển thị                                                                                    |
 | `normalized_name` | `String(128)`   | Nullable, **Index**                                      | `NULL`    | Họ tên bỏ dấu chữ thường phục vụ tìm kiếm mờ (`RapidFuzz`)                                                   |
-| `phone`           | `String(32)`    | Nullable, **Index**                                      | `NULL`    | Số điện thoại 10 số đã chuẩn hóa                                                                             |
+| `phone`           | `String(64)`    | Nullable, **Index**                                      | `NULL`    | Số điện thoại 10 số (hoặc nhiều SĐT ngăn cách bởi `\|`) đã chuẩn hóa                                          |
 | `identity_no`     | `String(32)`    | Nullable                                                 | `NULL`    | Số CCCD / CMND                                                                                               |
 | `license_no`      | `String(64)`    | Nullable                                                 | `NULL`    | Số giấy phép lái xe (hạng FC)                                                                                |
 | `is_active`       | `Boolean`       | Not Null                                                 | `True`    | Trạng thái hoạt động                                                                                         |
@@ -968,6 +983,27 @@ Hệ thống quản lý tổng cộng **23 bảng dữ liệu** được phân c
 
 ---
 
+#### BẢNG 24: `trailers`
+
+> **Ý nghĩa**: Danh mục Rơ-moóc (Moóc) chuẩn đồng bộ từ phần mềm TMS (`GET /carrier-moocs`), hỗ trợ tách biệt biển số rơ-moóc với biển số đầu kéo khi bóc tách và tra cứu trên Web quản lý (`/master/trailers`).
+
+| Tên trường         | Kiểu dữ liệu    | Ràng buộc                                                | Mặc định  | Ý nghĩa & Quy tắc nghiệp vụ                                       |
+| :----------------- | :-------------- | :------------------------------------------------------- | :-------- | :---------------------------------------------------------------- |
+| `id`               | `BigInteger`    | **PK**, Snowflake ID                                     |           | Khóa chính Snowflake 64-bit                                       |
+| `tms_mooc_id`      | `BigInteger`    | **Unique**, Not Null, **Index**                          |           | Khóa nguyên ID rơ-moóc gốc từ phần mềm TMS                        |
+| `tms_carrier_id`   | `BigInteger`    | Nullable, **Index**                                      | `NULL`    | ID nhà xe trên hệ thống TMS                                       |
+| `carrier_id`       | `BigInteger`    | **FK** (`carriers.id`), Nullable, **Index**              | `NULL`    | Nhà xe quản lý rơ-moóc                                            |
+| `license_plate`    | `String(32)`    | Not Null, **Index**                                      |           | Biển số rơ-moóc nguyên gốc (VD: `15R-048.02`)                      |
+| `normalized_plate` | `String(32)`    | Not Null, **Index**                                      |           | Biển số rơ-moóc chuẩn hóa viết liền (VD: `15R04802`)               |
+| `mooc_type`        | `Integer`       | Nullable, **Index**                                      | `NULL`    | Phân loại rơ-moóc theo TMS (`1`, `2`, ...)                        |
+| `model`            | `String(128)`   | Nullable                                                 | `NULL`    | Nhãn hiệu / quy cách rơ-moóc                                      |
+| `note`             | `Text`          | Nullable                                                 | `NULL`    | Ghi chú kỹ thuật                                                  |
+| `is_active`        | `Boolean`       | Not Null, **Index**                                      | `True`    | Trạng thái hoạt động                                              |
+| `synced_at`        | `DateTime(UTC)` | Nullable                                                 | `NULL`    | Thời điểm đồng bộ gần nhất từ TMS                                 |
+| `created_at`       | `DateTime(UTC)` | Not Null                                                 | `utc_now` | Thời điểm tạo bản ghi                                             |
+
+---
+
 ### Bổ sung kế hoạch nội bộ và kiểm soát đồng thời
 
-`transport_plans` bổ sung `carrier_id` (`BigInteger` FK `carriers`, index), `driver_name` (`String(128)`), `driver_phone` (`String(16)`), `version` (`Integer`, mặc định `1`), `tms_sync_status` (`String(32)`, mặc định `'NOT_STARTED'`). Khi cập nhật nội bộ, trạng thái đồng bộ đặt về `'PENDING'` để đẩy sang TMS qua `TmsPlanSyncService` (có che SĐT `0903xxxx59` trong nhật ký `tms_sync_logs`). Mọi API cập nhật kế hoạch và duyệt ca trên Web đều kiểm tra `expected_version` để chống ghi đè đồng thời (Optimistic Locking).
+`transport_plans` bổ sung `carrier_id` (`BigInteger` FK `carriers`, index), `driver_name` (`String(128)`), `driver_phone` (`String(64)`, hỗ trợ nhiều SĐT ngăn cách bởi `|`), `version` (`Integer`, mặc định `1`), `tms_sync_status` (`String(32)`, mặc định `'NOT_STARTED'`). Khi cập nhật nội bộ, trạng thái đồng bộ đặt về `'PENDING'` để đẩy sang TMS qua `TmsPlanSyncService` (có che SĐT `0903xxxx59` trong nhật ký `tms_sync_logs`). Mọi API cập nhật kế hoạch và duyệt ca trên Web đều kiểm tra `expected_version` để chống ghi đè đồng thời (Optimistic Locking).

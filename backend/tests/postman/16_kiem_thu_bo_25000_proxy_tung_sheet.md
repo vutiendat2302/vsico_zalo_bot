@@ -59,19 +59,21 @@ Thời gian chạy toàn bộ 25.000 ca trên CPU đơn luồng khoảng ~340 gi
 | `backend/output/eval_25000_detailed_report.xlsx` | Excel 3 sheet | Sổ báo cáo trình bày `00_TONG_QUAN_26_CHI_SO`, `01_KET_QUA_TUNG_SHEET`, `02_PHAN_TICH_RULE_NLP_LLM` |
 | `backend/output/zalo_tms_25000_tests_EVALUATED.xlsx` | Excel 25.000 ca đã chấm | Bản sao của `zalo_tms_25000_tests.xlsx` đã điền đủ 2 cột `Kết quả Bot` và `PASS/FAIL` |
 
-### 2.2. Kết quả tham chiếu chuẩn sau tối ưu Rule + Local NLP
+### 2.2. Kết quả đo thực tế mới nhất với trọng số thật `vinai/phobert-base-v2` (`phobert_transformers_local`)
 
 | Hạng mục | Giá trị đo được |
 |---|---:|
-| Tổng ca PASS / Tổng test | **24.475 / 25.000 (`97,9%`)** (FAIL: `525`, BLOCKED: `0`) |
-| Entity Precision / Recall / F1 | **99,87%** / **99,37%** / **99,62%** |
-| Intent Accuracy / Multi-order Accuracy | **98,12%** / **99,31%** |
-| Context Resolution / Reference Resolution / Isolation | **99,92%** / **100,0%** / **99,95%** |
-| Order Matching / Workflow Accuracy / False Update Rate | **99,28%** / **97,91%** / **0,12%** |
-| Hallucination Rate / Error Rate | **0,0%** / **0,0%** |
-| Tier-1 Rule Fast-Path / Tier-2 Local NLP | **5,24%** (`1.311` ca) / **85,61%** (`21.402` ca) -> Tổng tự xử lý nội bộ **90,85%** |
-| Tier-3 LLM Fallback Needed / Raw AI Gate | **9,15%** (`2.287` ca) / **7,05%** (`1.762` ca) |
-| Latency P50 / P95 | **8,92 ms** / **25,42 ms** |
+| Động cơ NLP cục bộ | **`phobert_transformers_local`** (`vinai/phobert-base-v2`, offline cache + mean-centering + skeleton LRU cache) |
+| Tổng ca PASS / Tổng test | **24.254 / 25.000 (`97,02%`)** (FAIL: `746`, BLOCKED: `0`, Wall clock: `335,62s`) |
+| Entity Precision / Recall / F1 | **99,85%** / **99,21%** / **99,53%** (`TP=92.591`, `FP=141`, `FN=740`) |
+| Intent Accuracy / Multi-order Accuracy | **97,50%** / **97,47%** |
+| Context Resolution / Reference Resolution / Isolation | **99,07%** / **98,25%** / **99,95%** |
+| Order Matching / Workflow Accuracy / False Update Rate | **99,28%** / **97,02%** / **0,12%** |
+| Missing Information Detection / Response Relevance | **97,45%** / **99,18%** |
+| Hallucination Rate / Error Rate | **0,00%** / **0,00%** |
+| Tier-1 Rule Fast-Path / Tier-2 Local NLP | **5,08%** (`1.270` ca) / **79,96%** (`19.991` ca) -> Tổng tự xử lý nội bộ **85,04%** |
+| Tier-3 LLM Fallback Needed / Raw AI Gate | **14,96%** (`3.739` ca) / **12,08%** (`3.021` ca) — Chi phí ước tính **$0,0179 / 1.000 tin** |
+| Latency P50 / P95 / Throughput | **2,76 ms** / **39,85 ms** / **80,7 kịch bản/s** (`143,8 tin/s`) |
 
 ---
 

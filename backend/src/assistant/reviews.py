@@ -39,7 +39,10 @@ def create_scoped_review(
     )
     target = DhvtNotificationService.find_dhvt_group(db)
     text = DhvtNotificationService.render_review_case_alert(
-        case, container_no=details.get("container_no"), priority=priority
+        case,
+        db=db,
+        container_no=details.get("container_no"),
+        priority=priority,
     )
     source = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == message.group_id))
     if target and source and not (source.is_test and not target.is_test):

@@ -510,21 +510,25 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // 13. POST /api/bot/send/group — Gửi tin nhắn vào nhóm GMF hoặc direct_<user_id>
+    // 13. POST /api/bot/send/group — Gửi tin nhắn văn bản hoặc ảnh vào nhóm GMF / direct_<user_id>
     if (method === "POST" && pathname === "/api/bot/send/group") {
       const rawBody = await readRawBody(req);
       const body = rawBody ? JSON.parse(rawBody) : {};
-      const { groupId, message, quoteMsgId } = body;
+      const { groupId, message, quoteMsgId, imageUrl } = body;
 
-      if (!groupId || !message) {
-        return sendJson(res, 400, { ok: false, error: "Thiếu groupId hoặc message" });
+      if (!groupId || (!message && !imageUrl)) {
+        return sendJson(res, 400, { ok: false, error: "Thiếu groupId hoặc message/imageUrl" });
       }
 
       const normalizedGroupId = String(groupId).trim();
       const directUserId = extractDirectUserId(normalizedGroupId);
       const result = directUserId
-        ? await sendTextMessage(directUserId, message, quoteMsgId || null)
-        : await sendGroupMessage(normalizedGroupId, message, quoteMsgId || null);
+        ? await sendTextMessage(
+            directUserId,
+            imageUrl ? `${message || "Báo cáo hình ảnh"}\n${imageUrl}`.trim() : message,
+            quoteMsgId || null
+          )
+        : await sendGroupMessage(normalizedGroupId, message || "", quoteMsgId || null, imageUrl || null);
 
       if (!result.ok) {
         return sendJson(res, 502, { ok: false, error: result.error, raw: result.raw });

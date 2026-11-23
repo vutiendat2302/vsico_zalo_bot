@@ -5,16 +5,16 @@ Gắn kết các Router (`/webhook`, `/api/messages`, `/api/health`), đăng ký
 Worker nền khi ứng dụng bắt đầu hoạt động.
 """
 
+import asyncio
+import json
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
-
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -32,9 +32,12 @@ from src.api.users import router as users_router
 from src.api.webhook import router as webhook_router
 from src.domain.enums import GroupRole, SendMode, UserRole
 from src.handlers.extraction_handler import ExtractionHandler
+from src.handlers.tms_auto_sync import tms_auto_sync
 from src.infrastructure.database import SessionLocal, get_db
 from src.infrastructure.fifo_queue import fifo_queue
 from src.infrastructure.models import ContainerJob, TruckRecord, User, ZaloGroup, ZaloMessage
+from src.infrastructure.zalo_watchdog import sse_bus, zalo_watchdog
+from src.outbound.report_image_generator import resolve_report_image_path
 
 # Đăng ký bộ xử lý bóc tách vào hàng đợi FIFO ngay khi nạp module
 fifo_queue.register_processor(ExtractionHandler.process_message_by_id)
@@ -93,9 +96,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     seed_initial_users()
     fifo_queue.start_background_worker()
+    tms_auto_sync.start()
+    zalo_watchdog.start()
     try:
         yield
     finally:
+        zalo_watchdog.stop()
+        tms_auto_sync.stop()
         fifo_queue.stop_background_worker()
 
 
@@ -105,9 +112,11 @@ def create_app() -> FastAPI:
     Returns:
         FastAPI: Ứng dụng FastAPI đã gắn đầy đủ Router và Lifespan.
     """
+    from src.config.settings import settings
+
     application = FastAPI(
         title="VSICO Zalo Logistics Bot Backend",
-        version="2.0.0",
+        version=settings.APP_VERSION,
         description=(
             "Hệ thống tiếp nhận tin nhắn Zalo thời gian thực (Direct & Group), "
             "bóc tách thông tin xe/container tuần tự Vào Trước - Ra Trước (FIFO), "
@@ -229,18 +238,62 @@ def create_app() -> FastAPI:
         Returns:
             dict[str, Any]: Thông tin sức khỏe hệ thống và bộ đếm dữ liệu.
         """
+        from src.config.settings import settings
+
         msg_count = db.scalar(select(func.count(ZaloMessage.id))) or 0
         truck_count = db.scalar(select(func.count(TruckRecord.id))) or 0
         cont_count = db.scalar(select(func.count(ContainerJob.id))) or 0
         return {
             "ok": True,
+            "version": settings.APP_VERSION,
             "status": "OK",
             "database": "mysql_connected",
             "total_messages": msg_count,
             "total_trucks_extracted": truck_count,
             "total_containers_extracted": cont_count,
             "fifo_queue": fifo_queue.stats(),
+            "tms_auto_sync": tms_auto_sync.status(),
+            "zalo_oa": zalo_watchdog.snapshot(),
         }
+
+    @application.get("/api/health/zalo-oa", tags=["0. Giám Sát Hệ Thống (Health)"])
+    def zalo_oa_health(probe: bool = False) -> dict[str, Any]:
+        """Kiểm tra trạng thái sức khỏe cầu nối Zalo OA Bridge & lịch sử lỗi đọc/gửi tin nhắn."""
+        if probe:
+            return zalo_watchdog.check_bridge_health()
+        return zalo_watchdog.snapshot()
+
+    @application.get("/api/events/stream", tags=["0. Giám Sát Hệ Thống (Health)"])
+    async def events_stream(request: Request) -> StreamingResponse:
+        """Luồng sự kiện Server-Sent Events (SSE) đẩy cảnh báo Zalo OA & cập nhật điều hành tới Web Dashboard."""
+        loop = asyncio.get_running_loop()
+        q = sse_bus.subscribe(loop)
+
+        async def _generator() -> AsyncIterator[str]:
+            try:
+                init_payload = json.dumps({"zalo_oa": zalo_watchdog.snapshot()}, ensure_ascii=False)
+                yield f"event: connected\ndata: {init_payload}\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        ev = await asyncio.wait_for(q.get(), timeout=20.0)
+                        data_str = json.dumps(ev.get("data", {}), ensure_ascii=False)
+                        yield f"event: {ev.get('event', 'message')}\ndata: {data_str}\n\n"
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+            finally:
+                sse_bus.unsubscribe(loop, q)
+
+        return StreamingResponse(_generator(), media_type="text/event-stream")
+
+    @application.get("/api/public/reports/{token}.png", tags=["0. Giám Sát Hệ Thống (Health)"])
+    def serve_public_report_image(token: str) -> FileResponse:
+        """Phục vụ tệp ảnh báo cáo PNG có chữ ký HMAC để máy chủ Zalo OA tải và hiển thị trong nhóm ĐHVT."""
+        img_path = resolve_report_image_path(token)
+        if not img_path:
+            raise HTTPException(status_code=404, detail="Không tìm thấy hoặc sai chữ ký ảnh báo cáo.")
+        return FileResponse(path=str(img_path), media_type="image/png")
 
     application.add_middleware(
         CORSMiddleware,
