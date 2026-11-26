@@ -570,6 +570,51 @@ def test_dhvt_direct_zalo_approve_edit_and_reject_with_broadcast(
     assert len(dhvt_rej_msgs) == 1  # Không lặp 2 tin khi ĐHVT từ chối/hủy trên Zalo
     assert "Đã từ chối / hủy yêu cầu" in str(dhvt_rej_msgs[0]["message"])
     assert dhvt_user.full_name in str(dhvt_rej_msgs[0]["message"])
+    # Tin từ chối gửi sang Nhà xe chỉ hiển thị lý do sạch ('sai số moóc'), không lộ tên ĐHVT hay kênh Zalo/Web
+    car_rej_msgs = [c for c in sent_calls if c["group_id"] == src.zalo_group_id]
+    assert len(car_rej_msgs) == 1
+    car_rej_txt = str(car_rej_msgs[0]["message"])
+    assert "Lý do từ chối: sai số moóc" in car_rej_txt
+    assert f"#{rc2.id}" not in car_rej_txt
+    assert dhvt_user.full_name not in car_rej_txt
+    assert "zalo" not in car_rej_txt.lower() and "web" not in car_rej_txt.lower()
+
+    # Tạo thêm ca PENDING và ĐHVT chỉ nhắn 'từ chối' (không nhập lý do) -> gửi nhà xe mẫu chung, tuyệt đối không lộ tên/kênh
+    rc3 = ReviewCase(
+        id=snowflake.generate(),
+        message_id=m_car.id,
+        case_type="MANUAL_REVIEW",
+        reason="Kiểm tra từ chối mặc định",
+        details={"source_group_id": src.zalo_group_id, "container_no": cont, "order_code": plan.order_code},
+        status="PENDING",
+    )
+    db_session.add(rc3)
+    db_session.commit()
+
+    m_dhvt_rej_blank = ZaloMessage(
+        id=snowflake.generate(),
+        zalo_message_id=f"m_dhvt_rej_blank_{tok}",
+        group_id=dhvt.zalo_group_id,
+        sender_id=dhvt_user.zalo_user_id,
+        sender_name=dhvt_user.full_name,
+        message_text=f"từ chối #{rc3.id}",
+        message_type="text",
+        raw_payload={},
+        processing_status=MessageStatus.RECEIVED.value,
+        zalo_sent_at=datetime.now(UTC),
+    )
+    db_session.add(m_dhvt_rej_blank)
+    db_session.commit()
+    sent_calls.clear()
+    assert handle_assistant(db_session, m_dhvt_rej_blank, dhvt) is True
+    db_session.refresh(rc3)
+    assert rc3.status == "REJECTED"
+    car_blank_msgs = [c for c in sent_calls if c["group_id"] == src.zalo_group_id]
+    assert len(car_blank_msgs) == 1
+    car_blank_txt = str(car_blank_msgs[0]["message"])
+    assert "Lý do từ chối: Yêu cầu chưa đáp ứng điều kiện xử lý tại thời điểm hiện tại." in car_blank_txt
+    assert dhvt_user.full_name not in car_blank_txt
+    assert "zalo" not in car_blank_txt.lower() and "web" not in car_blank_txt.lower()
 
 
 def test_html_report_image_generator_and_zalo_oa_watchdog(api_client: TestClient) -> None:
@@ -906,11 +951,12 @@ def test_dhvt_daily_overview_vs_province_detail_and_combined_png(
         )
         return out.content if out else ""
 
-    # 1. Thống kê kế hoạch tổng quát ngày 28/12 -> form 📊 + tỷ lệ % đóng/mở + gửi kèm ảnh PNG tổng hợp
+    # 1. Thống kê kế hoạch tổng quát ngày 28/12 -> form 📊 bỏ 'Lệnh đã đóng/đang mở', giữ Đã bố trí/Chưa có xe + ảnh PNG full width
     proxy_zalo_outbox.clear()
     ans_overview = _ask("thống kê kế hoạch ngày 28/12")
     assert "[VSICO] - 📊 KẾ HOẠCH VẬN CHUYỂN | 28/12" in ans_overview
-    assert "Lệnh đã đóng:" in ans_overview and "Lệnh đang mở:" in ans_overview
+    assert "Đã bố trí xe:" in ans_overview and "Chưa có xe:" in ans_overview
+    assert "Lệnh đã đóng:" not in ans_overview and "Lệnh đang mở:" not in ans_overview
     assert "Lệnh trả:" in ans_overview and "Lệnh đóng:" in ans_overview
     assert "tra / 20" not in ans_overview and "dong / 40" not in ans_overview
     img_sent = [x for x in proxy_zalo_outbox if x["kind"] == "group_image"]
@@ -921,6 +967,8 @@ def test_dhvt_daily_overview_vs_province_detail_and_combined_png(
     proxy_zalo_outbox.clear()
     ans_hy = _ask("chi tiết lệnh tỉnh Hưng Yên ngày 28/12")
     assert "[VSICO] - 📍 CHI TIẾT KẾ HOẠCH HƯNG YÊN | 28/12" in ans_hy
+    assert "Lệnh đã đóng:" not in ans_hy and "Lệnh đang mở:" not in ans_hy
+    assert "Đang mở (chờ xe)" not in ans_hy
     assert "Danh sách lệnh trong ngày:" in ans_hy
     assert plans[0].order_code in ans_hy
     assert plans[1].order_code in ans_hy
@@ -929,7 +977,7 @@ def test_dhvt_daily_overview_vs_province_detail_and_combined_png(
     assert len(prov_img_sent) == 1
     assert "Hưng Yên" in prov_img_sent[0]["message"]
 
-    # 3. Kiểm tra ảnh PNG render trực tiếp chứa cả phần thống kê % lẫn bảng chi tiết lệnh
+    # 3. Kiểm tra ảnh PNG render trực tiếp full chiều rộng 1280px
     res_combined = HtmlReportImageGenerator.render_daily_stats_report(
         report_date="2026-11-17",
         total_plans=3,
@@ -937,8 +985,6 @@ def test_dhvt_daily_overview_vs_province_detail_and_combined_png(
         return_count=2,
         missing_vehicle_count=1,
         assigned_count=2,
-        closed_count=2,
-        open_count=1,
         region_rows=[("Miền Bắc", 3, 1, 2)],
         province_rows=[("Tỉnh Hưng Yên", 2, 1, 1), ("Thành phố Hải Phòng", 1, 0, 1)],
         trips=[
@@ -950,12 +996,14 @@ def test_dhvt_daily_overview_vs_province_detail_and_combined_png(
                 "customer": "ÚT LÀNH",
                 "carrier_name": "VSICO",
                 "vehicle": "29H-234.56 · Tùng Anh",
-                "status": "Đã đóng",
+                "status": "Đã bố trí",
             }
         ],
     )
     assert res_combined.get("ok") is True
-    assert Path(res_combined["png_path"]).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    png_bytes = Path(res_combined["png_path"]).read_bytes()
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    assert int.from_bytes(png_bytes[16:20], "big") == 1280
 
 
 def test_manual_group_forces_review_for_combined_ro_lo_and_complete_return_order(
@@ -1246,4 +1294,334 @@ def test_20s_carrier_group_delay_while_dhvt_replies_immediately(
     assert "tài xế" in car_warn.reply_text.lower()
 
 
+def test_full_list_pagination_multi_png_full_width_and_professional_quote_guide(
+    db_session: Session, monkeypatch, proxy_zalo_outbox
+) -> None:
+    """Kiểm chứng 4 nâng cấp: hướng dẫn duyệt chuyên nghiệp, bỏ Lệnh đã đóng/mở, hiện đủ 35/35 lệnh qua nhiều tin nhắn và tách nhiều ảnh PNG full chiều rộng 1280px."""
+    monkeypatch.setattr(settings, "AUTO_DISPATCH_OUTBOUND", True)
+    uid = uuid4().hex[:6]
+    target_day = date(2026, 12, 29)
+
+    # 1. Kiểm tra dòng hướng dẫn quote chuyên nghiệp trên thông báo ca duyệt & tin chờ duyệt
+    dummy_case = ReviewCase(
+        id=snowflake.generate(),
+        case_type="MANUAL_REVIEW",
+        reason="Nhóm ở chế độ Chờ duyệt",
+        status="PENDING",
+        details={"container_no": "VSIU2461380"},
+    )
+    alert_text = DhvtNotificationService.render_review_case_alert(case_obj=dummy_case, db=db_session)
+    assert "'sửa ...'" not in alert_text and "'hủy ...'" not in alert_text
+    assert "Thao tác nhanh (trả lời/quote tin nhắn này):" in alert_text
+    assert "• Duyệt: duyệt" in alert_text
+    assert "• Sửa thông tin: sửa <biển số / tài xế / SĐT / số cont>" in alert_text
+    assert "• Từ chối: từ chối <lý do>" in alert_text
+
+    dummy_ob = OutboundMessage(
+        id=snowflake.generate(),
+        target_group_id=snowflake.generate(),
+        order_type="RO",
+        message_kind="initial",
+        content="test",
+        idempotency_key=f"ob_{uid}",
+        status="PENDING_APPROVAL",
+    )
+    pending_text = DhvtNotificationService.render_pending_outbound_alert(
+        outbound=dummy_ob,
+        target_group_name="Nhóm Khách Hàng Test",
+        containers=["VSIU2461380"],
+        reason="Chờ ĐHVT duyệt",
+    )
+    assert "'sửa ...'" not in pending_text and "'hủy ...'" not in pending_text
+    assert "Thao tác nhanh (trả lời/quote tin nhắn này):" in pending_text
+
+    # 2. Tạo 35 lệnh tại Hưng Yên trong ngày 29/12 -> vượt 1 tin 1900 ký tự và vượt 25 dòng/ảnh PNG
+    dhvt_grp = ZaloGroup(
+        id=snowflake.generate(),
+        zalo_group_id=f"proxy_dhvt_full_{uid}",
+        name="Nhóm ĐHVT Full Plan Proxy",
+        group_role=GroupRole.DHVT.value,
+        send_mode=SendMode.AUTO.value,
+        is_active=True,
+        is_test=False,
+    )
+    db_session.add(dhvt_grp)
+    db_session.flush()
+
+    dhvt_user = User(
+        id=snowflake.generate(),
+        username=f"dhvt_full_{uid}",
+        password_hash="h",
+        full_name="Vũ Tiến Đạt",
+        role="dhvt",
+        zalo_user_id=f"u_dhvt_full_{uid}",
+        zalo_info_id=dhvt_grp.id,
+        is_active=True,
+    )
+    db_session.add(dhvt_user)
+
+    base_tms_id = 9500000 + int(uid[:4], 16) * 50
+    order_codes: list[str] = []
+    for i in range(1, 36):
+        code = f"RO{uid[:2].upper()}{i:03d}"
+        order_codes.append(code)
+        has_veh = i % 2 == 0
+        db_session.add(
+            TransportPlan(
+                id=snowflake.generate(),
+                tms_order_id=base_tms_id + i,
+                order_code=code,
+                plan_date=target_day,
+                order_type="tra" if i <= 25 else "dong",
+                container_size="40" if i % 2 == 0 else "20",
+                container_no=_valid_cont("VSIU", f"{310000 + i}"),
+                customer_name=f"CÔNG TY KHÁCH HÀNG MIỀN BẮC SỐ {i:02d}",
+                warehouse_name=f"Kho Khu Công Nghiệp Phố Nối A - Cổng {i}",
+                province_name="Tỉnh Hưng Yên",
+                region=1,
+                carrier_name="VSICO TRANSPORT",
+                planned_truck_plate=f"29H-{200 + i}.{i:02d}" if has_veh else None,
+                driver_name=f"Nguyễn Văn Tài {i:02d}" if has_veh else None,
+                dispatch_state=1 if has_veh else 0,
+            )
+        )
+    db_session.commit()
+
+    msg = ZaloMessage(
+        id=snowflake.generate(),
+        zalo_message_id=f"m_full_hy_{uid}",
+        group_id=dhvt_grp.zalo_group_id,
+        sender_id=dhvt_user.zalo_user_id,
+        sender_name="Vũ Tiến Đạt",
+        message_text="chi tiết lệnh tỉnh Hưng Yên ngày 29/12",
+        message_type="text",
+        raw_payload={},
+        processing_status=MessageStatus.RECEIVED.value,
+        zalo_sent_at=datetime(2026, 12, 29, 9, 0, 0),
+    )
+    db_session.add(msg)
+    db_session.commit()
+
+    proxy_zalo_outbox.clear()
+    assert handle_assistant(db_session, msg, dhvt_grp) is True
+
+    # Kiểm chứng tin nhắn văn bản: tách thành >= 2 tin nối tiếp, mỗi tin <= 1950 ký tự, hiện ĐỦ 35/35 lệnh
+    text_sends = [x for x in proxy_zalo_outbox if x["kind"] == "group_text"]
+    assert len(text_sends) >= 2
+    combined_text = "\n".join(x["message"] for x in text_sends)
+    for t_item in text_sends:
+        assert len(t_item["message"]) <= 1950
+    assert "xem đủ bảng trong ảnh đính kèm" not in combined_text
+    assert "Lệnh đã đóng:" not in combined_text and "Lệnh đang mở:" not in combined_text
+    assert "Đang mở (chờ xe)" not in combined_text
+    for code in order_codes:
+        assert code in combined_text
+
+    # Kiểm chứng ảnh PNG: tự tách thành 2 ảnh (25 dòng trang 1 + 10 dòng trang 2), full width 1280px
+    img_sends = [x for x in proxy_zalo_outbox if x["kind"] == "group_image"]
+    assert len(img_sends) == 2
+    assert "Ảnh 1/2" in img_sends[0]["message"] and "1–25/35" in img_sends[0]["message"]
+    assert "Ảnh 2/2" in img_sends[1]["message"] and "26–35/35" in img_sends[1]["message"]
+
+    # 3. Kiểm chứng báo cáo tổng quan ngày với 35 lệnh cũng tự tách >= 2 ảnh PNG full chiều rộng 1280px
+    trips_35 = [
+        {
+            "order_code": code,
+            "order_type": "Trả 40'",
+            "province": "Hưng Yên",
+            "container_no": _valid_cont("VSIU", f"{310000 + idx}"),
+            "customer": f"KHÁCH HÀNG {idx:02d}",
+            "carrier_name": "VSICO",
+            "vehicle": f"29H-100.{idx:02d}" if idx % 2 == 0 else "Chưa bố trí",
+            "status": "Đã bố trí" if idx % 2 == 0 else "Chờ bố trí xe",
+        }
+        for idx, code in enumerate(order_codes, start=1)
+    ]
+    daily_res = HtmlReportImageGenerator.render_daily_stats_report(
+        report_date="2026-12-29",
+        total_plans=35,
+        load_count=10,
+        return_count=25,
+        missing_vehicle_count=18,
+        assigned_count=17,
+        region_rows=[("Miền Bắc", 35, 10, 25)],
+        province_rows=[("Tỉnh Hưng Yên", 35, 10, 25)],
+        trips=trips_35,
+    )
+    assert daily_res.get("ok") is True
+    # Trang 1: Tổng hợp KPI + Vùng + Tỉnh; Trang 2: Lệnh 1-30; Trang 3: Lệnh 31-35
+    assert daily_res.get("total_pages") == 3
+    assert len(daily_res.get("pages") or []) == 3
+    for pg in daily_res["pages"]:
+        raw_png = Path(pg["png_path"]).read_bytes()
+        assert raw_png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert int.from_bytes(raw_png[16:20], "big") == 1280
+
+
+def test_per_field_missing_warnings_and_strict_3tier_nlp_llm_cascade(
+    db_session: Session, monkeypatch, proxy_zalo_outbox
+) -> None:
+    """Kiểm chứng tách riêng câu nhắc thiếu (thiếu gì nhắc đấy), cứu nhãn dính chữ và luồng 3 tầng Tầng 1 -> Tầng 2 NLP -> Tầng 3 LLM."""
+    from src.domain.enums import Intent
+    from src.infrastructure.ai_service_client import AIExtractResult, AIServiceClient
+    from src.infrastructure.models import TruckRecord
+    from src.parsing.ai_fallback import AIFallbackExtractor
+    from src.parsing.local_nlp_extractor import enrich_local, evaluate_missing_field_signals
+
+    cont_ok = _valid_cont("GAOU", "270140")
+    bad_cont = "GAOU2701400" if str(compute_iso6346_check_digit("GAOU2701400")) != "0" else "GAOU2701409"
+
+    # 1. Tách riêng từng câu nhắc thiếu (thiếu gì nhắc đấy)
+    ln_no_phone = ContainerValidator.validate_all(
+        TripParser.parse_message(f"Xe 29C-447.19 mooc 28RM-456.78 Vũ Tùng Anh {cont_ok}")
+    )
+    warn_no_phone = OutboundTemplateBuilder.build_carrier_warning_reply(ln_no_phone)
+    assert "bổ sung SĐT tài xế" in warn_no_phone
+    assert "tên và SĐT" not in warn_no_phone and "tên tài xế" not in warn_no_phone.lower()
+
+    ln_no_name = ContainerValidator.validate_all(
+        TripParser.parse_message(f"Xe 29C-447.19 mooc 28RM-456.78 0345032001 {cont_ok}")
+    )
+    warn_no_name = OutboundTemplateBuilder.build_carrier_warning_reply(ln_no_name)
+    assert "bổ sung tên tài xế" in warn_no_name
+    assert "SĐT" not in warn_no_name
+
+    ln_no_both = ContainerValidator.validate_all(
+        TripParser.parse_message(f"Xe 29C-447.19 mooc 28RM-456.78 {cont_ok}")
+    )
+    warn_no_both = OutboundTemplateBuilder.build_carrier_warning_reply(ln_no_both)
+    assert "bổ sung tên và SĐT tài xế" in warn_no_both
+
+    ln_no_mooc_phone = ContainerValidator.validate_all(
+        TripParser.parse_message(f"Xe 29C-447.19 Vũ Tùng Anh {cont_ok}")
+    )
+    warn_no_mooc_phone = OutboundTemplateBuilder.build_carrier_warning_reply(ln_no_mooc_phone)
+    assert "• Biển số rơ-moóc." in warn_no_mooc_phone
+    assert "• SĐT tài xế." in warn_no_mooc_phone
+    assert "Tên tài xế" not in warn_no_mooc_phone and "Thông tin tài xế" not in warn_no_mooc_phone
+
+    ln_bad_cont_no_phone = ContainerValidator.validate_all(
+        TripParser.parse_message(f"Xe 29C-447.19 mooc 28RM-456.78 Vũ Tùng Anh {bad_cont}")
+    )
+    warn_mixed = OutboundTemplateBuilder.build_carrier_warning_reply(ln_bad_cont_no_phone)
+    assert "• Kiểm tra lại số container." in warn_mixed
+    assert "• Bổ sung SĐT tài xế." in warn_mixed
+
+    # 2. Câu thật của người dùng với SĐT dính chữ sai chính tả 'SDDT0345032001' -> bắt đủ 5/5 trường, COMPLETE
+    user_msg = f"Mooc 28RM-45678, SDDT0345032001 , Vũ Tùng Anh, 29C44719 {cont_ok}"
+    parsed_user = ContainerValidator.validate_all(TripParser.parse_message(user_msg))
+    enriched_user = ContainerValidator.validate_all(
+        enrich_local(db_session, parsed_user, None, user_msg, datetime.now(), include_phobert=True)
+    )
+    dec_user, sig_user = evaluate_missing_field_signals(enriched_user[0])
+    assert enriched_user[0].truck_plate == "29C-447.19"
+    assert enriched_user[0].trailer_plate == "28RM-456.78"
+    assert enriched_user[0].driver_name == "Vũ Tùng Anh"
+    assert enriched_user[0].driver_phone == "0345032001"
+    assert enriched_user[0].container_no == cont_ok
+    assert enriched_user[0].validation_status == "VALID"
+    assert dec_user == "COMPLETE" and sig_user == []
+
+    # Không bắt nhầm CCCD/SEAL làm SĐT
+    safe_cccd = TripParser.parse_message(f"Xe 29C-447.19 mooc 28RM-456.78 Vũ Tùng Anh CCCD0345032001 SEAL0912345678 {cont_ok}")
+    assert safe_cccd[0].driver_phone is None
+
+    # Che PII SĐT dính chữ trước khi gửi AI
+    masked_txt, pmap = AIFallbackExtractor.mask_phones_for_ai("SDDT0345032001")
+    assert "0345032001" not in masked_txt and "xxxx" in masked_txt
+    assert AIFallbackExtractor.restore_real_phone(next(iter(pmap.keys())), pmap) == "0345032001"
+
+    # 3. Ca A: Nhãn dính chữ cho đầu kéo + cont + SĐT -> Tầng 2 tự cứu COMPLETE, KHÔNG gọi LLM
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+    monkeypatch.setattr(settings, "AI_SERVICE_URL", "http://127.0.0.1:8001")
+    attached_text = f"XE29C44719 MOOC28RM45678 CONT{cont_ok} Vũ Tùng Anh SDDT0345032001"
+    p_att = ContainerValidator.validate_all(TripParser.parse_message(attached_text))
+    e_att = ContainerValidator.validate_all(
+        enrich_local(db_session, p_att, None, attached_text, datetime.now(), include_phobert=True)
+    )
+    dec_att, _ = evaluate_missing_field_signals(e_att[0])
+    assert dec_att == "COMPLETE"
+    assert e_att[0].truck_plate == "29C-447.19" and e_att[0].container_no == cont_ok
+    assert AIFallbackExtractor.should_trigger_ai(e_att, intent=Intent.PARSE_TRUCK_INFO) is False
+
+    # 4. Ca B: Thiếu SĐT thật, KHÔNG có tín hiệu dư -> Tầng 2 quyết định STOP_NO_SIGNAL, 0 gọi Tầng 3 LLM
+    no_sig_text = f"Xe 29C-447.19 mooc 28RM-456.78 Vũ Tùng Anh {cont_ok}"
+    p_ns = ContainerValidator.validate_all(TripParser.parse_message(no_sig_text))
+    e_ns = ContainerValidator.validate_all(
+        enrich_local(db_session, p_ns, None, no_sig_text, datetime.now(), include_phobert=True)
+    )
+    dec_ns, sig_ns = evaluate_missing_field_signals(e_ns[0])
+    assert dec_ns == "STOP_NO_SIGNAL" and sig_ns == []
+    assert AIFallbackExtractor.should_trigger_ai(e_ns, intent=Intent.PARSE_TRUCK_INFO) is False
+
+    # 5. Ca C: Thiếu SĐT ở Tầng 1+2 nhưng CÓ tín hiệu dư (chữ O thay số 0: 'alo O345.032.001') -> ESCALATE_TIER3_LLM -> Tầng 3 cứu đủ 5/5
+    sig_text = f"Xe 29C-447.19 mooc 28RM-456.78 Vũ Tùng Anh alo O345.032.001 {cont_ok}"
+    p_sig = ContainerValidator.validate_all(TripParser.parse_message(sig_text))
+    e_sig = ContainerValidator.validate_all(
+        enrich_local(db_session, p_sig, None, sig_text, datetime.now(), include_phobert=True)
+    )
+    dec_sig, sig_list = evaluate_missing_field_signals(e_sig[0])
+    assert dec_sig == "ESCALATE_TIER3_LLM"
+    assert "missing_phone_signal" in sig_list
+    assert AIFallbackExtractor.should_trigger_ai(e_sig, intent=Intent.PARSE_TRUCK_INFO) is True
+
+    # Chạy End-to-End qua ExtractionHandler.process_message với mock AIServiceClient.extract
+    tok = uuid4().hex[:6]
+    carrier, customer, src_grp, dhvt_grp, _user = _seed_carrier_and_dhvt_groups(
+        db_session, tok, SendMode.MANUAL.value
+    )
+    plan = TransportPlan(
+        id=snowflake.generate(),
+        tms_order_id=snowflake.generate(),
+        order_code=f"RO{tok[:4].upper()}",
+        order_type="RO",
+        plan_date=date.today(),
+        container_no=cont_ok,
+        carrier_id=carrier.id,
+        customer_id=customer.id,
+    )
+    db_session.add(plan)
+    db_session.flush()
+
+    ai_calls: list[str] = []
+
+    def _fake_ai_extract(**kwargs):
+        ai_calls.append(kwargs.get("message_text") or "")
+        return AIExtractResult(
+            intent="PARSE_TRUCK_INFO",
+            is_multi_vehicle=False,
+            items=[{"driver_phone": "0345032001", "confidence": 0.94}],
+            model_name="gemini-3.5-flash",
+            prompt_version="v2.1",
+            raw_masked_text=kwargs.get("message_text") or "",
+            latency_ms=42,
+        )
+
+    monkeypatch.setattr(AIServiceClient, "extract", staticmethod(_fake_ai_extract))
+    msg_e2e = ZaloMessage(
+        id=snowflake.generate(),
+        zalo_message_id=f"m_3tier_{tok}",
+        group_id=src_grp.zalo_group_id,
+        sender_id=f"drv_{tok}",
+        sender_name="Vũ Tùng Anh",
+        message_text=sig_text,
+        message_type="text",
+        raw_payload={"is_test": True},
+        processing_status=MessageStatus.QUEUED.value,
+        zalo_sent_at=datetime.now(UTC),
+    )
+    db_session.add(msg_e2e)
+    db_session.commit()
+
+    ExtractionHandler.process_message_by_id(db_session, msg_e2e.id)
+    assert len(ai_calls) == 1
+    saved_truck = db_session.scalar(select(TruckRecord).where(TruckRecord.message_id == msg_e2e.id))
+    assert saved_truck is not None
+    assert saved_truck.driver_phone == "0345032001"
+    assert saved_truck.truck_plate == "29C-447.19"
+    assert saved_truck.trailer_plate == "28RM-456.78"
+    assert saved_truck.driver_name == "Vũ Tùng Anh"
+    # Không phát tin nhắc thiếu vì Tầng 3 đã cứu đủ 5/5 trường
+    no_warn_br = db_session.scalar(select(BotReply).where(BotReply.message_id == msg_e2e.id))
+    assert no_warn_br is None
 

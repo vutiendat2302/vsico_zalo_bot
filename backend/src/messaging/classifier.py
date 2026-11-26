@@ -12,7 +12,7 @@ phân cấp ưu tiên xử lý xung đột (Conflict Resolution Hierarchy):
 import re
 from typing import Any
 from src.domain.enums import Intent
-from src.domain.patterns import ANY_PLATE_REGEX, CONT_REGEX, PHONE_PATTERN
+from src.domain.patterns import ANY_PLATE_REGEX, CONT_REGEX, PHONE_PATTERN, deglue_transport_entities
 
 
 # Danh sách cụm từ xã giao ngắn không liên quan đến điều xe
@@ -50,7 +50,7 @@ class IntentClassifier:
     # Từ khóa nghiệp vụ vận tải (có dấu + không dấu)
     _TRUCK_KEYWORDS = re.compile(
         r"(?:biển\s*số|bien\s*so|\bbks\b|\bbsx\b|số\s*xe|so\s*xe|đầu\s*kéo|dau\s*keo|mooc|moóc|rơ[\s.\-]?moóc|ro[\s.\-]?mooc|\brm\b|"
-        r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|bác\s*tài|bac\s*tai|\btx\b|\blx\b|\bsđt\b|\bsdt\b|\bđt\b|"
+        r"tài\s*xế|tai\s*xe|taixe|tàixế|lái\s*xe|lai\s*xe|laixe|láixe|bác\s*tài|bac\s*tai|bactai|\btxe\b|\btx\b|\blx\b|\bsđt\b|\bsdt\b|\bsddt\b|\bđt\b|"
         r"số\s*cont|so\s*cont|container|\bcntr\b|\bcont\b|chưa\s*lấy\s*cont|chờ\s*cấp\s*cont|chưa\s*có\s*cont|"
         r"số\s*chì|so\s*chi|\bchì\b|\bchi\b|\bseal\b|niêm\s*chì|niem\s*chi|"
         r"đóng\s*hàng|dong\s*hang|lệnh\s*đóng|lenh\s*dong|đóng\s*cont|dong\s*cont|lấy\s*cont\s*rỗng|lay\s*cont\s*rong|"
@@ -58,23 +58,17 @@ class IntentClassifier:
         r"hàng\s*xuất|hang\s*xuat|hàng\s*nhập|hang\s*nhap|"
         r"điều\s*xe|dieu\s*xe|bố\s*trí\s*xe|bo\s*tri\s*xe|xe\s*chạy|xe\s*chay|xe\s*vào\s*kho|xe\s*vao\s*kho|"
         r"thông\s*báo\s*xe|thong\s*bao\s*xe|thông\s*tin\s*xe|thong\s*tin\s*xe|danh\s*sách\s*xe|danh\s*sach\s*xe|kế\s*hoạch\s*xe|ke\s*hoach\s*xe|"
-        r"mã\s*lệnh|ma\s*lenh|số\s*lệnh|so\s*lenh|booking|số\s*vận\s*đơn|so\s*van\s*don)",
+        r"mã\s*lệnh|ma\s*lenh|số\s*lệnh|so\s*lenh|\b(?:ro|lo)\d{3,6}\b|booking|số\s*vận\s*đơn|so\s*van\s*don)",
         re.IGNORECASE,
     )
 
     @classmethod
     def extract_vehicle_signals(cls, text: str) -> dict[str, Any]:
         """Trích xuất danh mục các tín hiệu điều vận (container, biển số, SĐT, chì/seal, từ khóa vận tải)."""
-        t_clean = (text or "").strip()
-        # Tách tiền tố viết dính liền biển số (VD: 'Xe15h00814' -> 'Xe 15h00814') để giữ ranh giới (?<!\w)
-        t_norm_plate = re.sub(
-            r"(?i)\b(xe|bks|bsx|bs|bien|biển|so|số|mooc|rm)\s*([0-9]{2}[A-Za-zĐđ])",
-            r"\1 \2",
-            t_clean,
-        )
+        t_clean = deglue_transport_entities((text or "").strip())
         t_low = t_clean.lower()
         m_cont = cls._CONTAINER_PATTERN.findall(t_clean)
-        m_plate = cls._PLATE_PATTERN.findall(t_norm_plate)
+        m_plate = cls._PLATE_PATTERN.findall(t_clean)
         m_phone = cls._PHONE_PATTERN.findall(t_clean)
         has_seal = bool(re.search(r"\b(?:seal|chì|niêm\s*chì|chi)\b", t_low))
         has_truck_kw = bool(cls._TRUCK_KEYWORDS.search(t_clean))

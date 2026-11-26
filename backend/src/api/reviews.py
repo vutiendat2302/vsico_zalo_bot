@@ -114,11 +114,63 @@ class ReviewApprovePayload(BaseModel):
     )
 
 
+DEFAULT_REJECT_REASON = "Yêu cầu chưa đáp ứng điều kiện xử lý tại thời điểm hiện tại."
+
+
+def _sanitize_external_reject_reason(
+    reason: Optional[str],
+    actor_names: tuple[Optional[str], ...] = (),
+) -> str:
+    """Làm sạch lý do từ chối trước khi gửi ra nhóm Nhà xe / Khách hàng.
+
+    Tuyệt đối không để lộ tên nhân viên ĐHVT, thông tin nội bộ hoặc kênh duyệt (Zalo/Web).
+    Nếu ĐHVT không nhập lý do cụ thể -> trả về mẫu chung `DEFAULT_REJECT_REASON`.
+    """
+    text = " ".join(str(reason or "").split()).strip()
+    if not text or text == DEFAULT_REJECT_REASON:
+        return DEFAULT_REJECT_REASON
+
+    low = text.lower()
+    if (
+        "trực tiếp qua zalo" in low
+        or "duyệt qua zalo" in low
+        or "từ chối qua zalo" in low
+        or "từ chối/hủy trực tiếp" in low
+        or "theo kiểm tra thủ công" in low
+        or low in (
+            "đhvt từ chối tin nhắn điều xe.",
+            "đhvt từ chối tin nhắn điều xe",
+            "dữ liệu không hợp lệ",
+            "dữ liệu không hợp lệ.",
+        )
+    ):
+        return DEFAULT_REJECT_REASON
+
+    text = re.sub(
+        r"\b(?:trực\s*tiếp\s+)?(?:qua|trên)\s+(?:zalo|web(?:\s+quản\s+lý)?)\b",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for name in actor_names:
+        clean_n = " ".join(str(name or "").split()).strip()
+        if len(clean_n) >= 2:
+            text = re.sub(
+                rf"(?i)\b{re.escape(clean_n)}\b\s*(?:[:\-]|(?:đã\s+)?(?:từ\s*chối|hủy|huỷ|duyệt))?\s*",
+                "",
+                text,
+            )
+    text = re.sub(r"\s+", " ", text).strip(" :-,;")
+    if not text or len(text) < 2:
+        return DEFAULT_REJECT_REASON
+    return text
+
+
 class RejectPayload(BaseModel):
     """Schema lý do từ chối phê duyệt."""
 
     reason: Optional[str] = Field(
-        default="Dữ liệu không chính xác theo kiểm tra thủ công.",
+        default=DEFAULT_REJECT_REASON,
         description="Lý do từ chối",
     )
     operator_name: Optional[str] = Field(default=None)
@@ -1485,6 +1537,24 @@ def approve_review_case(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Phê duyệt ca rà soát (có thể sửa trường, chọn kho lưu thói quen, chọn plan hoặc duyệt hủy)."""
+    return _approve_review_case_impl(
+        review_id=review_id,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+        trusted_dhvt_zalo_member=False,
+    )
+
+
+def _approve_review_case_impl(
+    review_id: int,
+    payload: Optional[ReviewApprovePayload],
+    current_user: Optional[User],
+    db: Session,
+    *,
+    trusted_dhvt_zalo_member: bool = False,
+) -> dict[str, Any]:
+    """Xử lý nội bộ phê duyệt ca rà soát cho cả Web API (JWT) và thành viên nhóm Zalo ĐHVT."""
     _ensure_reviewer_role(current_user)
     case_obj = db.get(ReviewCase, review_id)
     if not case_obj:
@@ -1493,11 +1563,11 @@ def approve_review_case(
         raise HTTPException(status_code=409, detail="Ca rà soát đã được xử lý hoàn tất trước đó.")
 
     actor = _resolve_actor(current_user, payload.operator_name if payload else None)
-    # Đề xuất trợ lý phải được duyệt bằng tài khoản Web và còn đúng phiên bản.
+    # Đề xuất trợ lý phải được duyệt bằng tài khoản Web ĐHVT/Admin hoặc thành viên nhóm Zalo ĐHVT hợp lệ.
     proposal = case_obj.details or {}
     expected_ver = (payload.expected_version if payload else None) or proposal.get("expected_version")
     if proposal.get("expected_version") is not None:
-        if not current_user or current_user.role.lower() not in ("admin", "dhvt"):
+        if not trusted_dhvt_zalo_member and (not current_user or current_user.role.lower() not in ("admin", "dhvt")):
             raise HTTPException(status_code=403, detail="Cần tài khoản ĐHVT/Admin để duyệt đề xuất trợ lý.")
     if expected_ver is not None:
         plan_id = (payload.selected_plan_id if payload and payload.selected_plan_id else None) or proposal.get("transport_plan_id") or proposal.get("selected_plan_id")
@@ -2173,9 +2243,18 @@ def reject_review_case(
     _ensure_not_locked_by_other(case_obj, actor, current_user)
 
     reject_reason = (
-        payload.reason
+        payload.reason.strip()
         if (payload and payload.reason and payload.reason.strip())
-        else "Dữ liệu không chính xác theo kiểm tra thủ công."
+        else DEFAULT_REJECT_REASON
+    )
+    external_reason = _sanitize_external_reject_reason(
+        reject_reason,
+        (
+            actor,
+            payload.operator_name if payload else None,
+            current_user.full_name if current_user else None,
+            current_user.username if current_user else None,
+        ),
     )
     now = datetime.now(UTC)
 
@@ -2276,14 +2355,17 @@ def reject_review_case(
                 or (plan.order_type if plan else None)
                 or "tra"
             )
+            reason_sentence = (
+                external_reason if external_reason.endswith((".", "!", "?")) else f"{external_reason}."
+            )
             reject_om = OutboundMessage(
                 id=snowflake.generate(),
                 target_group_id=source_group.id,
                 order_type=order_type,
                 message_kind="answer",
                 content=(
-                    f"[VSICO] ĐHVT chưa thể thực hiện yêu cầu thay đổi/hủy cho {target_label}. "
-                    f"Lý do: {reject_reason}. Vui lòng liên hệ ĐHVT nếu cần hỗ trợ thêm."
+                    f"[VSICO] Chưa thể thực hiện yêu cầu thay đổi/hủy cho {target_label}. "
+                    f"Lý do: {reason_sentence} Vui lòng liên hệ bộ phận điều vận nếu cần hỗ trợ thêm."
                 ),
                 idempotency_key=reject_key,
                 status=OutboundStatus.PENDING_SEND.value,
@@ -2324,7 +2406,7 @@ def reject_review_case(
                     message=(
                         "[VSICO] - ⚠️ Cần kiểm tra lại thông tin điều xe\n\n"
                         f"📦 Chuyến: {conts}\n"
-                        f"• Lý do từ chối: {reject_reason}\n\n"
+                        f"• Lý do từ chối: {external_reason}\n\n"
                         "Anh/chị vui lòng rà soát và gửi lại giúp hệ thống nhé."
                     ),
                     quote_msg_id=orig_msg.zalo_message_id,
@@ -2341,7 +2423,7 @@ def reject_review_case(
         case_obj=case_obj,
         action_verb="từ chối",
         actor_display=actor_display,
-        reason=reject_reason,
+        reason=None if external_reason == DEFAULT_REJECT_REASON else external_reason,
         is_test_msg=not (orig_msg and _is_real_source_message(orig_msg)),
         send_zalo=not bool(payload and payload.skip_dhvt_zalo_broadcast),
     )

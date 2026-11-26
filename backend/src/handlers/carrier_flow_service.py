@@ -666,6 +666,11 @@ class CarrierFlowService:
         """Kiểm tra khớp kế hoạch vận chuyển (`transport_plans`, kể cả slot trống cont J2 và lệnh chưa gán nhà xe)."""
         if not line.container_no:
             return CarrierPlanCheck(is_shipping_missing=True, reason="Thiếu số container.")
+        if line.check_digit_valid is False or "INVALID_CONTAINER_FORMAT" in (line.warnings or []):
+            return CarrierPlanCheck(
+                is_shipping_missing=True,
+                reason=f"Số container '{line.container_no}' không đúng định dạng hoặc sai chữ số kiểm tra ISO 6346.",
+            )
 
         norm_cont = line.container_no.strip().upper()
         carrier_id = carrier_ctx.numeric_carrier_id
@@ -998,13 +1003,44 @@ class CarrierFlowService:
                     parent_msg = db.get(ZaloMessage, recent_reply.message_id)
 
         if not parent_msg or parent_msg.group_id != message.group_id:
-            # Fallback bổ sung sau khi đơn đã hợp lệ (VD: nhà xe gửi thêm số chì 'VS998877' hoặc 'chì VS998877' trong 30p)
+            # Fallback bổ sung sau khi đơn đã hợp lệ (VD: nhà xe gửi thêm số chì 'VS998877' hoặc 'chì VS998877' trong 30p).
+            # Tuyệt đối không cướp tin mới chứa mã cont (kể cả cont sai định dạng), biển đầu kéo, tên tài xế hoặc lỗi định dạng.
             if len(lines) == 1:
+                from src.domain.patterns import deglue_transport_entities
+
                 ln0 = lines[0]
+                deglued_raw = deglue_transport_entities(message.message_text or "")
+                has_raw_cont_or_plate = bool(
+                    re.search(
+                        r"(?<![A-Za-z0-9])[A-Za-z]{3}[UJZ](?:[ \t.\-]?\d){3,9}(?![A-Za-z0-9])",
+                        deglued_raw,
+                        re.IGNORECASE,
+                    )
+                    or re.search(
+                        r"(?<![A-Za-z0-9])(?:1[124-9]|[2-9]\d)[ \t.\-/]{0,2}(?!RM?(?![A-Za-zĐđ]))[A-Za-zĐđ]{1,2}[ \t.\-/]{0,2}\d{4,5}(?!\d)",
+                        deglued_raw,
+                        re.IGNORECASE,
+                    )
+                )
+                has_invalid_followup_format = (
+                    ln0.check_digit_valid is False
+                    or any(
+                        w in (ln0.warnings or [])
+                        for w in (
+                            "INVALID_TRAILER_PLATE_FORMAT",
+                            "INVALID_DRIVER_PHONE",
+                            "INVALID_TRUCK_PLATE_FORMAT",
+                            "INVALID_CONTAINER_FORMAT",
+                        )
+                    )
+                )
                 is_followup_field = bool(
                     (ln0.seal_no or ln0.trailer_plate or ln0.driver_phone)
                     and not ln0.truck_plate
                     and not ln0.container_no
+                    and not ln0.driver_name
+                    and not has_raw_cont_or_plate
+                    and not has_invalid_followup_format
                 )
                 if is_followup_field:
                     # `ContainerJob.created_at` dùng `utc_now()` (naive GMT+7); lọc `parent_job_id IS NULL`
@@ -1025,12 +1061,23 @@ class CarrierFlowService:
                             .order_by(ContainerJob.id.desc())
                         ).all()
                     )
-                    if ln0.seal_no and not ln0.trailer_plate and not ln0.driver_phone and len(recent_jobs) > 1:
-                        no_seal_jobs = [j for j in recent_jobs if not j.seal_no]
+                    # Chỉ ghép bổ sung không quote khi thực sự điền vào ít nhất 1 trường đang TRỐNG trên đơn gần nhất
+                    eligible_recent: list[ContainerJob] = []
+                    for rj in recent_jobs:
+                        rj_tr = rj.truck_record
+                        fills_missing = bool(
+                            (ln0.seal_no and not (rj.seal_no or "").strip())
+                            or (ln0.trailer_plate and not (rj_tr and (rj_tr.trailer_plate or "").strip()))
+                            or (ln0.driver_phone and not (rj_tr and (rj_tr.driver_phone or "").strip()))
+                        )
+                        if fills_missing:
+                            eligible_recent.append(rj)
+                    if ln0.seal_no and not ln0.trailer_plate and not ln0.driver_phone and len(eligible_recent) > 1:
+                        no_seal_jobs = [j for j in eligible_recent if not j.seal_no]
                         if len(no_seal_jobs) == 1:
                             return no_seal_jobs[0], None
-                    if len(recent_jobs) == 1:
-                        return recent_jobs[0], None
+                    if len(eligible_recent) == 1:
+                        return eligible_recent[0], None
             return None, None
 
         incomplete_jobs = list(
@@ -1054,6 +1101,19 @@ class CarrierFlowService:
         if parent_msg.group_id != message.group_id or len(lines) != 1:
             return None, matched_reply
         mentioned_conts = {ln.container_no for ln in lines if ln.container_no}
+        if not mentioned_conts and not message.quote_msg_id:
+            from src.domain.patterns import deglue_transport_entities
+
+            raw_cont_hints = {
+                clean_container(m.group(0))
+                for m in re.finditer(
+                    r"(?<![A-Za-z0-9])[A-Za-z]{3}[UJZ](?:[ \t.\-]?\d){3,9}(?![A-Za-z0-9])",
+                    deglue_transport_entities(message.message_text or ""),
+                    re.IGNORECASE,
+                )
+            }
+            raw_cont_hints.discard(None)
+            mentioned_conts = raw_cont_hints
         if mentioned_conts:
             exact_cont_jobs = [job for job in incomplete_jobs if job.container_no in mentioned_conts]
             if exact_cont_jobs:
@@ -2339,6 +2399,33 @@ class CarrierFlowService:
         if open_draft is None:
             if is_comp_now:
                 return "PASSTHROUGH", lines
+            # Tin đã có >= 3 trường nhưng chứa lỗi cứng (container sai định dạng/check-digit, biển số/SĐT sai)
+            # -> không đệm 60s mà đi thẳng để phản hồi báo lỗi ngay cho nhà xe.
+            attempted_slots = sum(
+                1
+                for val in (
+                    incoming.truck_plate,
+                    incoming.trailer_plate,
+                    incoming.container_no,
+                    incoming.driver_name,
+                    incoming.driver_phone,
+                )
+                if val
+            )
+            has_hard_format_defect = bool(
+                incoming.check_digit_valid is False
+                or any(
+                    w in (incoming.warnings or [])
+                    for w in (
+                        "INVALID_CONTAINER_FORMAT",
+                        "INVALID_TRUCK_PLATE_FORMAT",
+                        "INVALID_TRAILER_PLATE_FORMAT",
+                        "INVALID_DRIVER_PHONE",
+                    )
+                )
+            )
+            if has_hard_format_defect and attempted_slots >= 3:
+                return "PASSTHROUGH", lines
             # Chỉ đệm nếu mảnh tin chứa ít nhất 1 thực thể điều vận (biển số / moóc / cont / tài xế / SĐT)
             has_fragment_entity = bool(
                 incoming.truck_plate
@@ -2543,7 +2630,24 @@ class CarrierFlowService:
                 eta_time=fields.get("eta_time"),
                 plan_date=fields.get("plan_date"),
             )
+            from src.handlers.plan_sync_service import resolve_trailer_from_catalog
+            from src.parsing.local_nlp_extractor import enrich_local, evaluate_missing_field_signals
+
             line = ContainerValidator.validate_line(line)
+            enriched_draft = enrich_local(
+                db=db,
+                lines=[line],
+                carrier_id=draft.carrier_id,
+                raw_text=line.line_text,
+                reference=now,
+                group_id=draft.group_id,
+                sender_id=draft.sender_id,
+                include_phobert=True,
+            )
+            line = enriched_draft[0] if enriched_draft else line
+            resolve_trailer_from_catalog(db, line, draft.carrier_id)
+            line = ContainerValidator.validate_line(line)
+            evaluate_missing_field_signals(line)
             warn_text = OutboundTemplateBuilder.build_carrier_warning_reply([line])
             last_msg = db.get(ZaloMessage, draft.last_message_id or draft.first_message_id)
             src_grp = db.scalar(select(ZaloGroup).where(ZaloGroup.zalo_group_id == draft.group_id))

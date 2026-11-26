@@ -703,7 +703,7 @@ def resolve_vehicle_for_plan(
                 Vehicle.vehicle_type == 1,
             )
         )
-        if veh is not None and (carrier_id is not None and veh.carrier_id == carrier_id):
+        if veh is not None and (carrier_id is None or veh.carrier_id == carrier_id):
             if not norm_cmp or compact_plate(veh.plate_no) == norm_cmp:
                 return {
                     "vehicle_id": int(veh.tms_vehicle_id),
@@ -741,8 +741,11 @@ def _match_active_trailer(
     db: Session,
     trailer_plate: Optional[str],
     carrier_id: Optional[int] = None,
+    *,
+    strict_carrier: bool = False,
+    allow_suffix: bool = True,
 ) -> Optional[Trailer]:
-    """Tra cứu bản ghi rơ-moóc đang hoạt động trong bảng `trailers` theo biển số chuẩn hóa (hỗ trợ 4-5 số cuối)."""
+    """Tra cứu bản ghi rơ-moóc đang hoạt động trong bảng `trailers` theo biển số chuẩn hóa."""
     norm_cmp = compact_plate(trailer_plate) if trailer_plate else None
     if not norm_cmp:
         return None
@@ -754,14 +757,14 @@ def _match_active_trailer(
         scoped = list(db.scalars(stmt.where(Trailer.carrier_id == carrier_id)).all())
         if len(scoped) == 1:
             return scoped[0]
-        if len(scoped) > 1:
+        if len(scoped) > 1 or strict_carrier:
             return None
     matches = list(db.scalars(stmt).all())
     if len(matches) == 1:
         return matches[0]
 
     # Hỗ trợ tra cứu 4-5 số cuối (VD: "30187" -> "29R-301.87") khi khớp duy nhất 1 mooc
-    if not matches and norm_cmp.isdigit() and 4 <= len(norm_cmp) <= 5:
+    if allow_suffix and not matches and norm_cmp.isdigit() and 4 <= len(norm_cmp) <= 5:
         suffix_stmt = select(Trailer).where(
             Trailer.is_active.is_(True),
             Trailer.normalized_plate.like(f"%{norm_cmp}"),
@@ -773,7 +776,7 @@ def _match_active_trailer(
             ]
             if len(scoped_sfx) == 1:
                 return scoped_sfx[0]
-            if len(scoped_sfx) > 1:
+            if len(scoped_sfx) > 1 or strict_carrier:
                 return None
         global_sfx = [
             t for t in db.scalars(suffix_stmt).all()
@@ -868,7 +871,13 @@ def resolve_trailer_for_plan(
             return {"mooc_id": None, "resolution": "invalid_or_cross_carrier_mooc_id"}
 
     if norm_cmp:
-        tr = _match_active_trailer(db, raw_plate, carrier_id)
+        tr = _match_active_trailer(
+            db,
+            raw_plate,
+            carrier_id,
+            strict_carrier=True,
+            allow_suffix=False,
+        )
         if tr is not None:
             return {
                 "mooc_id": int(tr.tms_mooc_id),
@@ -884,6 +893,21 @@ def resolve_trailer_for_plan(
     return {}
 
 
+def _driver_name_matches(drv: Driver, clean_name: str) -> bool:
+    """So khớp chính xác toàn bộ họ tên tài xế sau khi chuẩn hóa bỏ dấu, viết thường."""
+    db_norm = _norm_text(drv.normalized_name or drv.full_name)
+    in_norm = _norm_text(clean_name)
+    return bool(db_norm and in_norm and db_norm == in_norm)
+
+
+def _driver_phone_matches(drv: Driver, phone_set: set[str]) -> bool:
+    """Kiểm tra tập SĐT trong tin nhắn có giao khớp với SĐT của tài xế trên danh mục TMS không."""
+    if not phone_set:
+        return False
+    drv_phones = set(split_phones(drv.phone))
+    return bool(drv_phones & phone_set)
+
+
 def resolve_driver_for_plan(
     db: Session,
     plan: TransportPlan,
@@ -892,10 +916,13 @@ def resolve_driver_for_plan(
     driver_phone: Optional[str] = None,
     requested_driver_id: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Tra cứu `driver_id` (`tms_driver_id`) thuộc đúng nhà xe theo ID / SĐT / tên không mơ hồ.
+    """Tra cứu `driver_id` (`tms_driver_id`) thuộc đúng nhà xe theo nguyên tắc đối chiếu chặt mọi trường.
 
-    Hỗ trợ tài xế có nhiều SĐT dạng `'09..1 | 09..2'`: khi có >= 2 SĐT, luôn gửi kèm `driver_phone`
-    đầy đủ sang TMS (kèm `driver_id` nếu một trong các SĐT khớp duy nhất tài xế trong DB).
+    - Nếu tin nhắn có cả `driver_name` và `driver_phone`, chỉ trả `driver_id` khi khớp duy nhất 1 tài xế
+      thỏa đồng thời CẢ tên VÀ SĐT; nếu lệch tên hoặc lệch SĐT thì trả `driver_id: None` kèm đúng
+      `driver_name` và `driver_phone` theo tin nhắn.
+    - Hỗ trợ tài xế có nhiều SĐT dạng `'09..1 | 09..2'`: khi có >= 2 SĐT và khớp chặt, vẫn gửi kèm
+      đầy đủ `driver_phone` bên cạnh `driver_id`.
     """
     carrier_id = _resolve_plan_carrier_id(db, plan)
     clean_name = " ".join(str(driver_name).strip().split()) if driver_name and str(driver_name).strip() else None
@@ -912,17 +939,41 @@ def resolve_driver_for_plan(
     if requested_driver_id is not None and carrier_drivers:
         drv = next((d for d in carrier_drivers if d.tms_driver_id == int(requested_driver_id)), None)
         if drv is not None:
-            drv_phones = set(split_phones(drv.phone))
-            phone_ok = not phone_set or bool(drv_phones & phone_set)
-            name_ok = not clean_name or _norm_text(drv.full_name) == _norm_text(clean_name)
+            phone_ok = not phone_set or _driver_phone_matches(drv, phone_set)
+            name_ok = not clean_name or _driver_name_matches(drv, clean_name)
             if phone_ok and name_ok:
                 out_id: dict[str, Any] = {"driver_id": int(drv.tms_driver_id), "resolution": "matched_by_id"}
                 if has_multi_phones and norm_phone:
                     out_id["driver_phone"] = norm_phone
                 return out_id
 
+    # Trường hợp 1: Tin nhắn có CẢ tên tài xế VÀ SĐT -> bắt buộc khớp đồng thời cả 2 trường.
+    if clean_name and phone_set:
+        strict_matches = [
+            d
+            for d in carrier_drivers
+            if _driver_phone_matches(d, phone_set) and _driver_name_matches(d, clean_name)
+        ]
+        if len(strict_matches) == 1:
+            out_strict: dict[str, Any] = {
+                "driver_id": int(strict_matches[0].tms_driver_id),
+                "resolution": "matched_exact_name_and_multi_phone"
+                if has_multi_phones
+                else "matched_exact_name_and_phone",
+            }
+            if has_multi_phones and norm_phone:
+                out_strict["driver_phone"] = norm_phone
+            return out_strict
+        return {
+            "driver_id": None,
+            "driver_phone": norm_phone,
+            "driver_name": clean_name,
+            "resolution": "driver_name_phone_mismatch_or_not_found",
+        }
+
+    # Trường hợp 2: Chỉ có SĐT (không có tên) -> khớp duy nhất theo SĐT.
     if phone_set:
-        by_phone = [d for d in carrier_drivers if set(split_phones(d.phone)) & phone_set]
+        by_phone = [d for d in carrier_drivers if _driver_phone_matches(d, phone_set)]
         if len(by_phone) == 1:
             out_matched: dict[str, Any] = {
                 "driver_id": int(by_phone[0].tms_driver_id),
@@ -931,33 +982,24 @@ def resolve_driver_for_plan(
             if has_multi_phones and norm_phone:
                 out_matched["driver_phone"] = norm_phone
             return out_matched
-
-    if clean_name:
-        in_norm = _norm_text(clean_name)
-        by_exact = [d for d in carrier_drivers if _norm_text(d.normalized_name or d.full_name) == in_norm]
-        if len(by_exact) == 1:
-            out_exact: dict[str, Any] = {
-                "driver_id": int(by_exact[0].tms_driver_id),
-                "resolution": "matched_by_exact_name",
-            }
-            if has_multi_phones and norm_phone:
-                out_exact["driver_phone"] = norm_phone
-            return out_exact
-        if not norm_phone:
-            return {
-                "driver_name": clean_name,
-                "resolution": "ambiguous_or_unmatched_name_only",
-            }
-
-    if norm_phone:
-        out_unmatched: dict[str, Any] = {
+        return {
             "driver_id": None,
             "driver_phone": norm_phone,
             "resolution": "phone_not_found_on_tms",
         }
-        if clean_name:
-            out_unmatched["driver_name"] = clean_name
-        return out_unmatched
+
+    # Trường hợp 3: Chỉ có tên (không có SĐT) -> khớp duy nhất theo tên chính xác, không đoán ID khi trùng tên.
+    if clean_name:
+        by_exact = [d for d in carrier_drivers if _driver_name_matches(d, clean_name)]
+        if len(by_exact) == 1:
+            return {
+                "driver_id": int(by_exact[0].tms_driver_id),
+                "resolution": "matched_by_exact_name",
+            }
+        return {
+            "driver_name": clean_name,
+            "resolution": "ambiguous_or_unmatched_name_only",
+        }
 
     return {}
 

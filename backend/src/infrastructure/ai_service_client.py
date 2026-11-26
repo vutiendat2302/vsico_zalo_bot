@@ -180,16 +180,49 @@ class AIServiceClient:
             return None
 
     @classmethod
-    def assistant_intent(cls, message_text: str, allowed_tools: list[str], reference_date: str) -> dict[str, Any] | None:
-        """Gọi parser intent chỉ đọc qua client chung, che PII trước khi rời backend."""
+    def assistant_intent(
+        cls,
+        message_text: str,
+        allowed_tools: list[str],
+        reference_date: str,
+        *,
+        role: str | None = None,
+        quoted_message: str | None = None,
+        recent_messages: list[str] | None = None,
+        is_bot_mentioned: bool = False,
+        has_pending_review_case: bool = False,
+        phobert_candidates: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Gọi parser intent chỉ đọc kèm bối cảnh hội thoại qua client chung, che PII SĐT trước khi rời backend."""
         if not cls._base_url() or not settings.AI_ENABLED:
             return None
         masked, _ = cls.mask_phones(message_text)
+        masked_quote = cls.mask_phones(quoted_message)[0] if quoted_message else None
+        masked_recent = [cls.mask_phones(m)[0] for m in (recent_messages or [])[-5:] if m and m.strip()]
+        req_body: dict[str, Any] = {
+            "message_text": masked,
+            "allowed_tools": allowed_tools,
+            "reference_date": reference_date,
+        }
+        if role:
+            req_body["role"] = role
+        if masked_quote:
+            req_body["quoted_message"] = masked_quote[:1000]
+        if masked_recent:
+            req_body["recent_messages"] = [m[:500] for m in masked_recent]
+        if is_bot_mentioned:
+            req_body["is_bot_mentioned"] = True
+        if has_pending_review_case:
+            req_body["has_pending_review_case"] = True
+        if phobert_candidates:
+            req_body["phobert_candidates"] = phobert_candidates[:5]
         try:
             with httpx.Client(timeout=float(settings.AI_TIMEOUT_SECONDS or 10)) as client:
-                response = client.post(f"{cls._base_url()}/api/v1/assistant-intent",
-                    headers=cls._headers(), json={"message_text": masked, "allowed_tools": allowed_tools,
-                                                "reference_date": reference_date})
+                response = client.post(
+                    f"{cls._base_url()}/api/v1/assistant-intent",
+                    headers=cls._headers(),
+                    json=req_body,
+                )
             response.raise_for_status()
             payload = response.json()
             return payload if isinstance(payload, dict) else None

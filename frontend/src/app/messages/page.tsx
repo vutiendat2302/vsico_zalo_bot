@@ -61,11 +61,10 @@ export default function MessagesPage() {
   const [rejectingMsg, setRejectingMsg] = useState(false);
 
   // Hộp thoại nhập lý do từ chối
+  const DEFAULT_REJECT_REASON = "Yêu cầu chưa đáp ứng điều kiện xử lý tại thời điểm hiện tại.";
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [rejectTargetId, setRejectTargetId] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState<string>(
-    "Dữ liệu không chính xác hoặc lệnh điều xe bị hủy."
-  );
+  const [rejectReason, setRejectReason] = useState<string>("");
 
   const handleApproveMessage = async (msgId: string) => {
     try {
@@ -83,19 +82,16 @@ export default function MessagesPage() {
 
   const handleOpenRejectModal = (msgId: string) => {
     setRejectTargetId(msgId);
-    setRejectReason("Dữ liệu không chính xác hoặc lệnh điều xe bị hủy.");
+    setRejectReason("");
     setRejectModalOpen(true);
   };
 
   const handleConfirmReject = async () => {
     if (!rejectTargetId) return;
-    if (!rejectReason.trim()) {
-      toast.error("Vui lòng nhập lý do từ chối tin nhắn.");
-      return;
-    }
+    const effectiveReason = rejectReason.trim() || DEFAULT_REJECT_REASON;
     try {
       setRejectingMsg(true);
-      const res = await rejectMessageByDHVT(rejectTargetId as any, rejectReason.trim());
+      const res = await rejectMessageByDHVT(rejectTargetId as any, effectiveReason);
       toast.success(res.message || "Đã từ chối tin nhắn thành công.");
       setRejectModalOpen(false);
       if (selectedMsgId) {

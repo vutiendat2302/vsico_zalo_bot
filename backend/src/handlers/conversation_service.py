@@ -1120,25 +1120,8 @@ def _handle_dhvt_group_message(
         db.commit()
         return True
 
-    # 2. Kiểm tra định danh nhân viên ĐHVT trước khi cho phép tra cứu dữ liệu nội bộ
-    if user is None or not user.is_active:
-        unauth_text = (
-            "Tài khoản Zalo của bạn chưa được gắn với nhân viên ĐHVT đang hoạt động trong hệ thống. "
-            f"Vui lòng liên hệ Admin hoặc đăng nhập Web để tra cứu: {base}/results"
-        )
-        _send_or_queue_group_reply(db, group, message, unauth_text, order_type="ANSWER")
-        _record_activity(
-            db,
-            actor_id=message.sender_id,
-            action="DHVT_UNREGISTERED_LOOKUP_BLOCKED",
-            entity_type="zalo_message",
-            entity_id=str(message.id),
-            details={"group_id": group.zalo_group_id},
-        )
-        message.processing_status = MessageStatus.PROCESSED.value
-        db.commit()
-        return True
-
+    # 2. Mọi thành viên trong nhóm ĐHVT đang hoạt động đều được tra cứu dữ liệu nội bộ
+    #    (không bắt buộc gắn users.zalo_user_id; nếu đã gắn sẽ ghi vết theo user.id).
     # 3. Tra cứu nội bộ chỉ đọc
     containers = _extract_containers(raw_text)
     short_conts = _extract_invalid_length_containers(raw_text)
@@ -1178,7 +1161,7 @@ def _handle_dhvt_group_message(
         _send_or_queue_group_reply(db, group, message, reply_text, order_type="ANSWER")
         _record_activity(
             db,
-            actor_id=str(user.id),
+            actor_id=str(user.id) if user else message.sender_id,
             action="DHVT_INTERNAL_LOOKUP",
             entity_type="zalo_message",
             entity_id=str(message.id),

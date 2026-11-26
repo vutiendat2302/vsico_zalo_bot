@@ -76,6 +76,46 @@ logger = get_logger(__name__)
 class ExtractionHandler:
     """Bộ xử lý trung tâm thực hiện bóc tách dữ liệu từ tin nhắn gốc và lưu vào MySQL."""
 
+    @staticmethod
+    def _is_container_grounded_in_text(
+        container_no: Optional[str],
+        raw_text: Optional[str],
+        quoted_text: Optional[str] = None,
+    ) -> bool:
+        """Kiểm chứng số container do AI đề xuất thực sự có mặt trong tin nhắn gốc hoặc tin trích dẫn.
+
+        Chặn tuyệt đối tình huống LLM tự chép số container từ `active_plans` khi nhà xe nhập thiếu/sai
+        hoặc không gửi số container; chỉ cho phép sai khác dấu phân cách hoặc lỗi OCR ký tự đơn (`O<->0`, `I/L<->1`).
+        """
+        if not container_no:
+            return False
+        cleaned = re.sub(r"[^A-Za-z0-9]", "", container_no).upper()
+        if len(cleaned) != 11:
+            return False
+        haystacks = [
+            re.sub(r"[^A-Za-z0-9]", "", txt).upper()
+            for txt in (raw_text, quoted_text)
+            if txt and txt.strip()
+        ]
+        if not haystacks:
+            return False
+        for h in haystacks:
+            if cleaned in h:
+                return True
+        # Cho phép khớp OCR ký tự dễ nhầm (O<->0, I/L<->1) trên đúng cửa sổ 11 ký tự
+        ocr_map = str.maketrans({"O": "0", "I": "1", "L": "1"})
+        cleaned_ocr = cleaned[:4] + cleaned[4:].translate(ocr_map)
+        for h in haystacks:
+            if len(h) < 11:
+                continue
+            for idx in range(len(h) - 10):
+                win = h[idx : idx + 11]
+                win_prefix = win[:4].replace("0", "O").replace("1", "I")
+                win_digits = win[4:].translate(ocr_map)
+                if win_prefix == cleaned[:4] and win_digits == cleaned_ocr[4:]:
+                    return True
+        return False
+
     @classmethod
     def _enrich_from_catalog_and_plans(
         cls,
@@ -703,9 +743,26 @@ class ExtractionHandler:
                 if q_msg:
                     quoted_text = q_msg.message_text
 
-        from src.parsing.local_nlp_extractor import enrich_local, message_dates
-        was_ai_candidate = AIFallbackExtractor.should_trigger_ai(validated_lines, intent=intent)
-        # Tầng 2 (Local NLP + Danh mục TMS): Chạy khi Tầng 1 chưa đủ độ tin cậy hoặc thiếu ngữ cảnh danh mục
+        from src.parsing.local_nlp_extractor import (
+            enrich_local,
+            evaluate_missing_field_signals,
+            message_dates,
+        )
+
+        # Tầng 2 (Local NLP + PhoBERT + Danh mục TMS) BẮT BUỘC đánh giá trước khi xét Tầng 3 LLM hoặc báo thiếu
+        has_missing_after_tier1 = any(
+            not (
+                ln.truck_plate
+                and ln.trailer_plate
+                and (ln.container_no or ln.is_container_pending or ln.container_status == "DEFERRED")
+                and ln.driver_name
+                and ln.driver_phone
+            )
+            for ln in validated_lines
+        )
+        was_ai_candidate = has_missing_after_tier1 or AIFallbackExtractor.should_trigger_ai(
+            validated_lines, intent=intent
+        )
         validated_lines = enrich_local(
             db,
             validated_lines,
@@ -721,8 +778,10 @@ class ExtractionHandler:
         for ln in validated_lines:
             ln.carrier_id = carrier_ctx.numeric_carrier_id
             resolve_trailer_from_catalog(db, ln, carrier_ctx.numeric_carrier_id)
-        # Thẩm định lại sau khi Tầng 2 làm giàu dữ liệu từ danh mục TMS (cập nhật validation_status & confidence)
+        # Thẩm định lại sau khi Tầng 2 làm giàu dữ liệu từ danh mục TMS & cập nhật quyết định tín hiệu Tầng 2
         validated_lines = ContainerValidator.validate_all(validated_lines)
+        for ln in validated_lines:
+            evaluate_missing_field_signals(ln)
         if was_ai_candidate:
             used_model_name = (
                 validated_lines[0].field_evidences.get("nlp_engine")
@@ -772,6 +831,11 @@ class ExtractionHandler:
                 if len(validated_lines) == 1 and len(ai_lines) == 1:
                     base_ln = validated_lines[0]
                     ai_ln = ai_lines[0]
+                    ai_model_tag = (
+                        ai_res.model_name
+                        if ai_res
+                        else f"ai-fallback:{settings.AI_PROVIDER}:{settings.AI_MODEL_NAME}"
+                    )
                     for attr in (
                         "truck_plate",
                         "trailer_plate",
@@ -787,16 +851,38 @@ class ExtractionHandler:
                         "eta_time",
                         "estimated_at",
                     ):
-                        if not getattr(base_ln, attr, None) and getattr(ai_ln, attr, None):
-                            setattr(base_ln, attr, getattr(ai_ln, attr))
+                        ai_val = getattr(ai_ln, attr, None)
+                        if attr == "container_no" and ai_val:
+                            if not cls._is_container_grounded_in_text(ai_val, raw_text, quoted_text):
+                                logger.warning(
+                                    "Chặn AI tự điền container '%s' không xuất hiện trong tin nhắn gốc ID=%s.",
+                                    ai_val,
+                                    message.id,
+                                )
+                                continue
+                        if not getattr(base_ln, attr, None) and ai_val:
+                            setattr(base_ln, attr, ai_val)
+                            base_ln.field_evidences[attr] = f"tier3_ai:{ai_model_tag}"
+                            base_ln.extraction_tier = "TIER_3_AI_FALLBACK"
                     validated_lines = ContainerValidator.validate_all([base_ln])
-                    used_model_name = ai_res.model_name if ai_res else f"ai-fallback:{settings.AI_PROVIDER}:{settings.AI_MODEL_NAME}"
+                    evaluate_missing_field_signals(validated_lines[0])
+                    used_model_name = ai_model_tag
                 elif not (
                     is_offline_heuristic
                     and len(validated_lines) == 1
                     and validated_lines[0].truck_plate
                     and validated_lines[0].container_no
                 ):
+                    for ai_item in ai_lines:
+                        if ai_item.container_no and not cls._is_container_grounded_in_text(
+                            ai_item.container_no, raw_text, quoted_text
+                        ):
+                            logger.warning(
+                                "Chặn AI tự điền container '%s' không xuất hiện trong tin nhắn gốc ID=%s.",
+                                ai_item.container_no,
+                                message.id,
+                            )
+                            ai_item.container_no = None
                     validated_lines = ContainerValidator.validate_all(ai_lines)
                     used_model_name = ai_res.model_name if ai_res else f"ai-fallback:{settings.AI_PROVIDER}:{settings.AI_MODEL_NAME}"
 
@@ -1032,7 +1118,8 @@ class ExtractionHandler:
             # (Giờ dự kiến và Ghi chú là tùy chọn - có thể null)
             is_complete, missing_fields = OutboundTemplateBuilder.check_core_fields_completeness(line)
             if not is_complete:
-                line.validation_status = ValidationStatus.NEEDS_REVIEW.value
+                if line.validation_status != ValidationStatus.INVALID.value:
+                    line.validation_status = ValidationStatus.NEEDS_REVIEW.value
                 for m in missing_fields:
                     w_code = f"MISSING_{m.upper()}"
                     if w_code not in line.warnings:
@@ -1693,8 +1780,13 @@ class ExtractionHandler:
                     continue
 
             if not routing_blocked_type and target_grp_id is None:
-                # Nhóm MANUAL chưa có nhóm khách -> vẫn tạo ReviewCase duyệt cập nhật TMS gửi nhóm ĐHVT (ghi rõ tên nhóm nguồn)
-                if plan_check.matched_plan is not None and is_manual_for_tms:
+                # Nhóm MANUAL chưa có nhóm khách -> vẫn tạo ReviewCase duyệt cập nhật TMS gửi nhóm ĐHVT (chỉ khi đủ & hợp lệ)
+                if (
+                    plan_check.matched_plan is not None
+                    and is_manual_for_tms
+                    and is_complete
+                    and line.validation_status == ValidationStatus.VALID.value
+                ):
                     has_review_or_error = True
                     container_job.validation_status = ValidationStatus.NEEDS_REVIEW.value
                     container_job.routing_status = RoutingStatus.NEEDS_REVIEW.value

@@ -35,7 +35,7 @@ from src.outbound.report_image_generator import HtmlReportImageGenerator
 
 from .intent_router import local_date, normalize, strip_zalo_mentions
 from .queries import plan_jobs, plan_outbounds, plans_statement, scoped_cases, scoped_jobs_statement
-from .response_formatter import NOT_FOUND, format_plans, job_line, plan_line
+from .response_formatter import NOT_FOUND, format_plans, job_line, paginate_zalo_text, plan_line
 from .schemas import AssistantReply, ScopeContext, ToolCall
 from .tools_customer import summary
 
@@ -168,19 +168,27 @@ def _execute_dhvt_direct_review_action(
     """Thực thi lệnh Duyệt / Sửa / Hủy / Từ chối trực tiếp từ nhân viên ĐHVT trên nhóm Zalo ĐHVT."""
     from fastapi import HTTPException
     from src.api.reviews import (
+        DEFAULT_REJECT_REASON,
         RejectPayload,
         ReviewApprovePayload,
-        approve_review_case,
+        _approve_review_case_impl,
         reject_review_case,
     )
 
-    dhvt_user = db.scalar(
-        select(User).where(User.zalo_user_id == message.sender_id, User.is_active.is_(True))
-    )
-    if dhvt_user is None or (dhvt_user.role or "").lower() not in ("dhvt", "admin"):
+    if scope.role != "DHVT":
         return AssistantReply(
-            text="Tài khoản Zalo của bạn chưa được gắn quyền ĐHVT/Admin nên không thể duyệt trực tiếp trên Zalo."
+            text="Thao tác duyệt trực tiếp chỉ được thực hiện trong nhóm Zalo ĐHVT đang hoạt động."
         )
+
+    dhvt_candidates = list(
+        db.scalars(
+            select(User).where(User.zalo_user_id == message.sender_id, User.is_active.is_(True))
+        ).all()
+    )
+    dhvt_user = next(
+        (u for u in dhvt_candidates if (u.role or "").lower() in ("dhvt", "admin")),
+        None,
+    )
 
     case_obj = _find_target_review_case_for_dhvt(db, call, message)
     if case_obj is None:
@@ -195,7 +203,7 @@ def _execute_dhvt_direct_review_action(
         or (message.raw_payload.get("sender_name") if isinstance(message.raw_payload, dict) else None)
     )
     actor_name = _resolve_reviewer_display_name(
-        dhvt_user.full_name or dhvt_user.username,
+        (dhvt_user.full_name or dhvt_user.username) if dhvt_user else f"ĐHVT ({message.sender_id})",
         zalo_sender_name,
     )
 
@@ -207,13 +215,20 @@ def _execute_dhvt_direct_review_action(
     )
     if is_reject_cmd:
         reason_clean = re.sub(
-            r"^(?:từ\s*chối|tu\s*choi|không\s*duyệt|khong\s*duyet|hủy|huy)\s*[:\-]?\s*",
+            r"^(?:từ\s*chối|tu\s*choi|không\s*duyệt|khong\s*duyet|hủy|huỷ|huy)\s*[:\-]?\s*",
             "",
             raw_text,
             flags=re.IGNORECASE,
         ).strip()
+        # Loại bỏ mã ca / mã lệnh / số cont nằm ngay đầu lý do (VD: 'từ chối #123 sai số moóc' -> 'sai số moóc')
+        reason_clean = re.sub(
+            r"^(?:(?:ca\s*)?#\d{1,19}|(?:ro|lo)\d{3,8}|[a-z]{3}[ujz]\d{7})\s*[:\-]?\s*",
+            "",
+            reason_clean,
+            flags=re.IGNORECASE,
+        ).strip()
         try:
-            final_reason = reason_clean or f"{actor_name} từ chối/hủy trực tiếp qua Zalo."
+            final_reason = reason_clean or DEFAULT_REJECT_REASON
             reject_review_case(
                 review_id=case_obj.id,
                 payload=RejectPayload(
@@ -272,11 +287,12 @@ def _execute_dhvt_direct_review_action(
             has_manual_edits = True
 
     try:
-        approve_review_case(
+        _approve_review_case_impl(
             review_id=case_obj.id,
             payload=ReviewApprovePayload(**approve_kwargs),
             current_user=dhvt_user,
             db=db,
+            trusted_dhvt_zalo_member=True,
         )
         return AssistantReply(
             text=DhvtNotificationService.render_dhvt_review_decision(
@@ -442,12 +458,14 @@ def _plan_to_trip_row(p: TransportPlan) -> dict[str, str]:
     order_kind_vi = f"Đóng{sz}" if is_load else f"Trả{sz}"
     veh_parts = [x for x in (p.planned_truck_plate, p.driver_name) if x]
     veh_str = " · ".join(veh_parts) if veh_parts else "Chưa bố trí"
-    if _plan_is_closed(p):
-        st_vi = "Đã đóng"
-    elif (p.planned_truck_plate or "").strip():
-        st_vi = "Đang mở (đã có xe)"
+    has_plate = bool((p.planned_truck_plate or "").strip())
+    has_cont = bool((p.container_no or "").strip())
+    if has_plate and has_cont:
+        st_vi = "Đã bố trí"
+    elif has_plate:
+        st_vi = "Thiếu số cont"
     else:
-        st_vi = "Đang mở (chờ xe)"
+        st_vi = "Chờ bố trí xe"
     return {
         "order_code": p.order_code or str(p.id),
         "order_type": order_kind_vi,
@@ -527,8 +545,6 @@ def _run_dhvt_province_plans(
     loads = [p for p in plans if (p.order_type or "").lower() in ("dong", "load", "lo")]
     assigned = sum(1 for p in plans if (p.planned_truck_plate or "").strip())
     unassigned = total - assigned
-    closed = sum(1 for p in plans if _plan_is_closed(p))
-    opened = total - closed
     sent = _count_sent_plans(db, [p.id for p in plans])
 
     header_lines = [
@@ -536,7 +552,6 @@ def _run_dhvt_province_plans(
         "",
         f"🚛 {total} lệnh tại {prov_short}",
         f"✅ Đã bố trí xe: {assigned} ({_pct_vi(assigned, total)}) · ⏳ Chưa có xe: {unassigned} ({_pct_vi(unassigned, total)})",
-        f"🔒 Lệnh đã đóng: {closed} ({_pct_vi(closed, total)}) · 🔓 Lệnh đang mở: {opened} ({_pct_vi(opened, total)})",
         f"📢 Đã phát hành thông báo: {sent}",
         "",
         f"Phân loại tại {prov_short}:",
@@ -548,31 +563,29 @@ def _run_dhvt_province_plans(
 
     trip_rows = [_plan_to_trip_row(p) for p in plans]
     list_lines: list[str] = []
-    prefix_text = "\n".join(header_lines) + "\n"
-    footer_lines = [
-        "",
-        f"💬 Anh/chị có thể hỏi: \"Xem lệnh chưa có xe {prov_short}\" hoặc gửi mã lệnh để xem chi tiết.",
-    ]
-    footer_text = "\n".join(footer_lines)
-    budget = 1850 - len(prefix_text) - len(footer_text)
-
-    shown = 0
     for idx, (p, tr) in enumerate(zip(plans, trip_rows), start=1):
         cont_seg = f"Cont {p.container_no}" if p.container_no else "Chưa có cont"
         cust_seg = (p.customer_name or "").strip()
         line_str = f"{idx}. {tr['order_code']} ({tr['order_type']}) · {cont_seg}"
         if cust_seg:
             line_str += f" · {cust_seg[:26]}"
-        line_str += f" · {tr['vehicle']} · {tr['status']}"
-        if sum(len(x) + 1 for x in list_lines) + len(line_str) + 45 > budget:
-            break
+        if (p.planned_truck_plate or "").strip():
+            line_str += f" · {tr['vehicle']} · {tr['status']}"
+        else:
+            line_str += f" · {tr['status']}"
         list_lines.append(line_str)
-        shown += 1
 
-    if shown < total:
-        list_lines.append(f"... Hiển thị {shown}/{total} lệnh (xem đủ bảng trong ảnh đính kèm).")
+    footer_text = (
+        f"💬 Anh/chị có thể hỏi: \"Xem lệnh chưa có xe {prov_short}\" hoặc gửi mã lệnh để xem chi tiết."
+    )
+    msg_parts = paginate_zalo_text(
+        header_text="\n".join(header_lines),
+        item_lines=list_lines,
+        continuation_title=f"[VSICO] - 📍 CHI TIẾT KẾ HOẠCH {prov_short.upper()} | {date_short} (Tiếp theo)",
+        footer_text=footer_text,
+    )
 
-    # Tự động kết xuất PNG chi tiết tỉnh (chỉ gửi thật khi không phải test; Pytest tự định tuyến qua Proxy)
+    # Tự động kết xuất bộ ảnh PNG full chiều rộng chi tiết tỉnh (gửi đủ tất cả các trang ảnh)
     current_grp = db.get(ZaloGroup, scope.group_id)
     is_test_msg = CarrierFlowService.is_test_message(message, current_grp)
     if settings.AUTO_DISPATCH_OUTBOUND and not is_test_msg:
@@ -581,21 +594,37 @@ def _run_dhvt_province_plans(
             report_date=str(target_date),
             total_plans=total,
             assigned_count=assigned,
-            closed_count=closed,
-            open_count=opened,
             load_count=len(loads),
             return_count=len(returns),
             trips=trip_rows,
         )
-        if img_res.get("ok") and img_res.get("public_url"):
-            ZaloDispatcher.send_image_to_group(
-                group_id=scope.zalo_group_id,
-                image_url=str(img_res["public_url"]),
-                caption=f"[VSICO] - 📍 Bảng chi tiết {total} lệnh tại {prov_short} ngày {date_short}",
-            )
+        if img_res.get("ok"):
+            pages_to_send = img_res.get("pages") or ([img_res] if img_res.get("public_url") else [])
+            total_img_pages = len(pages_to_send)
+            for pg in pages_to_send:
+                pub_url = str(pg.get("public_url") or "")
+                if not pub_url:
+                    continue
+                if total_img_pages > 1:
+                    r_start = pg.get("row_start") or 1
+                    r_end = pg.get("row_end") or total
+                    cap = (
+                        f"[VSICO] - 📍 Bảng chi tiết {prov_short} ngày {date_short} "
+                        f"(Ảnh {pg.get('page', 1)}/{total_img_pages} · Lệnh {r_start}–{r_end}/{total})"
+                    )
+                else:
+                    cap = f"[VSICO] - 📍 Bảng chi tiết {total} lệnh tại {prov_short} ngày {date_short}"
+                ZaloDispatcher.send_image_to_group(
+                    group_id=scope.zalo_group_id,
+                    image_url=pub_url,
+                    caption=cap,
+                )
 
-    full_text = prefix_text + "\n".join(list_lines) + footer_text
-    return AssistantReply(text=full_text, plan_ids=[str(p.id) for p in plans[:20]])
+    return AssistantReply(
+        text=msg_parts[0],
+        extra_texts=msg_parts[1:],
+        plan_ids=[str(p.id) for p in plans[:20]],
+    )
 
 
 def run_dhvt(
@@ -634,8 +663,6 @@ def run_dhvt(
         ]
         assigned = sum(1 for p in all_plans if (p.planned_truck_plate or "").strip())
         unassigned = total - assigned
-        closed = sum(1 for p in all_plans if _plan_is_closed(p))
-        opened = total - closed
         sent = _count_sent_plans(db, [p.id for p in all_plans])
 
         region_labels = {1: "Miền Bắc", 2: "Miền Trung", 3: "Miền Nam"}
@@ -673,9 +700,7 @@ def run_dhvt(
             f"[VSICO] - 📊 KẾ HOẠCH VẬN CHUYỂN | {date_short}",
             "",
             f"🚛 {total} lệnh vận chuyển",
-            f"✅ Đã bố trí xe: {assigned} ({_pct_vi(assigned, total)})",
-            f"⏳ Chưa có xe: {unassigned} ({_pct_vi(unassigned, total)})",
-            f"🔒 Lệnh đã đóng: {closed} ({_pct_vi(closed, total)}) · 🔓 Lệnh đang mở: {opened} ({_pct_vi(opened, total)})",
+            f"✅ Đã bố trí xe: {assigned} ({_pct_vi(assigned, total)}) · ⏳ Chưa có xe: {unassigned} ({_pct_vi(unassigned, total)})",
             f"📢 Đã phát hành thông báo: {sent}",
             "",
             "Phân loại:",
@@ -716,7 +741,7 @@ def run_dhvt(
             ]
         )
 
-        # Kết xuất PNG tổng hợp gồm CẢ bảng thống kê tỷ lệ % lẫn bảng chi tiết các lệnh
+        # Kết xuất bộ ảnh PNG full chiều rộng (tự tách nhiều ảnh nếu danh sách lệnh dài)
         from src.handlers.carrier_flow_service import CarrierFlowService
 
         current_grp = db.get(ZaloGroup, scope.group_id)
@@ -730,8 +755,6 @@ def run_dhvt(
                 return_count=len(returns),
                 missing_vehicle_count=missing_veh_total,
                 assigned_count=assigned,
-                closed_count=closed,
-                open_count=opened,
                 region_rows=[(r, c[0], c[1], c[2]) for r, c in sorted_regions],
                 province_rows=[(p, c[0], c[1], c[2]) for p, c in sorted_provinces],
                 incomplete_carriers=[
@@ -741,12 +764,31 @@ def run_dhvt(
                 ],
                 trips=trip_rows,
             )
-            if img_res.get("ok") and img_res.get("public_url"):
-                ZaloDispatcher.send_image_to_group(
-                    group_id=scope.zalo_group_id,
-                    image_url=str(img_res["public_url"]),
-                    caption=f"[VSICO] - 📊 Bảng thống kê & danh sách lệnh ngày {date_short}",
-                )
+            if img_res.get("ok"):
+                pages_to_send = img_res.get("pages") or ([img_res] if img_res.get("public_url") else [])
+                total_img_pages = len(pages_to_send)
+                for pg in pages_to_send:
+                    pub_url = str(pg.get("public_url") or "")
+                    if not pub_url:
+                        continue
+                    if total_img_pages > 1:
+                        pg_no = pg.get("page", 1)
+                        if pg.get("kind") == "summary":
+                            cap = f"[VSICO] - 📊 Bảng thống kê kế hoạch ngày {date_short} (Ảnh {pg_no}/{total_img_pages})"
+                        else:
+                            r_start = pg.get("row_start") or 1
+                            r_end = pg.get("row_end") or total
+                            cap = (
+                                f"[VSICO] - 📊 Danh sách lệnh ngày {date_short} "
+                                f"(Ảnh {pg_no}/{total_img_pages} · Lệnh {r_start}–{r_end}/{total})"
+                            )
+                    else:
+                        cap = f"[VSICO] - 📊 Bảng thống kê & danh sách lệnh ngày {date_short}"
+                    ZaloDispatcher.send_image_to_group(
+                        group_id=scope.zalo_group_id,
+                        image_url=pub_url,
+                        caption=cap,
+                    )
 
         return AssistantReply(text="\n".join(lines), plan_ids=[str(p.id) for p in all_plans[:20]])
     if name == "dhvt_get_priority_digest":

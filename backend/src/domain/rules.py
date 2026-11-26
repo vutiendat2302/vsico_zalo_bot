@@ -12,6 +12,8 @@ import re
 from typing import Optional
 import unicodedata
 
+from src.domain.patterns import split_camel_case_vn
+
 # Bảng quy đổi giá trị chữ cái sang số theo tiêu chuẩn ISO 6346 (bỏ qua bội số của 11: 11, 22, 33)
 ISO6346_CHAR_MAP: dict[str, int] = {
     "A": 10, "B": 12, "C": 13, "D": 14, "E": 15, "F": 16, "G": 17,
@@ -228,7 +230,8 @@ def _split_syllables_recursive(w_low: str, extra_syllables: Optional[frozenset[s
 
 _DRIVER_PREFIX_PATTERN = re.compile(
     r"^(?:"
-    r"(?:tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe)\s*[:\-]?\s*"
+    r"(?:tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|bactai|"
+    r"tài\s*xế|tai\s*xe|taixe|tàixế|lái\s*xe|lai\s*xe|laixe|láixe|txe)\s*[:\-]?\s*"
     r"|(?:tx|lx)\s*[:\-]\s*"
     r")",
     flags=re.IGNORECASE,
@@ -294,6 +297,20 @@ def clean_driver_name(
     for word in text.split():
         if not word:
             continue
+        # Ưu tiên tách tên viết dính dạng CamelCase chuẩn Unicode (VD: 'VũTùngAnh' -> 'Vũ Tùng Anh', 'TịnhVănDuân' -> 'Tịnh Văn Duân')
+        if word.isalpha():
+            camel_split = split_camel_case_vn(word)
+            if " " in camel_split:
+                camel_parts = [p for p in camel_split.split() if p]
+                if len(camel_parts) > 1 and all(1 <= len(p) <= 8 for p in camel_parts):
+                    for cp in camel_parts:
+                        if len(cp) >= 6:
+                            sub_parts = _split_syllables_recursive(cp.lower(), extra_syllables)
+                            if len(sub_parts) > 1:
+                                expanded_words.extend(sub_parts)
+                                continue
+                        expanded_words.append(cp)
+                    continue
         if word.isalpha() and len(word) >= 5:
             parts = _split_syllables_recursive(word.lower(), extra_syllables)
             if len(parts) > 1:

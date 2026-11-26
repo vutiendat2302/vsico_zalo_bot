@@ -137,7 +137,7 @@ def execute(
                 "- kt LO2564 / kt SELU... / Xe 15H-012.34 (tra cứu 360 độ)\n"
                 "- Nhà xe nào chưa báo đủ hôm nay? | Lệnh lỗi đồng bộ TMS | Xe nào trùng giờ?\n"
                 "- Nhắc nhà xe Tuấn Hưng lệnh thiếu | Nhắc LO2564\n"
-                "- Quote tin báo duyệt và trả lời: 'duyệt' / 'oki' / 'sửa xe ...' / 'hủy ...'"
+                "- Trả lời (quote) tin báo duyệt: 'duyệt', 'sửa <thông tin mới>' hoặc 'từ chối <lý do>'"
             ),
         }
         return AssistantReply(text=examples[scope.role])

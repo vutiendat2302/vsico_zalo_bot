@@ -33,7 +33,9 @@ class TripParser:
     _PLATE_REGEX = PLATE_REGEX
     _TRAILER_PLATE_REGEX = TRAILER_PLATE_REGEX
     _CONTAINER_STD_REGEX = CONT_REGEX
-    _CONTAINER_MALFORMED_REGEX = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{3}[UJuZujz](?:[ \t\u00a0.\-]*\d){4,8})(?![A-Za-z0-9])")
+    _CONTAINER_MALFORMED_REGEX = re.compile(
+        r"(?<![A-Za-z0-9])([A-Za-z]{3}[UJZujz](?:[ \t\u00a0.\-]*\d){3,9})(?![A-Za-z0-9])"
+    )
     _PHONE_REGEX = PHONE_PATTERN
     _PHONE_MALFORMED_REGEX = PHONE_MALFORMED_REGEX
     _SIZE_REGEX = re.compile(
@@ -381,6 +383,13 @@ class TripParser:
             text,
             flags=re.IGNORECASE,
         )
+        # Tách ranh giới nhãn điện thoại bị gõ dính hoặc lặp chữ (VD: SDDT0345032001, SDT09..., SĐT03..., DT09..., LH08...)
+        sanitized = re.sub(
+            r"(?<![A-Za-z0-9])(s+d+đ*t+|s+đ+t+|d+t+|đ+t+|tel|lh|hl|zalo|phone|call)\s*[:.\-]?(?=(?:\+?84|0)[35789](?:[ \t\u00a0.\-]?\d){6,9}(?![\dxX*]))",
+            r"\1 ",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
         phones: list[str] = []
         matched_spans: list[tuple[int, int]] = []
         for match in cls._PHONE_REGEX.finditer(sanitized):
@@ -414,9 +423,16 @@ class TripParser:
             if cleaned and cleaned not in containers:
                 containers.append(cleaned)
 
-        label_matches = re.finditer(
-            r"(?:số\s*container|so\s*container|số\s*cont|so\s*cont|container|\bcntr\b|\bcont\b)[ \t]*[:\-]?[ \t]*([A-Za-z]{4}(?:[ \t.\-]?\d){4,7}|[A-Za-z]{4}\d{8})\b",
+        sanitized_for_cont = re.sub(
+            r"\b(?:cccd|cmnd|căn\s*cước|can\s*cuoc|số\s*chì|so\s*chi|số\s*seal|so\s*seal|seal|chì|chi|booking|\bbk\b|\bbl\b)\s*[:\-]?\s*[A-Za-z0-9\-]+",
+            " ",
             text,
+            flags=re.IGNORECASE,
+        )
+
+        label_matches = re.finditer(
+            r"(?:số\s*container|so\s*container|số\s*cont|so\s*cont|container|\bcntr\b|\bcont\b)[ \t]*[:\-]?[ \t]*([A-Za-z]{2,5}(?:[ \t.\-]?\d){3,9})\b",
+            sanitized_for_cont,
             flags=re.IGNORECASE,
         )
         for lm in label_matches:
@@ -424,15 +440,19 @@ class TripParser:
             if re.match(r"^(?:20|40|45)", token):
                 continue
             cleaned = clean_container(token)
+            if not cleaned:
+                continue
+            letter_count = sum(1 for ch in cleaned if ch.isalpha())
+            if letter_count < 3 or re.match(r"^(?:RO|LO|BK|BL|DR|VS|HL|CCCD|CMND|SEAL)\d", cleaned):
+                continue
             if (
-                cleaned
-                and cleaned not in containers
+                cleaned not in containers
                 and not any(ex.startswith(cleaned) or cleaned.startswith(ex) for ex in containers)
             ):
                 containers.append(cleaned)
 
         if not containers:
-            for mm in cls._CONTAINER_MALFORMED_REGEX.finditer(text):
+            for mm in cls._CONTAINER_MALFORMED_REGEX.finditer(sanitized_for_cont):
                 cleaned = clean_container(mm.group(1))
                 if cleaned and cleaned not in containers:
                     containers.append(cleaned)
@@ -577,8 +597,8 @@ class TripParser:
 
         # Duyệt tuần tự tất cả các nhãn để tránh cụm sai như "tài liệu" che khuất nhãn "tài xế ..." đứng sau
         labeled_re = re.compile(
-            r"(?:^|[\s/\\|｜;\t,\[\(—–·•→#])(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|"
-            r"tài\s*xế|tai\s*xe|lái\s*xe|lai\s*xe|\btx\b|\blx\b|\btài\b|\btai\b)(?:\s*[:\-]\s*|\s+)([^\n/\\|｜;\t,\]\)\"*#—–·•→]+)",
+            r"(?:^|[\s/\\|｜;\t,\[\(—–·•→#])(?:[👤👨🧑🪪]|tên\s*lái\s*xe|ten\s*lai\s*xe|tên\s*tài\s*xế|ten\s*tai\s*xe|bác\s*tài|bac\s*tai|bactai|"
+            r"tài\s*xế|tai\s*xe|taixe|tàixế|lái\s*xe|lai\s*xe|laixe|láixe|\btxe\b|\btx\b|\blx\b|\btài\b|\btai\b)(?:\s*[:\-]\s*|\s+)([^\n/\\|｜;\t,\]\)\"*#—–·•→]+)",
             flags=re.IGNORECASE,
         )
         for labeled in labeled_re.finditer(sanitized_text):
@@ -645,7 +665,12 @@ class TripParser:
                 rem = rem.replace(raw_truck_plate, " | ")
             rem = re.sub(r"\b(?:LO|RO)\d{3,8}\b", " | ", rem, flags=re.IGNORECASE)
             rem = re.sub(r"(?:rơ\s*moóc|mooc|rm)\s*[:\-]?\s*[0-9A-Za-z.\-]+", " | ", rem, flags=re.IGNORECASE)
-            rem = re.sub(r"(?:sđt|sdt|đt|dt)?\s*[:\-]?\s*(?:\+?84[\s.\-]?|0)\d[\d\s.\-*xX]{7,11}[\d*xX]", " | ", rem, flags=re.IGNORECASE)
+            rem = re.sub(
+                r"(?:\b(?:s+d+đ*t+|s+đ+t+|d+t+|đ+t+|tel|lh|hl|zalo|phone|call)\b)?\s*[:\-]?\s*(?:\+?84[\s.\-]?|0)\d[\d\s.\-*xX]{5,11}[\d*xX]",
+                " | ",
+                rem,
+                flags=re.IGNORECASE,
+            )
             for c in containers:
                 rem = re.sub(re.escape(c), " | ", rem, flags=re.IGNORECASE)
             if seal_no:
@@ -864,6 +889,14 @@ class TripParser:
             lower,
         ):
             return OrderType.RETURN.value, True
+
+        # 6. Suy luận từ mã lệnh tường minh ROxxxx (Trả) / LOxxxx (Đóng) nếu chỉ có 1 loại lệnh
+        has_ro_code = bool(re.search(r"\bro\d{3,6}\b", lower))
+        has_lo_code = bool(re.search(r"\blo\d{3,6}\b", lower))
+        if has_ro_code and not has_lo_code:
+            return OrderType.RETURN.value, True
+        if has_lo_code and not has_ro_code:
+            return OrderType.LOAD.value, True
 
         return None, False
 

@@ -871,7 +871,10 @@ def approve_message_by_dhvt(
 
 class RejectMessagePayload(BaseModel):
     """Payload lý do từ chối tin nhắn."""
-    reason: Optional[str] = Field(default="ĐHVT từ chối tin nhắn điều xe.", description="Lý do từ chối")
+    reason: Optional[str] = Field(
+        default="Yêu cầu chưa đáp ứng điều kiện xử lý tại thời điểm hiện tại.",
+        description="Lý do từ chối",
+    )
 
 
 @router.post("/{message_id}/reject")
@@ -893,9 +896,9 @@ def reject_message_by_dhvt(
         raise HTTPException(status_code=404, detail=f"Không tìm thấy tin nhắn ID={message_id}.")
 
     reject_reason = (
-        payload.reason
+        payload.reason.strip()
         if (payload and payload.reason and payload.reason.strip())
-        else "ĐHVT từ chối tin nhắn điều xe."
+        else "Yêu cầu chưa đáp ứng điều kiện xử lý tại thời điểm hiện tại."
     )
     now = datetime.now()
 

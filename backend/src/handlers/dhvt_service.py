@@ -560,7 +560,10 @@ class DhvtNotificationService:
             sections.append(f"Gợi ý: {humanize_reason_text(suggestion)}")
 
         sections.append(
-            "👉 Trả lời (quote) tin này để 'duyệt', 'sửa ...' hoặc 'hủy ...'\n"
+            "Thao tác nhanh (trả lời/quote tin nhắn này):\n"
+            "• Duyệt: duyệt\n"
+            "• Sửa thông tin: sửa <biển số / tài xế / SĐT / số cont>\n"
+            "• Từ chối: từ chối <lý do>\n"
             f"🔗 {link}"
         )
         return "\n\n".join(sections)
@@ -767,7 +770,10 @@ class DhvtNotificationService:
             )
         )
         sections.append(
-            "👉 Trả lời (quote) tin này để 'duyệt', 'sửa ...' hoặc 'hủy ...'\n"
+            "Thao tác nhanh (trả lời/quote tin nhắn này):\n"
+            "• Duyệt: duyệt\n"
+            "• Sửa thông tin: sửa <biển số / tài xế / SĐT / số cont>\n"
+            "• Từ chối: từ chối <lý do>\n"
             f"🔗 {link}"
         )
         return "\n\n".join(sections)

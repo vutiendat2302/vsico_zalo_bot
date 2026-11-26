@@ -99,3 +99,57 @@ def test_sandbox_update_missing_cont_and_casual_chat(api_client: TestClient) -> 
     assert r_chat.status_code == 200
     assert r_chat.json()["processing_status"] == MessageStatus.IGNORED_CHAT.value
     assert r_chat.json()["ai_would_trigger"] is False
+
+
+def test_sandbox_tms_dispatch_payloads_preview(api_client: TestClient, db_session) -> None:
+    """Kiểm thử API sandbox trả về `tms_dispatch_payloads` chuẩn format gửi về TMS (Dry-Run)."""
+    from datetime import date
+
+    from src.infrastructure.snowflake import snowflake
+    from src.infrastructure.models import TransportPlan
+
+    plan = TransportPlan(
+        id=snowflake.generate(),
+        plan_date=date.today(),
+        order_code="LO99881",
+        order_type="Đóng",
+        customer_name="CÔNG TY TEST TMS",
+        container_no="MSKU9070323",
+    )
+    db_session.add(plan)
+    db_session.commit()
+
+    # 1. Không có container khớp DB -> trả về NO_MATCHED_PLAN kèm normalized_fields
+    r_unmatched = api_client.post(
+        "/api/sandbox/simulate",
+        json={
+            "text": "Xe 15H-012.34 mooc 15R-181.29 cont TCNU1234561 tai xe Le Van Minh 0912345678",
+            "allow_ai_fallback": False,
+        },
+    )
+    assert r_unmatched.status_code == 200
+    previews_unmatched = r_unmatched.json()["tms_dispatch_payloads"]
+    assert len(previews_unmatched) == 1
+    assert previews_unmatched[0]["plan_found"] is False
+    assert previews_unmatched[0]["blocked_reason"] == "NO_MATCHED_PLAN"
+    assert previews_unmatched[0]["normalized_fields"]["planned_truck_plate"] == "15H-012.34"
+
+    # 2. Khớp theo order_code qua /api/sandbox/nlp-analyze -> dựng đủ payload gửi TMS
+    r_nlp = api_client.post(
+        "/api/sandbox/nlp-analyze",
+        json={
+            "text": "LO99881 Xe 15H-012.34 mooc 15R-181.29 cont MSKU9070323 tai xe Le Van Minh 0912345678",
+            "plan_date": date.today().isoformat(),
+            "include_plan_resolution": True,
+        },
+    )
+    assert r_nlp.status_code == 200
+    previews = r_nlp.json()["tms_dispatch_payloads"]
+    assert len(previews) == 1
+    assert previews[0]["plan_found"] is True
+    assert previews[0]["ready"] is True
+    assert previews[0]["order_code"] == "LO99881"
+    assert previews[0]["payload"]["order_code"] == "LO99881"
+    assert previews[0]["payload"]["container_no"] == "MSKU9070323"
+    assert previews[0]["payload"]["planned_truck_plate"] == "15H-012.34"
+    assert "planned_truck_plate" in previews[0]["requested_fields"]

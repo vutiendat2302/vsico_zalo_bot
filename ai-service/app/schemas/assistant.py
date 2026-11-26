@@ -1,17 +1,24 @@
 """Schema intent trợ lý; AI không nhận SQL, quyền hoặc kết nối cơ sở dữ liệu."""
 
 from datetime import date
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class AssistantIntentRequest(BaseModel):
-    """Tập công cụ đóng do backend cung cấp cùng ngày gốc của tin nhắn."""
+    """Tập công cụ đóng do backend cung cấp cùng ngày gốc và ngữ cảnh hội thoại của tin nhắn."""
 
     model_config = ConfigDict(extra="forbid")
     message_text: str = Field(max_length=8000)
     allowed_tools: list[str] = Field(min_length=1, max_length=36)
     reference_date: date
+    role: str | None = Field(default=None, max_length=32)
+    quoted_message: str | None = Field(default=None, max_length=1500)
+    recent_messages: list[str] = Field(default_factory=list, max_length=10)
+    is_bot_mentioned: bool = False
+    has_pending_review_case: bool = False
+    phobert_candidates: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
 
 
 class AssistantEntities(BaseModel):

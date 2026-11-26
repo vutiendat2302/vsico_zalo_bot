@@ -79,7 +79,7 @@ flowchart LR
 | `POST /api/v1/extract` | Phân loại ý định tin nhắn nhà xe, phân đoạn đa xe và bóc tách thực thể kèm điểm tự tin (`confidence`) và bằng chứng (`evidence`). |
 | `POST /api/v1/ocr` | Bóc tách văn bản và thực thể container/seal từ ảnh chụp lệnh giao nhận (EIR) hoặc phiếu cân. |
 | `POST /api/v1/match-warehouse` | Đối chiếu địa chỉ kho tự do với danh sách kho ứng viên theo thác nước `habit` -> `fuzzy (RapidFuzz)` -> `llm`. |
-| `POST /api/v1/assistant-intent` | Hỗ trợ `backend/src/assistant/intent_router.py` phân loại ý định và trích xuất tham số cho các câu hỏi ngôn ngữ tự nhiên phức tạp của Khách hàng, Nhà xe và ĐHVT. |
+| `POST /api/v1/assistant-intent` | Tầng 3 LLM phân loại ý định hiểu bối cảnh cho Trợ lý Khách hàng, Nhà xe và ĐHVT (nhận kèm `role`, `quoted_message`, `recent_messages`, `is_bot_mentioned`, `has_pending_review_case`, `phobert_candidates`; che PII SĐT trước khi gọi LLM; hỗ trợ trả về công cụ trong `allowed_tools` hoặc `IGNORE` / `BLOCK_WRITE` / `UNKNOWN`). |
 
 ---
 

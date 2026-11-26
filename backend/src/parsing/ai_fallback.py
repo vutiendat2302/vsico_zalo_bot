@@ -32,7 +32,7 @@ logger = get_logger(__name__)
 class AIFallbackExtractor:
     """Bộ bóc tách dự phòng bằng AI (Gemini / OpenAI / Ollama) với cơ chế che SĐT tự động."""
 
-    _PHONE_FINDER = re.compile(r"\b((?:\+?84|0)\d{2,3})(\d{4})(\d{2,3})\b")
+    _PHONE_FINDER = re.compile(r"(?<!\d)((?:\+?84|0)[35789]\d{1,2})(\d{4})(\d{2,3})(?!\d)")
 
     @classmethod
     def mask_phones_for_ai(cls, raw_text: str) -> tuple[str, dict[str, str]]:
@@ -116,11 +116,21 @@ class AIFallbackExtractor:
         if any(ln.has_conflicting_mapping or ln.check_digit_valid is False for ln in lines):
             return False
 
-        # Fast-Path Regex cho định dạng chuẩn F1, F2, F3
+        # Đọc quyết định đánh giá từ Tầng 2 Local NLP (nếu Tầng 2 thấy còn tín hiệu dư cho trường thiếu -> lên Tầng 3 LLM)
+        from src.parsing.local_nlp_extractor import evaluate_missing_field_signals
+
+        for ln in lines:
+            t2_decision = ln.field_evidences.get("tier2_nlp_decision")
+            if not t2_decision:
+                t2_decision, _ = evaluate_missing_field_signals(ln)
+            if t2_decision == "ESCALATE_TIER3_LLM":
+                return True
+
+        # Fast-Path Regex cho định dạng chuẩn F1, F2, F3 (khi Tầng 2 không phát hiện tín hiệu dư bị bỏ sót)
         if any(ln.source_format in ("F1", "F2", "F3") for ln in lines):
             return False
 
-        # Tin bổ sung / đổi xe: nếu Regex hoặc Local NLP đã tách được thực thể liên quan -> 0 gọi AI
+        # Tin bổ sung / đổi xe: nếu Regex hoặc Local NLP đã tách được thực thể liên quan và không còn tín hiệu dư -> 0 gọi AI
         if intent in (Intent.SUPPLEMENT, Intent.UPDATE_REQUEST):
             has_useful = any(
                 ln.container_no
@@ -148,10 +158,10 @@ class AIFallbackExtractor:
         for ln in lines:
             if ln.unresolved_fields:
                 return True
-            if ln.confidence < threshold:
-                return True
+            t2_dec = ln.field_evidences.get("tier2_nlp_decision")
             has_primary_entity = bool(
                 ln.truck_plate
+                or ln.trailer_plate
                 or ln.container_no
                 or ln.driver_phone
                 or ln.booking_no
@@ -159,9 +169,13 @@ class AIFallbackExtractor:
                 or ln.eta_time
                 or (ln.driver_name and order_code_re.search(ln.line_text or ""))
             )
+            if not ln.eta_time and time_hint_re.search(ln.line_text or ""):
+                return True
+            if t2_dec == "STOP_NO_SIGNAL" and (has_primary_entity or ln.driver_name):
+                continue
             if not has_primary_entity:
                 return True
-            if not ln.eta_time and time_hint_re.search(ln.line_text or ""):
+            if ln.confidence < threshold:
                 return True
 
         return False

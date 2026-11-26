@@ -245,6 +245,41 @@
               "path": ["api", "sandbox", "nlp-analyze"]
             }
           }
+        },
+        {
+          "name": "NLP Analyze - Preview Output gui ve TMS (tms_dispatch_payloads)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Xe 15H-012.34 mooc 15R-181.29 cont MSKU9070323 tai xe Le Van Minh 0912345678\",\n  \"include_plan_resolution\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sandbox/nlp-analyze",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "sandbox", "nlp-analyze"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Co mang tms_dispatch_payloads de kiem tra output TMS', () => {",
+                  "  pm.expect(res.tms_dispatch_payloads).to.be.an('array').and.not.empty;",
+                  "  pm.expect(res.tms_dispatch_payloads[0]).to.have.property('endpoint');",
+                  "  pm.expect(res.tms_dispatch_payloads[0]).to.have.property('ready');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -274,7 +309,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));"
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Tra ve tms_dispatch_payloads trong Sandbox Simulate', () => {",
+                  "  pm.expect(res.tms_dispatch_payloads).to.be.an('array').and.not.empty;",
+                  "  pm.expect(res.tms_dispatch_payloads[0]).to.have.property('endpoint');",
+                  "});"
                 ]
               }
             }

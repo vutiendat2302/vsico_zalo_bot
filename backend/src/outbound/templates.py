@@ -276,6 +276,8 @@ class OutboundTemplateBuilder:
         # 5. Số container
         if not line.container_no:
             missing.append("Số container")
+        elif "INVALID_CONTAINER_FORMAT" in (line.warnings or []):
+            missing.append("Số container (chưa đúng định dạng 4 chữ + 7 số)")
         elif line.check_digit_valid is False or any(w.startswith("ISO6346_CHECK_DIGIT_MISMATCH") for w in line.warnings):
             missing.append("Số container (sai số kiểm tra cuối)")
 
@@ -507,17 +509,26 @@ class OutboundTemplateBuilder:
             if has_phone_invalid:
                 categories.append("INVALID_PHONE")
 
-            # 5. Phân loại lỗi thiếu thông tin tài xế (tên hoặc SĐT trống)
-            has_driver_missing = (
+            # 5. Tách riêng hoàn toàn lỗi thiếu tên tài xế và thiếu SĐT tài xế (thiếu gì nhắc đấy)
+            has_driver_name_missing = (
                 not line.driver_name
-                or (not line.driver_phone and not has_phone_invalid)
                 or "Tên lái xe" in missing
-                or ("SĐT lái xe" in missing and not has_phone_invalid)
+                or "Tên tài xế" in missing
                 or "MISSING_DRIVER_NAME" in warnings
-                or ("MISSING_DRIVER_PHONE" in warnings and not has_phone_invalid)
             )
-            if has_driver_missing:
-                categories.append("MISSING_DRIVER")
+            has_driver_phone_missing = (
+                not has_phone_invalid
+                and (
+                    not line.driver_phone
+                    or "SĐT lái xe" in missing
+                    or "SĐT tài xế" in missing
+                    or "MISSING_DRIVER_PHONE" in warnings
+                )
+            )
+            if has_driver_name_missing:
+                categories.append("MISSING_DRIVER_NAME")
+            if has_driver_phone_missing:
+                categories.append("MISSING_DRIVER_PHONE")
 
             if categories:
                 per_line_categories.append((line, categories))
@@ -532,7 +543,8 @@ class OutboundTemplateBuilder:
             "MISSING_TRUCK_PLATE": ("📝", "Anh/chị vui lòng bổ sung biển số xe đầu kéo giúp hệ thống nhé."),
             "INVALID_TRAILER_PLATE": ("🔎", "Biển số rơ-moóc chưa hợp lệ. Anh/chị vui lòng kiểm tra lại giúp hệ thống nhé."),
             "MISSING_TRAILER_PLATE": ("📝", "Anh/chị vui lòng bổ sung biển số rơ-moóc giúp hệ thống nhé."),
-            "MISSING_DRIVER": ("📝", "Anh/chị bổ sung giúp hệ thống đầy đủ tên và SĐT tài xế nhé."),
+            "MISSING_DRIVER_NAME": ("📝", "Anh/chị vui lòng bổ sung tên tài xế giúp hệ thống nhé."),
+            "MISSING_DRIVER_PHONE": ("📝", "Anh/chị vui lòng bổ sung SĐT tài xế giúp hệ thống nhé."),
             "INVALID_PHONE": ("🔎", "Số điện thoại tài xế có thể chưa chính xác. Anh/chị vui lòng kiểm tra lại nhé."),
         }
         field_labels: dict[str, str] = {
@@ -542,34 +554,79 @@ class OutboundTemplateBuilder:
             "MISSING_TRUCK_PLATE": "biển số xe đầu kéo",
             "INVALID_TRAILER_PLATE": "biển số rơ-moóc",
             "MISSING_TRAILER_PLATE": "biển số rơ-moóc",
-            "MISSING_DRIVER": "thông tin tài xế",
-            "INVALID_PHONE": "số điện thoại tài xế",
+            "MISSING_DRIVER_NAME": "tên tài xế",
+            "MISSING_DRIVER_PHONE": "SĐT tài xế",
+            "INVALID_PHONE": "SĐT tài xế",
         }
+
+        def _cap_first(text_val: str) -> str:
+            """Viết hoa chữ cái đầu mà vẫn giữ nguyên các cụm viết tắt như SĐT."""
+            return (text_val[0].upper() + text_val[1:]) if text_val else text_val
 
         if len(per_line_categories) == 1:
             line, cats = per_line_categories[0]
             if len(cats) == 1:
+                if cats[0] == "INVALID_CONTAINER" and line.container_no:
+                    if "INVALID_CONTAINER_FORMAT" in (line.warnings or []):
+                        return (
+                            f"[VSICO] - 🔎 Số container {line.container_no} chưa đúng định dạng "
+                            "(cần đủ 4 chữ cái và 7 chữ số). Anh/chị vui lòng kiểm tra lại nhé."
+                        )
+                    return (
+                        f"[VSICO] - 🔎 Số container có thể chưa chính xác ({line.container_no}). "
+                        "Anh/chị vui lòng kiểm tra lại nhé."
+                    )
                 icon, msg = single_templates[cats[0]]
                 return f"[VSICO] - {icon} {msg}"
-            labels = list(dict.fromkeys(field_labels[c] for c in cats))
+            if set(cats) == {"MISSING_DRIVER_NAME", "MISSING_DRIVER_PHONE"}:
+                return "[VSICO] - 📝 Anh/chị vui lòng bổ sung tên và SĐT tài xế giúp hệ thống nhé."
+
             is_only_missing = all(c.startswith("MISSING_") for c in cats)
+            is_only_invalid = all(c.startswith("INVALID_") for c in cats)
             icon = "📝" if is_only_missing else "🔎"
             title = "Cần bổ sung thông tin chuyến xe" if is_only_missing else "Cần kiểm tra lại thông tin chuyến xe"
             ref = line.container_no or line.truck_plate
             ref_line = f"\n\n📦 Chuyến xe: {ref}" if ref else ""
-            bullet_lines = "\n".join(f"• {lbl.capitalize()}." for lbl in labels)
+
+            if is_only_missing:
+                labels = list(dict.fromkeys(field_labels[c] for c in cats))
+                intro_line = "Hệ thống cần anh/chị bổ sung:"
+                bullet_lines = "\n".join(f"• {_cap_first(lbl)}." for lbl in labels)
+                closing = "Anh/chị bổ sung giúp hệ thống nhé."
+            elif is_only_invalid:
+                labels = list(dict.fromkeys(field_labels[c] for c in cats))
+                intro_line = "Hệ thống cần anh/chị kiểm tra lại:"
+                bullet_lines = "\n".join(f"• {_cap_first(lbl)}." for lbl in labels)
+                closing = "Anh/chị kiểm tra và gửi lại giúp hệ thống nhé."
+            else:
+                action_items: list[str] = []
+                for c in cats:
+                    prefix = "Kiểm tra lại" if c.startswith("INVALID_") else "Bổ sung"
+                    item_str = f"• {prefix} {field_labels[c]}."
+                    if item_str not in action_items:
+                        action_items.append(item_str)
+                intro_line = "Hệ thống cần anh/chị rà soát và bổ sung:"
+                bullet_lines = "\n".join(action_items)
+                closing = "Anh/chị kiểm tra và gửi bổ sung giúp hệ thống nhé."
+
             return (
                 f"[VSICO] - {icon} {title}{ref_line}\n\n"
-                f"Hệ thống cần anh/chị rà soát hoặc bổ sung:\n{bullet_lines}\n\n"
-                "Anh/chị kiểm tra và gửi lại giúp hệ thống nhé."
+                f"{intro_line}\n{bullet_lines}\n\n"
+                f"{closing}"
             )
 
         # Nhiều chuyến xe cùng có lỗi trong 1 tin nhắn -> gom gọn thành 1 thông báo duy nhất
         detail_lines: list[str] = []
         for idx, (line, cats) in enumerate(per_line_categories, start=1):
-            labels = list(dict.fromkeys(field_labels[c] for c in cats))
             ref = line.container_no or line.truck_plate or f"chuyến thứ {line.line_no}"
-            detail_lines.append(f"{idx}. 📦 {ref}: cần kiểm tra {', '.join(labels)}.")
+            inv_labels = list(dict.fromkeys(field_labels[c] for c in cats if c.startswith("INVALID_")))
+            mis_labels = list(dict.fromkeys(field_labels[c] for c in cats if c.startswith("MISSING_")))
+            parts: list[str] = []
+            if inv_labels:
+                parts.append(f"kiểm tra {', '.join(inv_labels)}")
+            if mis_labels:
+                parts.append(f"bổ sung {', '.join(mis_labels)}")
+            detail_lines.append(f"{idx}. 📦 {ref}: cần {' và '.join(parts)}.")
         return (
             f"[VSICO] - 🔎 Có {len(per_line_categories)} chuyến xe cần bổ sung hoặc kiểm tra lại\n\n"
             + "\n".join(detail_lines)

@@ -64,8 +64,9 @@ class ScopeContext(BaseModel):
 
 
 class AssistantReply(BaseModel):
-    """Kết quả công cụ không chứa ORM, kèm trạng thái để lưu audit."""
+    """Kết quả công cụ không chứa ORM, kèm trạng thái và các phần tin nhắn nối tiếp (nếu dài)."""
 
     text: str
+    extra_texts: list[str] = Field(default_factory=list)
     needs_review: bool = False
     plan_ids: list[str] = Field(default_factory=list)

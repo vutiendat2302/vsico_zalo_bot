@@ -364,18 +364,27 @@ def test_dhvt_conversations_are_read_only(db_session, assistant_env, text, expec
     assert all(p.version == 1 for p in assistant_env[1])
 
 
-def test_dhvt_wrong_role_or_group_is_denied(db_session, assistant_env):
-    """Có zalo_user_id nhưng sai role hoặc sai nhóm vẫn không được tra cứu."""
+def test_dhvt_group_membership_grants_full_access_and_inactive_group_denied(db_session, assistant_env):
+    """Mọi thành viên trong nhóm ĐHVT đang hoạt động đều có đầy đủ chức năng ĐHVT; nhóm bị tắt vẫn bị từ chối."""
     group, user = dhvt_identity(db_session)
+    group.is_test = False
     user.role = "CUSTOMER"
     db_session.flush()
-    _, reply = send(db_session, group, "LO8200 hiện thế nào?")
-    assert "chưa được gắn" in reply and "29C-440.22" not in reply
-    user.role = "DHVT"
-    user.zalo_info_id = assistant_env[0][0][0].id
+    # Thành viên trong nhóm ĐHVT kể cả khi tài khoản Web chưa gắn role DHVT/Admin hoặc chưa khai báo vẫn tra cứu được
+    _, reply_member = send(db_session, group, "LO8200 hiện thế nào?")
+    assert "29C-440.22" in reply_member
+    _, reply_unlinked = send(db_session, group, "LO8200 hiện thế nào?", sender="dhvt_member_not_in_users")
+    assert "29C-440.22" in reply_unlinked
+    # Thao tác duyệt trực tiếp từ thành viên nhóm ĐHVT chưa gắn users.zalo_user_id không còn báo lỗi chưa gắn tài khoản
+    _, reply_approve_cmd = send(db_session, group, "Duyệt ca #1", sender="dhvt_member_not_in_users")
+    assert "chưa được gắn" not in reply_approve_cmd.lower()
+    assert "Chưa xác định được ca" in reply_approve_cmd
+
+    # Nhóm ĐHVT bị vô hiệu hóa phải bị chặn
+    group.is_active = False
     db_session.flush()
-    _, reply = send(db_session, group, "LO8200 hiện thế nào?")
-    assert "chưa được gắn" in reply
+    _, reply_inactive = send(db_session, group, "LO8200 hiện thế nào?")
+    assert "chưa được cấu hình quyền" in reply_inactive.lower()
 
 
 def test_carrier_fallback_to_group_id_and_dhvt_unlinked_sender(db_session, assistant_env):
@@ -438,7 +447,10 @@ def test_customer_query_multi_identifiers_across_dates(db_session, assistant_env
         )
         long_plans.append(p)
     capped = format_plans(long_plans, "Kế hoạch tra cứu:", detail=True)
-    assert len(capped.text) <= 1900 and "Còn kết quả khác" in capped.text
+    assert len(capped.text) <= 1900 and capped.extra_texts
+    assert all(len(part) <= 1900 for part in capped.extra_texts)
+    full_capped = "\n".join([capped.text, *capped.extra_texts])
+    assert "LO9000" in full_capped and "LO9019" in full_capped
 
 
 def test_sent_or_queued_trip_creates_review_after_confirmation(db_session, assistant_env):
@@ -997,3 +1009,106 @@ def test_carrier_missing_container_warning_is_dispatched_to_zalo(db_session, mon
     assert "Giờ hiển thị là giờ dự kiến" not in cust_reply
     assert "Nhà xe báo" not in cust_reply
     assert "định tuyến SENT" not in cust_reply
+
+
+def test_dhvt_3tier_nlp_context_routing_ignores_internal_chat_and_respects_quote_actions(
+    db_session, assistant_env, monkeypatch
+):
+    """Kiểm chứng định tuyến 3 tầng NLP ĐHVT: chat nội bộ im lặng, chặn lệnh xóa, nhận đúng lệnh hủy có chữ 'thông tin' và truyền bối cảnh lên Tầng 3 LLM."""
+    from src.infrastructure.ai_service_client import AIServiceClient
+
+    dhvt_group, dhvt_user = dhvt_identity(db_session)
+    car_group = assistant_env[0][0][0]
+    plan = assistant_env[1][0]
+
+    # 1. Trao đổi nội bộ trong nhóm ĐHVT không @mention/quote/'?' -> PhoBERT chấm INTERNAL_CHAT_IGNORE, bot IM LẶNG (0 outbound, 0 gọi LLM)
+    llm_calls: list[dict] = []
+
+    def _spy_llm(message_text, allowed_tools, reference_date, **kwargs):
+        llm_calls.append({"text": message_text, **kwargs})
+        return None
+
+    monkeypatch.setattr(AIServiceClient, "assistant_intent", _spy_llm)
+
+    for casual_text in (
+        "cont này có thông tin rồi",
+        "có thông tin rồi",
+        "thông tin",
+        "xe này chạy rồi em ơi",
+    ):
+        before_out_cnt = db_session.query(OutboundMessage).count()
+        msg = ZaloMessage(
+            id=snowflake.generate(),
+            zalo_message_id=f"dhvt_cas_{uuid4().hex[:8]}",
+            group_id=dhvt_group.zalo_group_id,
+            sender_id=dhvt_user.zalo_user_id,
+            sender_name=dhvt_user.full_name,
+            message_text=casual_text,
+            raw_payload={},
+            processing_status="QUEUED",
+            created_at=REFERENCE,
+            zalo_sent_at=REFERENCE,
+        )
+        db_session.add(msg)
+        db_session.flush()
+        assert handle_assistant(db_session, msg, dhvt_group) is True
+        after_out_cnt = db_session.query(OutboundMessage).count()
+        assert after_out_cnt == before_out_cnt, f"Bot không được spam phản hồi cho chat nội bộ: {casual_text!r}"
+
+    # 2. Lệnh xóa hàng loạt bảng kế hoạch -> BLOCK_WRITE (tuyệt đối không xuất bảng kế hoạch hôm nay)
+    _, reply_del = send(db_session, dhvt_group, "xóa toàn bộ bảng kế hoạch hôm nay")
+    assert "không hỗ trợ thao tác xóa" in reply_del.lower()
+    assert "KẾ HOẠCH VẬN CHUYỂN" not in reply_del
+
+    # 3. Quote đúng tin báo duyệt PENDING và nhắn '[@bot] hủy cont này có thông tin rồi' -> dhvt_direct_review_action từ chối đúng ca
+    src_msg = ZaloMessage(
+        id=snowflake.generate(),
+        zalo_message_id=f"src_car_{uuid4().hex[:8]}",
+        group_id=car_group.zalo_group_id,
+        sender_id="car_sender",
+        sender_name="Nhà xe Test",
+        message_text="Xe 29C-440.22",
+        raw_payload={},
+        processing_status="NEEDS_REVIEW",
+        created_at=REFERENCE,
+        zalo_sent_at=REFERENCE,
+    )
+    db_session.add(src_msg)
+    db_session.flush()
+
+    alert_mid = f"dhvt_alert_{uuid4().hex[:8]}"
+    rc_pending = ReviewCase(
+        id=snowflake.generate(),
+        message_id=src_msg.id,
+        case_type="group_manual_review",
+        reason="Chờ ĐHVT duyệt gửi khách",
+        details={
+            "dhvt_zalo_msg_id": alert_mid,
+            "order_code": plan.order_code,
+            "selected_plan_id": str(plan.id),
+            "source_group_id": car_group.zalo_group_id,
+        },
+        status="PENDING",
+    )
+    db_session.add(rc_pending)
+    db_session.flush()
+
+    _, reply_cancel = send(
+        db_session,
+        dhvt_group,
+        "[@2208036998371849749] hủy cont này có thông tin rồi",
+        quote=alert_mid,
+    )
+    db_session.refresh(rc_pending)
+    assert rc_pending.status == "REJECTED"
+    assert "Đã từ chối / hủy yêu cầu" in reply_cancel
+    assert "cont này có thông tin rồi" in reply_cancel
+    assert "KẾ HOẠCH VẬN CHUYỂN" not in reply_cancel
+
+    # 4. Câu mơ hồ có @mention bot -> đẩy lên Tầng 3 LLM kèm đủ bối cảnh (`role`, `is_bot_mentioned`, `recent_messages`, `phobert_candidates`)
+    llm_calls.clear()
+    _, _ = send(db_session, dhvt_group, "[@2208036998371849749] kiểm tra giúp cái lúc nãy xem sao?")
+    assert len(llm_calls) == 1
+    assert llm_calls[0]["role"] == "DHVT"
+    assert llm_calls[0]["is_bot_mentioned"] is True
+    assert isinstance(llm_calls[0]["phobert_candidates"], list) and len(llm_calls[0]["phobert_candidates"]) >= 1

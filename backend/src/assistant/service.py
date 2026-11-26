@@ -12,13 +12,15 @@ from src.infrastructure.models import (
     ActivityLog,
     ExtractionRun,
     MessageDraft,
+    OutboundMessage,
+    ReviewCase,
     TransportPlan,
     ZaloGroup,
     ZaloMessage,
 )
 from src.infrastructure.snowflake import snowflake
 
-from .intent_router import local_date, normalize, route_local
+from .intent_router import ZALO_MENTION_RE, local_date, normalize, route_local
 from .queries import enrich_catalog
 from .schemas import AssistantReply, ScopeContext, ToolCall
 from .scope_resolver import is_default_carrier_group, resolve_scope
@@ -117,6 +119,93 @@ def _save_short_term_memory(
         )
 
 
+def _build_dhvt_conversation_context(
+    db: Session, group: ZaloGroup, message: ZaloMessage
+) -> dict[str, object]:
+    """Thu thập bối cảnh hội thoại thực của nhóm ĐHVT (tin quote, ca duyệt PENDING, @mention, 5 tin gần nhất)."""
+    raw_text = message.message_text or ""
+    is_bot_mentioned = bool(ZALO_MENTION_RE.search(raw_text))
+    has_question_mark = "?" in raw_text
+    quoted_text: str | None = None
+    has_quoted_pending_case = False
+
+    if message.quote_msg_id:
+        q_mid = str(message.quote_msg_id).strip()
+        q_out = db.scalar(
+            select(OutboundMessage).where(
+                (OutboundMessage.zalo_message_id == q_mid) | (OutboundMessage.review_zalo_msg_id == q_mid)
+            )
+        )
+        if q_out and q_out.content:
+            quoted_text = q_out.content
+        else:
+            q_msg = db.scalar(select(ZaloMessage).where(ZaloMessage.zalo_message_id == q_mid))
+            if q_msg and q_msg.message_text:
+                quoted_text = q_msg.message_text
+
+        open_cases = list(
+            db.scalars(
+                select(ReviewCase)
+                .where(ReviewCase.status.in_(["PENDING", "pending"]))
+                .order_by(ReviewCase.id.desc())
+                .limit(30)
+            ).all()
+        )
+        for rc in open_cases:
+            d = rc.details if isinstance(rc.details, dict) else {}
+            if str(d.get("dhvt_zalo_msg_id") or "") == q_mid:
+                has_quoted_pending_case = True
+                if not quoted_text:
+                    quoted_text = f"Ca duyệt chờ xử lý: {rc.reason or ''}"
+                break
+            if q_out and str(d.get("outbound_message_id") or "") == str(q_out.id):
+                has_quoted_pending_case = True
+                break
+
+    has_pending_review_case = has_quoted_pending_case
+    if not has_pending_review_case:
+        cutoff_rc = datetime.now() - timedelta(minutes=10)
+        has_pending_review_case = (
+            db.scalar(
+                select(ReviewCase.id)
+                .where(
+                    ReviewCase.status.in_(["PENDING", "pending"]),
+                    ReviewCase.created_at >= cutoff_rc,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    cutoff_msg = datetime.now() - timedelta(minutes=5)
+    recent_rows = list(
+        db.scalars(
+            select(ZaloMessage)
+            .where(
+                ZaloMessage.group_id == group.zalo_group_id,
+                ZaloMessage.id < message.id,
+                ZaloMessage.created_at >= cutoff_msg,
+            )
+            .order_by(ZaloMessage.id.desc())
+            .limit(5)
+        ).all()
+    )
+    recent_messages = [
+        f"{(r.sender_name or 'ĐHVT')}: {(r.message_text or '').strip()}"
+        for r in reversed(recent_rows)
+        if (r.message_text or "").strip()
+    ]
+    return {
+        "is_bot_mentioned": is_bot_mentioned,
+        "has_question_mark": has_question_mark,
+        "is_addressed_to_bot": bool(is_bot_mentioned or message.quote_msg_id or has_question_mark),
+        "quoted_text": quoted_text,
+        "has_quoted_pending_case": has_quoted_pending_case,
+        "has_pending_review_case": has_pending_review_case,
+        "recent_messages": recent_messages,
+    }
+
+
 def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> bool:
     """Trả False chỉ khi cần chuyển tin báo xe sang pipeline bóc tách."""
     # Import tại biên để tránh vòng phụ thuộc với các hàm outbox tương thích cũ.
@@ -142,10 +231,27 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
     )
     if role not in ("CARRIER", "CUSTOMER", "DHVT"):
         return False
+    dhvt_ctx: dict[str, object] = (
+        _build_dhvt_conversation_context(db, group, message)
+        if role == "DHVT"
+        else {
+            "is_bot_mentioned": bool(ZALO_MENTION_RE.search(message.message_text or "")),
+            "has_question_mark": "?" in (message.message_text or ""),
+            "is_addressed_to_bot": True,
+            "quoted_text": None,
+            "has_quoted_pending_case": False,
+            "has_pending_review_case": False,
+            "recent_messages": [],
+        }
+    )
     call = None
     try:
         initial = route_local(
-            message.message_text, role, message.zalo_sent_at or message.created_at
+            message.message_text,
+            role,
+            message.zalo_sent_at or message.created_at,
+            has_quoted_pending_case=bool(dhvt_ctx["has_quoted_pending_case"]),
+            is_bot_mentioned=bool(dhvt_ctx["is_bot_mentioned"]),
         )
         if role == "CARRIER" and initial.intent == "REPORT_DISPATCH":
             from .tools_carrier import classify_partial_carrier_dispatch
@@ -196,6 +302,7 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
                 )
                 if not is_system_agg:
                     call.intent = "dhvt_get_province_plans"
+                    call.confidence = max(call.confidence, 0.9)
             # Nếu định tuyến nhầm vào `dhvt_get_province_plans` nhưng hoàn toàn không khớp tỉnh nào và có cue thống kê -> quay lại overview
             elif (
                 scope.role == "DHVT"
@@ -208,19 +315,49 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
                     r"\b(tinh|tp|thanh pho)\b", norm_q
                 ):
                     call.intent = "dhvt_get_daily_overview"
+                    call.confidence = max(call.confidence, 0.9)
         if call.intent == "UNKNOWN":
-            proposed = AIServiceClient.assistant_intent(
-                message.message_text,
-                allowed_tools(scope),
-                local_date(scope.reference_time).isoformat(),
-            )
+            phobert_candidates: list[dict[str, object]] = []
+            if scope.role == "DHVT":
+                from src.parsing.local_nlp_extractor import PhoBertLocalNlpEngine
+
+                pb_res = PhoBertLocalNlpEngine.get_instance().classify_dhvt_intent(
+                    message.message_text or "",
+                    has_quoted_pending_case=bool(dhvt_ctx["has_quoted_pending_case"]),
+                    is_bot_mentioned=bool(dhvt_ctx["is_bot_mentioned"]),
+                    has_question_mark=bool(dhvt_ctx["has_question_mark"]),
+                )
+                phobert_candidates = pb_res.top_candidates
+                # Trao đổi nội bộ không gọi bot (không @mention, không quote, không '?') và PhoBERT nghiêng về chat nội bộ -> im lặng
+                if not dhvt_ctx["is_addressed_to_bot"] and pb_res.intent == "INTERNAL_CHAT_IGNORE":
+                    message.processing_status = "PROCESSED"
+                    db.commit()
+                    return True
+                proposed = AIServiceClient.assistant_intent(
+                    message.message_text,
+                    allowed_tools(scope),
+                    local_date(scope.reference_time).isoformat(),
+                    role=scope.role,
+                    quoted_message=str(dhvt_ctx["quoted_text"]) if dhvt_ctx["quoted_text"] else None,
+                    recent_messages=list(dhvt_ctx["recent_messages"]) if isinstance(dhvt_ctx["recent_messages"], list) else None,
+                    is_bot_mentioned=bool(dhvt_ctx["is_bot_mentioned"]),
+                    has_pending_review_case=bool(dhvt_ctx["has_pending_review_case"]),
+                    phobert_candidates=phobert_candidates,
+                )
+            else:
+                proposed = AIServiceClient.assistant_intent(
+                    message.message_text,
+                    allowed_tools(scope),
+                    local_date(scope.reference_time).isoformat(),
+                )
             if proposed:
                 try:
                     parsed = ToolCall.model_validate(proposed["call"])
-                    if parsed.intent in allowed_tools(scope):
+                    valid_llm_intents = set(allowed_tools(scope)) | {"IGNORE", "BLOCK_WRITE"}
+                    if parsed.intent in valid_llm_intents:
                         call = parsed
                         call.route_source = "llm"
-                        if call.entities.plan_date is None:
+                        if call.intent not in ("IGNORE", "BLOCK_WRITE") and call.entities.plan_date is None:
                             call.entities.plan_date = route_local(
                                 message.message_text, scope.role, scope.reference_time
                             ).entities.plan_date
@@ -231,8 +368,8 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
                         id=snowflake.generate(),
                         message_id=message.id,
                         model_name=proposed.get("model_name") or "assistant-unknown",
-                        prompt_version="assistant-intent-v1",
-                        input_data={"purpose": "assistant_intent"},
+                        prompt_version=str(proposed.get("prompt_version") or "assistant-intent-v2"),
+                        input_data={"purpose": "assistant_intent", "phobert_candidates": phobert_candidates},
                         output_data={
                             "intent": call.intent,
                             "extractor_type": "llm",
@@ -241,12 +378,25 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
                         status="SUCCESS" if call.intent != "UNKNOWN" else "FAILED",
                     )
                 )
+        if call.intent == "IGNORE" or (
+            scope.role == "DHVT" and call.intent == "UNKNOWN" and not dhvt_ctx["is_addressed_to_bot"]
+        ):
+            message.processing_status = "PROCESSED"
+            db.commit()
+            return True
         if call.intent == "BLOCK_WRITE":
-            suffix = f"/reviews/{call.entities.case_id}" if call.entities.case_id else "/reviews"
-            reply = AssistantReply(
-                text="Hệ thống không hỗ trợ thao tác duyệt, sửa, hủy hoặc cho gửi trực tiếp qua Zalo. "
-                f"Vui lòng thao tác trên Web: {settings.FRONTEND_BASE_URL.rstrip('/')}{suffix}"
-            )
+            norm_blk = normalize(message.message_text or "")
+            if re.search(r"\b(xoa|delete|clear|reset|drop)\b", norm_blk):
+                reply = AssistantReply(
+                    text="Hệ thống không hỗ trợ thao tác xóa hoặc sửa hàng loạt dữ liệu kế hoạch qua Zalo. "
+                    f"Vui lòng thao tác trên Web quản lý: {settings.FRONTEND_BASE_URL.rstrip('/')}/plans"
+                )
+            else:
+                suffix = f"/reviews/{call.entities.case_id}" if call.entities.case_id else "/reviews"
+                reply = AssistantReply(
+                    text="Hệ thống không hỗ trợ thao tác duyệt, sửa, hủy hoặc cho gửi trực tiếp qua Zalo. "
+                    f"Vui lòng thao tác trên Web: {settings.FRONTEND_BASE_URL.rstrip('/')}{suffix}"
+                )
         elif call.intent == "UNSUPPORTED":
             reply = AssistantReply(
                 text="Phase 1 chưa có nguồn GPS, trạng thái vào bãi/đến kho hoặc POD. "
@@ -312,6 +462,15 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
     outbound = _send_or_queue_group_reply(
         db, group, message, reply.text[:1950], order_type="ANSWER", dispatch=False
     )
+    extra_outbound_ids: list[int] = []
+    for extra_part in reply.extra_texts:
+        clean_part = (extra_part or "").strip()
+        if not clean_part:
+            continue
+        extra_ob = _send_or_queue_group_reply(
+            db, group, message, clean_part[:1950], order_type="ANSWER", dispatch=False
+        )
+        extra_outbound_ids.append(extra_ob.id)
     # Nháp lưu khóa outbox để resolve quote cả khi worker gửi sau transaction này.
     for draft in db.scalars(
         select(MessageDraft).where(
@@ -336,6 +495,7 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
                 "plan_ids": reply.plan_ids,
                 "needs_review": reply.needs_review,
                 "outbound_id": str(outbound.id),
+                "extra_outbound_ids": [str(eid) for eid in extra_outbound_ids],
             },
         )
     )
@@ -366,5 +526,5 @@ def handle_assistant(db: Session, message: ZaloMessage, group: ZaloGroup) -> boo
             for c in db.scalars(select(ReviewCase).where(ReviewCase.message_id == message.id)).all()
             if (c.details or {}).get("alert_outbound_id")
         ]
-        drain_outbox(lambda: nullcontext(db), [outbound.id, *alerts])
+        drain_outbox(lambda: nullcontext(db), [outbound.id, *extra_outbound_ids, *alerts])
     return True

@@ -139,8 +139,15 @@ def parse_entities(text: str, reference: datetime) -> Entities:
     return e
 
 
-def route_local(text: str, role: Role, reference: datetime) -> ToolCall:
-    """Ưu tiên chặn ghi, nhận diện câu hỏi rồi mới chuyển báo xe về pipeline."""
+def route_local(
+    text: str,
+    role: Role,
+    reference: datetime,
+    *,
+    has_quoted_pending_case: bool = False,
+    is_bot_mentioned: bool = False,
+) -> ToolCall:
+    """Ưu tiên chặn ghi, nhận diện cấu trúc tường minh và dùng PhoBERT ngữ nghĩa (ĐHVT) trước khi gọi LLM."""
     n = normalize(text)
     try:
         entities = parse_entities(text, reference)
@@ -211,92 +218,90 @@ def route_local(text: str, role: Role, reference: datetime) -> ToolCall:
         )
     )
     if role == "DHVT":
+        # Tầng 1: Chặn an toàn tuyệt đối các lệnh xóa/reset dữ liệu và chỉ giữ tín hiệu cấu trúc 100% tường minh
+        if re.match(r"^(?:xoa|delete|clear|reset|drop)\b", n):
+            return result("BLOCK_WRITE")
         if ("neu " in n or "anh huong" in n) and (entities.order_code or entities.container_no):
             return result("dhvt_analyze_change_impact")
-        # Cho phép ĐHVT duyệt / sửa / hủy / từ chối trực tiếp trên nhóm Zalo ĐHVT
-        if (
+        is_review_action_question = bool(
+            "?" in text
+            or re.search(
+                r"\b(?:duyet chua|huy chua|sua chua|co duyet khong|co huy khong|tai sao|vi sao|bao nhieu|the nao|anh huong)\b",
+                n,
+            )
+        )
+        has_review_verb = bool(
             re.match(
                 r"^(?:duyet|ok|oki|oke|dong y|xac nhan|sua|chinh sua|huy|tu choi|khong duyet|cho gui)\b",
                 n,
             )
-            and not question
-        ):
-            return result("dhvt_direct_review_action")
+        )
+        if has_review_verb and not is_review_action_question:
+            is_explicit_review_target = bool(
+                has_quoted_pending_case
+                or is_bot_mentioned
+                or entities.case_id
+                or entities.order_code
+                or entities.container_no
+                or n in ("duyet", "ok", "oki", "oke", "dong y", "xac nhan", "tu choi", "khong duyet", "cho gui")
+                or re.match(r"^(?:duyet|tu choi|khong duyet|sua|chinh sua)\s+", n)
+            )
+            if is_explicit_review_target:
+                return result("dhvt_direct_review_action")
         if re.match(r"^(?:nhac|gui nhac|bao nhac)\b", n):
             return result("dhvt_remind_carrier")
         if re.match(r"^kt\s+", n) and (entities.order_code or entities.container_no or entities.plate_no):
             return result("dhvt_get_order_or_cont_detail")
-        rules = [
-            (("bot tu xu ly", "ty le", "hieu qua bot", "llm"), "dhvt_get_bot_performance"),
-            (("da doi nhung gi", "lich su", "bot da lam", "nhat ky"), "dhvt_get_audit_timeline"),
-            (("tai sao", "vi sao"), "dhvt_explain_review_case"),
-            (("trung chuyen", "trung xe", "trung lich", "trung gio"), "dhvt_detect_duplicate_vehicles"),
-            (
-                ("canh bao vo", "ha rong", "qua sl", "ben khac da xin", "soc"),
-                "dhvt_get_container_warnings",
-            ),
-            (("dong bo", "gui khach", "gui tin", "that bai", "loi tms"), "dhvt_get_delivery_and_sync_errors"),
-            (
-                ("chua khop", "bao sai", "lech chi", "lech seal", "loi du lieu"),
-                "dhvt_get_validation_failures",
-            ),
-            (("cho duyet", "ca cho", "viec gap", "xu ly gap", "can xu ly"), "dhvt_get_priority_digest"),
-            (("chua co xe", "thieu cont", "thieu xe", "chua bao du", "can gio"), "dhvt_get_unassigned_plans"),
-        ]
-        for phrases, tool in rules:
-            if any(p in n for p in phrases):
-                return result(tool)
-        if entities.case_id:
+        if any(p in n for p in ("da doi nhung gi", "lich su", "bot da lam", "nhat ky")):
+            return result("dhvt_get_audit_timeline")
+        if any(p in n for p in ("tai sao", "vi sao")) or entities.case_id:
             return result("dhvt_explain_review_case")
         if entities.order_code or entities.container_no:
             return result("dhvt_get_order_or_cont_detail")
         if entities.plate_no:
             return result("dhvt_get_vehicle_trips")
-        if "khach " in n or "nha xe " in n or "forwarder " in n:
-            return result("dhvt_get_entity_stats")
-        is_aggregate_by_province = bool(
-            entities.group_by_region
-            or re.search(r"\b(theo tinh|tung tinh|phan bo tinh|tat ca cac tinh|toan bo)\b", n)
-        )
-        has_specific_province_cue = bool(
-            not is_aggregate_by_province
-            and (
-                re.search(r"\b(?:tinh|tp|thanh pho)\s+[a-z]{2,}", n)
-                or (
-                    re.search(
-                        r"\b(chi tiet|danh sach|cac lenh|nhung lenh|cac chuyen|nhung chuyen|lenh o|lenh tai|chuyen o|chuyen tai|ke hoach tinh|ke hoach o)\b",
-                        n,
-                    )
-                    and not re.search(r"\b(thong ke|tong quan|tong hop|can doi)\b", n)
-                )
-            )
-        )
-        if has_specific_province_cue:
-            return result("dhvt_get_province_plans")
-        if (
-            entities.group_by_region
-            or entities.region is not None
-            or entities.order_type is not None
-            or any(
-                k in n
-                for k in (
-                    "chuyen",
-                    "ke hoach",
-                    "can doi",
-                    "cont",
-                    "hom nay",
-                    "mai",
-                    "lenh",
-                    "tong",
-                    "thong ke",
-                    "vung",
-                    "mien",
-                    "tinh",
-                )
-            )
-        ):
+        if entities.group_by_region:
             return result("dhvt_get_daily_overview")
-        return result("UNKNOWN")
+        if n in ("ca cho", "hang cho", "cho duyet"):
+            return result("dhvt_get_priority_digest")
+
+        # Tầng 2: PhoBERT Semantic Classifier (`vinai/phobert-base-v2`) kết hợp bối cảnh hội thoại
+        from src.parsing.local_nlp_extractor import PhoBertLocalNlpEngine
+
+        nlp_res = PhoBertLocalNlpEngine.get_instance().classify_dhvt_intent(
+            text,
+            has_quoted_pending_case=has_quoted_pending_case,
+            is_bot_mentioned=is_bot_mentioned,
+            has_question_mark="?" in text,
+        )
+        if nlp_res.is_confident:
+            if nlp_res.intent == "INTERNAL_CHAT_IGNORE":
+                return ToolCall(
+                    intent="IGNORE",
+                    confidence=0.95,
+                    route_source="local_nlp",
+                    entities=entities,
+                )
+            calibrated_conf = round(
+                min(0.99, 0.82 + 0.14 * nlp_res.confidence + 0.15 * nlp_res.margin), 3
+            )
+            return ToolCall(
+                intent=nlp_res.intent,
+                confidence=calibrated_conf,
+                route_source="local_nlp",
+                entities=entities,
+            )
+        if (
+            re.search(r"\b(?:nha xe|forwarder|khach hang)\s+\w+", n)
+            or (re.search(r"\bkhach\s+\w+", n) and "gui khach" not in n and "bao khach" not in n)
+        ):
+            return result("dhvt_get_entity_stats")
+        return ToolCall(
+            intent="UNKNOWN",
+            confidence=nlp_res.confidence,
+            route_source="local_nlp",
+            entities=entities,
+        )
     if (
         role == "CARRIER"
         and question

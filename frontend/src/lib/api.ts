@@ -746,7 +746,9 @@ export async function rejectMessageByDHVT(messageId: number, reason?: string, op
     method: "POST",
     credentials: "include",
     headers: getAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ reason: reason || "ĐHVT từ chối tin nhắn điều xe." }),
+    body: JSON.stringify({
+      reason: reason || "Yêu cầu chưa đáp ứng điều kiện xử lý tại thời điểm hiện tại.",
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

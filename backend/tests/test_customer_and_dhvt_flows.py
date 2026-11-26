@@ -638,20 +638,23 @@ def test_dhvt_zalo_lookup_command_rejection_web_claim_habit_and_overdue(
     assert rc_dup.id == rc.id
     assert rc_dup.details and rc_dup.details.get("occurrence_count", 0) >= 2
 
-    # 2. Người lạ không có trong bảng users hỏi trong nhóm ĐHVT -> bị chặn
-    m_stranger = _post_and_process(
+    # 2. Thành viên trong nhóm ĐHVT đang hoạt động chưa gắn users.zalo_user_id vẫn có đầy đủ chức năng tra cứu ĐHVT
+    m_member = _post_and_process(
         api_client,
         db_session,
         {
-            "msg_id": f"real_stranger_{uuid4().hex[:6]}",
+            "msg_id": f"real_member_{uuid4().hex[:6]}",
             "group_id": dhvt_grp.zalo_group_id,
-            "sender_id": "unknown_zalo_user",
+            "sender_id": "dhvt_group_member_unlinked",
+            "sender_name": "ĐHVT Ca Chiều",
             "message_text": cont,
             "is_test": False,
         },
     )
-    assert m_stranger.processing_status == MessageStatus.PROCESSED.value
-    assert db_session.scalar(select(ActivityLog).where(ActivityLog.action == "DHVT_UNREGISTERED_LOOKUP_BLOCKED")) is not None
+    assert m_member.processing_status == MessageStatus.PROCESSED.value
+    member_msgs = [str(c["message"]) for c in sent_calls if c["group_id"] == dhvt_grp.zalo_group_id]
+    assert any("0903123459" in m and cont in m for m in member_msgs)
+    assert not any("chưa được gắn với nhân viên ĐHVT" in m for m in member_msgs)
 
     # 3. Nhân viên ĐHVT thật tra cứu cont / biển số / ca chờ / kế hoạch -> xem được đầy đủ SĐT
     for q_txt in (cont, "15H-049.15", "ca chờ", "kế hoạch"):

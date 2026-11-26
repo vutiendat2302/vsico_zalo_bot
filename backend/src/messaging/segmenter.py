@@ -12,20 +12,16 @@ import json
 import re
 import unicodedata
 
-from src.domain.patterns import CONT_REGEX, PLATE_REGEX, TRAILER_PLATE_REGEX
+from src.domain.patterns import CONT_REGEX, PLATE_REGEX, TRAILER_PLATE_REGEX, deglue_transport_entities
 
 
 def normalize_segment_text(text: str) -> str:
-    """Chuẩn hóa Unicode NFC, đồng nhất xuống dòng và tách tiền tố viết dính liền biển số (VD: 'Xe15h00814' -> 'Xe 15h00814')."""
+    """Chuẩn hóa Unicode NFC, đồng nhất xuống dòng và tách các thực thể vận tải viết dính liền (biển số, moóc, cont, SĐT, nhãn tài xế)."""
     if not text:
         return ""
     cleaned = unicodedata.normalize("NFC", text)
     cleaned = cleaned.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
-    cleaned = re.sub(
-        r"(?i)\b(xe|bks|bsx|bs|bien|biển|so|số|mooc|rm)\s*([0-9]{2}[A-Za-z])",
-        r"\1 \2",
-        cleaned,
-    )
+    cleaned = deglue_transport_entities(cleaned)
     return cleaned.strip()
 
 

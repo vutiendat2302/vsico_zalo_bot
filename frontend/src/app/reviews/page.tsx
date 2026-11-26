@@ -114,8 +114,9 @@ function ReviewsPageContent() {
   const [approvePhone, setApprovePhone] = useState("");
   const [approveOutboundContent, setApproveOutboundContent] = useState("");
 
+  const DEFAULT_REJECT_REASON = "Yêu cầu chưa đáp ứng điều kiện xử lý tại thời điểm hiện tại.";
   const [rejectModalId, setRejectModalId] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState<string>("Dữ liệu không hợp lệ");
+  const [rejectReason, setRejectReason] = useState<string>("");
   const [rejecting, setRejecting] = useState(false);
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -287,7 +288,7 @@ function ReviewsPageContent() {
 
   const handleOpenRejectModal = (id: string) => {
     setRejectModalId(id);
-    setRejectReason("Dữ liệu không hợp lệ");
+    setRejectReason("");
   };
 
   const handleConfirmReject = async (e: React.FormEvent) => {
@@ -299,7 +300,7 @@ function ReviewsPageContent() {
       setError(null);
       await rejectReviewCase(
         rejectModalId,
-        rejectReason.trim() || "Dữ liệu không hợp lệ",
+        rejectReason.trim() || DEFAULT_REJECT_REASON,
         getOperatorName()
       );
       setRejectModalId(null);
@@ -1018,8 +1019,8 @@ function ReviewsPageContent() {
                 rows={3}
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="Nhập lý do từ chối (để trống sẽ dùng lý do chung mặc định)..."
                 className="w-full bg-white border border-slate-300 rounded-sm p-2.5 text-slate-900 focus:outline-none focus:border-purple-700"
-                required
               />
             </div>
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">

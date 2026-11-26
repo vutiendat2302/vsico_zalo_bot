@@ -17,10 +17,12 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from src.api.messages import parse_flexible_datetime
+from src.config.settings import settings
 from src.domain.enums import Intent, MessageStatus, ValidationStatus
 from src.domain.models import ExtractedContainerLine
 from src.domain.rules import clean_container, clean_phone, clean_plate
 from src.handlers.extraction_handler import ExtractionHandler
+from src.handlers.plan_sync_service import build_dispatch_assignment_payload
 from src.infrastructure.ai_service_client import AIServiceClient
 from src.infrastructure.database import get_db
 from src.infrastructure.models import Carrier, TransportPlan, Warehouse, WarehouseAlias, ZaloGroup
@@ -157,6 +159,60 @@ def _compute_diff_in_memory(
         if after_val and (before_val or "").strip() != after_val.strip():
             changes.append(f"{label}: {before_val or 'Trống'} -> {after_val}")
     return changes
+
+
+def _build_tms_dispatch_preview(
+    db: Session,
+    line: ExtractedContainerLine,
+    plan: TransportPlan | None,
+) -> dict[str, Any]:
+    """Dựng bản xem trước payload sẽ gửi về `be-tms` (`dispatch-assignment`) ở chế độ Dry-Run."""
+    changed_fields: dict[str, Any] = {}
+    if line.truck_plate:
+        changed_fields["planned_truck_plate"] = line.truck_plate
+    if line.trailer_plate:
+        changed_fields["planned_trailer_plate"] = line.trailer_plate
+    if line.driver_name:
+        changed_fields["driver_name"] = line.driver_name
+    if line.driver_phone:
+        changed_fields["driver_phone"] = line.driver_phone
+    if line.container_no:
+        changed_fields["container_no"] = line.container_no
+
+    endpoint = (settings.TMS_WRITE_ENDPOINT or "/api/integrations/zalo/dispatch-assignment").strip()
+    if plan is None:
+        return {
+            "line_no": line.line_no,
+            "plan_found": False,
+            "plan_id": None,
+            "order_code": None,
+            "order_type": None,
+            "endpoint": endpoint,
+            "ready": False,
+            "blocked_reason": "NO_MATCHED_PLAN",
+            "requested_fields": [],
+            "normalized_fields": changed_fields,
+            "payload": None,
+        }
+
+    tms_payload, req_fields, blocked_reason = build_dispatch_assignment_payload(
+        db,
+        plan,
+        changed_fields=changed_fields,
+        allow_container_override=False,
+    )
+    return {
+        "line_no": line.line_no,
+        "plan_found": True,
+        "plan_id": str(plan.id),
+        "order_code": plan.order_code,
+        "order_type": plan.order_type,
+        "endpoint": endpoint,
+        "ready": tms_payload is not None,
+        "blocked_reason": blocked_reason,
+        "requested_fields": req_fields,
+        "payload": tms_payload,
+    }
 
 
 def _find_target_base_job(
@@ -416,7 +472,10 @@ def simulate_message_pipeline(
                 "virtual_jobs_next": list(payload.virtual_jobs),
             }
 
-        # Tầng 2: Bóc tách Rule-based & Kiểm tra ISO 6346
+        # Tầng 1: Bóc tách Rule-based & Kiểm tra ISO 6346
+        from src.handlers.plan_sync_service import resolve_trailer_from_catalog
+        from src.parsing.local_nlp_extractor import enrich_local, evaluate_missing_field_signals
+
         rule_lines = ContainerValidator.validate_all(TripParser.parse_message(raw_text, reference_time=ref_time))
         validated_lines = list(rule_lines)
         resolved_intent = initial_intent
@@ -428,10 +487,30 @@ def simulate_message_pipeline(
         ):
             resolved_intent = Intent.SUPPLEMENT
 
-        used_model = "vsico-hybrid-rule-v2"
+        # Tầng 2 (Local NLP + PhoBERT + Danh mục TMS): Bắt buộc chạy trước khi xét Tầng 3 LLM hoặc báo thiếu
+        validated_lines = enrich_local(
+            db=db,
+            lines=validated_lines,
+            carrier_id=None,
+            raw_text=raw_text,
+            reference=ref_time,
+            quoted_text=quote_clean,
+            include_phobert=True,
+        )
+        for ln in validated_lines:
+            resolve_trailer_from_catalog(db, ln, None)
+        validated_lines = ContainerValidator.validate_all(validated_lines)
+        for ln in validated_lines:
+            evaluate_missing_field_signals(ln)
+
+        used_model = (
+            validated_lines[0].field_evidences.get("nlp_engine")
+            if validated_lines and validated_lines[0].field_evidences.get("nlp_engine")
+            else "vsico-hybrid-rule-v2"
+        )
         prompt_ver = "v2.0"
 
-        # Tầng 3: Kiểm tra ngưỡng gọi AI & Gọi `ai-service` (chỉ khi allow_ai_fallback=True)
+        # Tầng 3: Kiểm tra quyết định từ Tầng 2 & Gọi `ai-service` (chỉ khi allow_ai_fallback=True và có tín hiệu dư)
         has_any_rule_entity = any(
             ln.container_no or ln.truck_plate or ln.seal_no or ln.driver_phone or ln.driver_name or ln.eta_time
             for ln in validated_lines
@@ -467,7 +546,31 @@ def simulate_message_pipeline(
                 if ai_res.items and algo_should_ai:
                     converted = AIFallbackExtractor._convert_service_items(raw_text, ai_res, reference_time=ref_time)
                     if converted:
-                        validated_lines = ContainerValidator.validate_all(converted)
+                        if len(validated_lines) == 1 and len(converted) == 1:
+                            base_ln = validated_lines[0]
+                            ai_ln = converted[0]
+                            for attr in (
+                                "truck_plate",
+                                "trailer_plate",
+                                "driver_name",
+                                "driver_phone",
+                                "container_no",
+                                "container_size",
+                                "seal_no",
+                                "order_type",
+                                "customer_hint",
+                                "warehouse_hint",
+                                "eta_text",
+                                "eta_time",
+                                "estimated_at",
+                            ):
+                                if not getattr(base_ln, attr, None) and getattr(ai_ln, attr, None):
+                                    setattr(base_ln, attr, getattr(ai_ln, attr))
+                                    base_ln.field_evidences[attr] = f"tier3_ai:{ai_res.model_name}"
+                            validated_lines = ContainerValidator.validate_all([base_ln])
+                            evaluate_missing_field_signals(validated_lines[0])
+                        else:
+                            validated_lines = ContainerValidator.validate_all(converted)
                         used_model = ai_res.model_name
 
         # Tầng 4: Giải quyết Bối Cảnh Hội Thoại (Supplement / Update / Cancel / New) trên bộ nhớ tạm
@@ -612,6 +715,7 @@ def simulate_message_pipeline(
 
         # Tầng 5: Đối chiếu Kế hoạch & Danh mục Thật (Read-Only MySQL) + Map Kho
         plan_matches: list[dict[str, Any]] = []
+        tms_dispatch_payloads: list[dict[str, Any]] = []
         carrier_mismatch_detected = False
         any_unmatched_wh = False
         any_unmatched_cust = False
@@ -684,6 +788,7 @@ def simulate_message_pipeline(
                     "carrier_mismatch": mismatch,
                 }
             )
+            tms_dispatch_payloads.append(_build_tms_dispatch_preview(db, ln, matched_plan))
 
         # Lưu cập nhật danh sách ca ảo nếu đây là báo mới hoàn chỉnh/thiếu trường
         if (
@@ -800,6 +905,7 @@ def simulate_message_pipeline(
             "context_resolution": context_resolution,
             "records": records_out,
             "plan_matches": plan_matches,
+            "tms_dispatch_payloads": tms_dispatch_payloads,
             "preview_outputs": {
                 "bot_reply": bot_reply_preview,
                 "customer_notification": customer_notif_preview,
@@ -837,7 +943,12 @@ def analyze_nlp_pipeline(
     from src.handlers.plan_resolution_engine import PlanResolutionEngine
     from src.handlers.plan_sync_service import resolve_trailer_from_catalog
     from src.messaging.segmenter import MessageSegmenter, normalize_segment_text
-    from src.parsing.local_nlp_extractor import PhoBertLocalNlpEngine, enrich_local, message_dates
+    from src.parsing.local_nlp_extractor import (
+        PhoBertLocalNlpEngine,
+        enrich_local,
+        evaluate_missing_field_signals,
+        message_dates,
+    )
 
     t0 = time.perf_counter()
     raw_text = req.text.strip()
@@ -872,12 +983,14 @@ def analyze_nlp_pipeline(
         ln.carrier_id = req.carrier_id
         resolve_trailer_from_catalog(db, ln, req.carrier_id)
     enriched_lines = ContainerValidator.validate_all(enriched_lines)
+    tier2_decisions = [evaluate_missing_field_signals(ln) for ln in enriched_lines]
 
     # 3. Kiểm tra ngưỡng kích hoạt Tầng 3 LLM & đối chiếu kế hoạch RO/LO/Kết hợp
     would_trigger_llm = AIFallbackExtractor.should_trigger_ai(enriched_lines, intent=intent)
     carrier_warning = OutboundTemplateBuilder.build_carrier_warning_reply(enriched_lines)
 
     plan_resolutions: list[dict[str, Any]] = []
+    tms_dispatch_payloads: list[dict[str, Any]] = []
     if req.include_plan_resolution:
         dates = [req.plan_date] if req.plan_date else message_dates(raw_text, datetime.now())
         date_objs: list[date_cls] = []
@@ -896,6 +1009,7 @@ def analyze_nlp_pipeline(
             scoped_plans = list(db.scalars(stmt.limit(200)).all())
 
         ctx_probe = CarrierContext(numeric_carrier_id=req.carrier_id)
+        plan_by_id = {str(p.id): p for p in scoped_plans}
         for ln in enriched_lines:
             ro_p, lo_p, ro_has_info = CarrierFlowService.detect_combined_ro_lo_pair(db, ln, ctx_probe)
             res_obj = PlanResolutionEngine.resolve(ln, scoped_plans, req.carrier_id, dates, shadow=False)
@@ -910,6 +1024,19 @@ def analyze_nlp_pipeline(
                     "resolution": asdict(res_obj),
                 }
             )
+            target_plans: list[TransportPlan] = []
+            if ro_p and lo_p:
+                target_plans = [ro_p, lo_p]
+            else:
+                if res_obj.selected_plan_id and str(res_obj.selected_plan_id) in plan_by_id:
+                    target_plans.append(plan_by_id[str(res_obj.selected_plan_id)])
+                if res_obj.secondary_plan_id and str(res_obj.secondary_plan_id) in plan_by_id:
+                    target_plans.append(plan_by_id[str(res_obj.secondary_plan_id)])
+            if target_plans:
+                for tp in target_plans:
+                    tms_dispatch_payloads.append(_build_tms_dispatch_preview(db, ln, tp))
+            else:
+                tms_dispatch_payloads.append(_build_tms_dispatch_preview(db, ln, None))
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
     return {
@@ -934,6 +1061,8 @@ def analyze_nlp_pipeline(
             "order_type_hint": phobert_res.order_type_hint,
             "is_combined_trip": phobert_res.is_combined_trip,
             "spans": [asdict(s) for s in phobert_res.spans],
+            "decision": tier2_decisions[0][0] if tier2_decisions else "COMPLETE",
+            "missing_signals": tier2_decisions[0][1] if tier2_decisions else [],
         },
         "tier3_llm_trigger": would_trigger_llm,
         "records": [
@@ -950,4 +1079,5 @@ def analyze_nlp_pipeline(
         ],
         "carrier_warning_preview": carrier_warning,
         "plan_resolutions": plan_resolutions,
+        "tms_dispatch_payloads": tms_dispatch_payloads,
     }

@@ -763,8 +763,8 @@ def test_23_trailer_plate_includes_carrier_mooc_id_and_ro_mooc_no(db_session):
         "ro_mooc_no": "15R-999.99",
     }
 
-    # Khi SĐT khớp tài xế trong DB nhưng tên gửi kèm viết lệch ("Tịnh Văn Duân" vs "Trần Văn Hùng"),
-    # hoặc tên khớp nhưng SĐT lạ -> chỉ gửi driver_id, không gửi driver_name/driver_phone
+    # Khi SĐT khớp tài xế trong DB nhưng tên gửi kèm khác ("Tịnh Văn Duân" vs "Trần Văn Hùng"),
+    # hoặc tên khớp nhưng SĐT khác -> tuyệt đối KHÔNG trả driver_id cũ, phải gửi driver_id: None + thông tin đúng theo tin nhắn
     payload_phone_match, _, err_pm = build_dispatch_assignment_payload(
         db_session,
         env["lo_plan"],
@@ -773,7 +773,9 @@ def test_23_trailer_plate_includes_carrier_mooc_id_and_ro_mooc_no(db_session):
     assert err_pm is None
     assert payload_phone_match == {
         "order_code": env["lo_plan"].order_code,
-        "driver_id": env["drv_a"].tms_driver_id,
+        "driver_id": None,
+        "driver_phone": "0986123456",
+        "driver_name": "Tịnh Văn Duân",
     }
 
     payload_name_match, _, err_nm = build_dispatch_assignment_payload(
@@ -784,7 +786,9 @@ def test_23_trailer_plate_includes_carrier_mooc_id_and_ro_mooc_no(db_session):
     assert err_nm is None
     assert payload_name_match == {
         "order_code": env["lo_plan"].order_code,
-        "driver_id": env["drv_a"].tms_driver_id,
+        "driver_id": None,
+        "driver_phone": "0977000111",
+        "driver_name": "Trần Văn Hùng",
     }
 
 
@@ -843,4 +847,94 @@ def test_24_multi_phone_extraction_validation_and_tms_payload(db_session):
         "driver_id": None,
         "driver_phone": "0394251493 | 0984131254",
         "driver_name": "Lê Văn Ngoài",
+    }
+
+
+def test_25_strict_tms_id_resolution_for_driver_and_trailer(db_session):
+    """Chỉ trả ID TMS khi tất cả trường đều khớp đúng bản ghi nhà xe; lệch tên/SĐT/nhà xe phải trả null + text theo tin nhắn."""
+    from src.infrastructure.models import Trailer
+
+    env = _setup_fixture(db_session)
+    drv_vinh = Driver(
+        id=snowflake.generate(),
+        tms_driver_id=634000 + int(env["tok"][:4], 16),
+        carrier_id=env["car_a"].id,
+        full_name="Bùi Thọ Vinh",
+        normalized_name="bui tho vinh",
+        phone="0389257627",
+        is_active=True,
+    )
+    tr_other_carrier = Trailer(
+        id=snowflake.generate(),
+        tms_mooc_id=snowflake.generate(),
+        tms_carrier_id=env["car_b"].tms_carrier_id,
+        carrier_id=env["car_b"].id,
+        license_plate="29R-013.72",
+        normalized_plate="29R01372",
+        mooc_type=2,
+        is_active=True,
+    )
+    db_session.add_all([drv_vinh, tr_other_carrier])
+    db_session.flush()
+
+    # 1. Ca thực tế: DB có Bùi Thọ Vinh (0389257627), tin nhắn gửi Vũ Tùng Anh (0389257627) -> không gán nhầm ID của Vinh
+    p_mismatch, _, err_m = build_dispatch_assignment_payload(
+        db_session,
+        env["ro_plan"],
+        changed_fields={
+            "driver_name": "Vũ Tùng Anh",
+            "driver_phone": "0389257627",
+        },
+    )
+    assert err_m is None
+    assert p_mismatch == {
+        "order_code": env["ro_plan"].order_code,
+        "driver_id": None,
+        "driver_phone": "0389257627",
+        "driver_name": "Vũ Tùng Anh",
+    }
+
+    # 2. Khớp đúng tên không dấu + SĐT -> trả đúng driver_id
+    p_exact_ascii, _, err_a = build_dispatch_assignment_payload(
+        db_session,
+        env["ro_plan"],
+        changed_fields={
+            "driver_name": "Bui Tho Vinh",
+            "driver_phone": "0389257627",
+        },
+    )
+    assert err_a is None
+    assert p_exact_ascii == {
+        "order_code": env["ro_plan"].order_code,
+        "driver_id": drv_vinh.tms_driver_id,
+    }
+
+    # 3. Đa SĐT có chứa 0389257627 nhưng tên là Vũ Tùng Anh -> không gán nhầm ID, giữ nguyên tên + cả 2 SĐT
+    p_multi_mismatch, _, err_mm = build_dispatch_assignment_payload(
+        db_session,
+        env["ro_plan"],
+        changed_fields={
+            "driver_name": "Vũ Tùng Anh",
+            "driver_phone": "0389257627 | 0912345678",
+        },
+    )
+    assert err_mm is None
+    assert p_multi_mismatch == {
+        "order_code": env["ro_plan"].order_code,
+        "driver_id": None,
+        "driver_phone": "0389257627 | 0912345678",
+        "driver_name": "Vũ Tùng Anh",
+    }
+
+    # 4. Rơ-moóc thuộc nhà xe B không được trả carrier_mooc_id cho kế hoạch của nhà xe A
+    p_cross_tr, _, err_tr = build_dispatch_assignment_payload(
+        db_session,
+        env["ro_plan"],
+        changed_fields={"planned_trailer_plate": "29R-013-72"},
+    )
+    assert err_tr is None
+    assert p_cross_tr == {
+        "order_code": env["ro_plan"].order_code,
+        "carrier_mooc_id": None,
+        "ro_mooc_no": "29R-013.72",
     }
